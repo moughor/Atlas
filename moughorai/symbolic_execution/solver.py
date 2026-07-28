@@ -74,4 +74,5 @@ def is_feasible(state:SymbolicState)->bool:
         if name in upper:
             hi,ui=upper[name]
             if lo>hi or (lo==hi and (not li or not ui)):return False
-    return True
+    from moughorai.advanced_symbolic import is_feasible_advanced
+    return is_feasible_advanced(state)
