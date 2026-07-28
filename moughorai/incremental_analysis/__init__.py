@@ -25,3 +25,24 @@ __all__ = [
     'AttemptRecord', 'CheckpointEntry', 'CheckpointFormatError', 'ExecutionCheckpoint',
     'ResilientIncrementalRun', 'ResilientParallelScheduler', 'RetryPolicy',
 ]
+
+from .distributed import (
+    CoordinatorMetrics,
+    CoordinatorSnapshot,
+    DistributedAnalysisCoordinator,
+    DistributedExecutionRun,
+    DistributedJob,
+    JobLease,
+    JobRecord,
+    JobState,
+    LeaseConflictError,
+    WorkerRegistration,
+    WorkerStatus,
+    WorkerUnavailableError,
+)
+
+__all__ += [
+    'CoordinatorMetrics', 'CoordinatorSnapshot', 'DistributedAnalysisCoordinator',
+    'DistributedExecutionRun', 'DistributedJob', 'JobLease', 'JobRecord', 'JobState',
+    'LeaseConflictError', 'WorkerRegistration', 'WorkerStatus', 'WorkerUnavailableError',
+]
