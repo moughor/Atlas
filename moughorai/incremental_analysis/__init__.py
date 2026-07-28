@@ -4,6 +4,10 @@ from .fingerprints import FileFingerprint, FingerprintService
 from .models import IncrementalAnalysisPlan
 from .planner import IncrementalAnalysisPlanner
 from .state import IncrementalStateStore
+from .resilient import (
+    AttemptRecord, CheckpointEntry, CheckpointFormatError, ExecutionCheckpoint,
+    ResilientIncrementalRun, ResilientParallelScheduler, RetryPolicy,
+)
 from .scheduler import (
     DependencyCycleError,
     ExecutionFailure,
@@ -18,4 +22,6 @@ __all__ = [
     'IncrementalAnalysisPlan', 'IncrementalAnalysisPlanner', 'IncrementalStateStore',
     'DependencyCycleError', 'ExecutionFailure', 'ParallelIncrementalRun',
     'ParallelIncrementalScheduler',
+    'AttemptRecord', 'CheckpointEntry', 'CheckpointFormatError', 'ExecutionCheckpoint',
+    'ResilientIncrementalRun', 'ResilientParallelScheduler', 'RetryPolicy',
 ]
