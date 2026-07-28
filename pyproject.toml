@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moughorai"
+version = "0.1.0"
+description = "Local AI Engineering Platform"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx",
+    "rich",
+    "typer",
+    "pydantic",
+    "PyYAML"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest"
+]
+
+[project.scripts]
+moughorai = "moughorai.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
