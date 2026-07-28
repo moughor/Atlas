@@ -23,6 +23,10 @@ class InterproceduralTaintAnalyzer:
     max_context_depth: int = 12
     max_summary_iterations: int = 20
     parser: JavaProgramParser = field(default_factory=JavaProgramParser)
+    sources: tuple[str, ...] = SOURCES
+    sanitizers: tuple[str, ...] = SANITIZERS
+    rules: tuple = TAINT_RULES
+    entrypoint_annotations: tuple[str, ...] = ()
 
     def analyze_units(self, units: tuple[JavaSourceUnit, ...] | list[JavaSourceUnit], entrypoints: tuple[str, ...] = ()) -> InterproceduralTaintReport:
         types = self.parser.parse_units(units)
@@ -68,7 +72,7 @@ class InterproceduralTaintAnalyzer:
 
     def _is_entrypoint(self, method: JavaMethod) -> bool:
         ann = {item.rsplit(".", 1)[-1] for item in method.annotations}
-        return bool(ann & {"GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping", "RequestMapping", "Path", "WebServlet"}) or method.method_id.name == "main"
+        return bool(ann & ({"GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping", "RequestMapping", "Path", "WebServlet"} | set(self.entrypoint_annotations))) or method.method_id.name == "main"
 
     def _summarize(self, method, summaries, methods, by_name, simple_types, unresolved):
         symbolic = tuple(TaintValue.taint(f"parameter {name}", method.location) for name in method.parameters)
@@ -122,8 +126,8 @@ class InterproceduralTaintAnalyzer:
         name,args=call
         values=tuple(self._eval(a,loc,method,env,fields,methods,by_name,simple_types,summaries,findings,contexts,stack,unresolved,calls,summary_mode,sink_specs) for a in args)
         normalized=name.replace("new ","")
-        if any(normalized.endswith(source) for source in SOURCES): return TaintValue.taint(f"untrusted source: {normalized}",loc)
-        if any(normalized.endswith(sanitizer) for sanitizer in SANITIZERS): return TaintValue.clean()
+        if any(normalized.endswith(source) for source in self.sources): return TaintValue.taint(f"untrusted source: {normalized}",loc)
+        if any(normalized.endswith(sanitizer) for sanitizer in self.sanitizers): return TaintValue.clean()
         self._check_sink(normalized,values,loc,findings,sink_specs,summary_mode)
         target=self._resolve_call(normalized,len(args),method,methods,by_name,simple_types)
         if target:
@@ -141,7 +145,7 @@ class InterproceduralTaintAnalyzer:
         return TaintValue.merge(*values)
 
     def _check_sink(self,name,values,loc,findings,sink_specs,summary_mode):
-        for rule in TAINT_RULES:
+        for rule in self.rules:
             if not any(name.endswith(sink) for sink in rule.sinks): continue
             for index in rule.argument_indexes:
                 if index>=len(values): continue
