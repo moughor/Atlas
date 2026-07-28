@@ -4,10 +4,18 @@ from .fingerprints import FileFingerprint, FingerprintService
 from .models import IncrementalAnalysisPlan
 from .planner import IncrementalAnalysisPlanner
 from .state import IncrementalStateStore
+from .scheduler import (
+    DependencyCycleError,
+    ExecutionFailure,
+    ParallelIncrementalRun,
+    ParallelIncrementalScheduler,
+)
 
 __all__ = [
     'CacheEntry', 'CacheFormatError', 'CacheStatistics', 'IncrementalCache',
     'ChangeSummary', 'IncrementalAnalysisEngine', 'IncrementalRun',
     'FileFingerprint', 'FingerprintService',
     'IncrementalAnalysisPlan', 'IncrementalAnalysisPlanner', 'IncrementalStateStore',
+    'DependencyCycleError', 'ExecutionFailure', 'ParallelIncrementalRun',
+    'ParallelIncrementalScheduler',
 ]
