@@ -1,0 +1,15 @@
+from __future__ import annotations
+import json
+from .models import *
+
+class SecurityReportExporter:
+    LEVEL={Severity.INFO:'note',Severity.LOW:'note',Severity.MEDIUM:'warning',Severity.HIGH:'error',Severity.CRITICAL:'error'}
+    def to_dict(self,report):
+        return {'schema_version':1,'statistics':report.statistics.__dict__ if hasattr(report.statistics,'__dict__') else {k:getattr(report.statistics,k) for k in report.statistics.__slots__},'warnings':list(report.warnings),'findings':[self._finding(f) for f in report.findings]}
+    def _finding(self,f):
+        return {'rule_id':f.rule_id,'title':f.title,'message':f.message,'severity':f.severity.value,'confidence':f.confidence.value,'cwe':f.cwe,'owasp':f.owasp,'location':{'path':f.location.path,'line':f.location.line,'column':f.location.column},'fingerprint':f.fingerprint,'trace':[{'message':s.message,'location':None if s.location is None else {'path':s.location.path,'line':s.location.line,'column':s.location.column}} for s in f.trace],'properties':dict(f.properties)}
+    def to_json(self,report,indent=2): return json.dumps(self.to_dict(report),indent=indent,sort_keys=True)
+    def to_sarif(self,report,indent=2):
+        rules={f.rule_id:f for f in report.findings}
+        payload={'version':'2.1.0','$schema':'https://json.schemastore.org/sarif-2.1.0.json','runs':[{'tool':{'driver':{'name':'Atlas Security Analyzer','informationUri':'https://github.com/moughor/Atlas','rules':[{'id':r.rule_id,'name':r.title,'shortDescription':{'text':r.title},'properties':{'security-severity':str({Severity.CRITICAL:9.5,Severity.HIGH:8.0,Severity.MEDIUM:5.0,Severity.LOW:2.0,Severity.INFO:0.0}[r.severity]),'tags':[r.cwe,r.owasp]}} for r in rules.values()]}},'results':[{'ruleId':f.rule_id,'level':self.LEVEL[f.severity],'message':{'text':f.message},'locations':[{'physicalLocation':{'artifactLocation':{'uri':f.location.path},'region':{'startLine':f.location.line,'startColumn':f.location.column}}}],'partialFingerprints':{'primaryLocationLineHash':f.fingerprint}} for f in report.findings]}]}
+        return json.dumps(payload,indent=indent,sort_keys=True)
