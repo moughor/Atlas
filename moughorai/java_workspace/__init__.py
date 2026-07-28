@@ -43,3 +43,7 @@ __all__ += [
     "WorkspaceModule",
     "stable_workspace_key",
 ]
+
+# PR19 conservative workspace scanner
+from moughorai.java_workspace.scanner import JavaWorkspaceScanner
+__all__ += ["JavaWorkspaceScanner"]
