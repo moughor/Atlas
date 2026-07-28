@@ -8,7 +8,7 @@ import yaml
 
 from .models import ExtensionPoint, PluginExtension, PluginManifest, PluginManifestError
 
-_ALLOWED_ROOT = {"id", "version", "api_version", "name", "description", "requires", "metadata", "extensions"}
+_ALLOWED_ROOT = {"id", "version", "api_version", "name", "description", "requires", "permissions", "metadata", "extensions"}
 _ALLOWED_EXTENSION = {"name", "point", "factory", "capabilities", "config"}
 
 
@@ -57,6 +57,9 @@ class PluginManifestLoader:
         requires = data.get("requires", [])
         if not isinstance(requires, list) or not all(isinstance(item, str) for item in requires):
             raise PluginManifestError("requires must be a list of plugin ids")
+        permissions = data.get("permissions", [])
+        if not isinstance(permissions, list) or not all(isinstance(item, str) and item.strip() for item in permissions):
+            raise PluginManifestError("permissions must be a list of non-empty strings")
         metadata = data.get("metadata", {})
         if not isinstance(metadata, Mapping):
             raise PluginManifestError("metadata must be an object")
@@ -67,6 +70,7 @@ class PluginManifestLoader:
             name=self._string(data, "name"),
             description=str(data.get("description", "")),
             requires=tuple(requires),
+            permissions=tuple(permissions),
             metadata=dict(metadata),
             extensions=extensions,
         )

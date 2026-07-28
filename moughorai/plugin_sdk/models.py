@@ -54,6 +54,7 @@ class PluginManifest:
     extensions: tuple[PluginExtension, ...]
     description: str = ""
     requires: tuple[str, ...] = ()
+    permissions: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -66,6 +67,7 @@ class PluginManifest:
             raise PluginManifestError(f"duplicate extension name in plugin {self.plugin_id}")
         object.__setattr__(self, "extensions", tuple(sorted(self.extensions, key=lambda item: (item.point.value, item.name))))
         object.__setattr__(self, "requires", tuple(sorted(set(self.requires))))
+        object.__setattr__(self, "permissions", tuple(sorted(set(self.permissions))))
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
 

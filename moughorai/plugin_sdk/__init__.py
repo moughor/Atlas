@@ -1,3 +1,4 @@
+from .discovery import DiscoveredPlugin, PluginDiscovery, PluginDiscoveryResult
 from .loader import PluginManifestLoader
 from .models import (
     ExtensionPoint,
@@ -15,8 +16,13 @@ from .runtime import PluginContext, PluginRuntime
 from .serialization import manifest_to_dict, manifest_to_json, manifest_to_yaml
 
 __all__ = [
-    "ExtensionPoint", "LoadedExtension", "PluginCompatibilityError", "PluginContext",
+    "DiscoveredPlugin", "ExtensionPoint", "LoadedExtension", "PluginCompatibilityError", "PluginContext",
     "PluginDiagnostic", "PluginError", "PluginExtension", "PluginLoadError",
-    "PluginManifest", "PluginManifestError", "PluginManifestLoader", "PluginRegistry",
-    "PluginRuntime", "manifest_to_dict", "manifest_to_json", "manifest_to_yaml",
+    "PermissionDecision", "PluginDiscovery", "PluginDiscoveryResult", "PluginManifest", "PluginManifestError", "PluginManifestLoader", "PluginRegistry",
+    "PluginPermissionPolicy", "PluginRuntime", "PluginTrustError", "PluginTrustRecord", "PluginTrustStore", "plugin_bundle_digest", "manifest_to_dict", "manifest_to_json", "manifest_to_yaml",
 ]
+
+from .trust import (
+    PermissionDecision, PluginPermissionPolicy, PluginTrustError, PluginTrustRecord,
+    PluginTrustStore, plugin_bundle_digest,
+)

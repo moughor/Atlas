@@ -6,6 +6,7 @@ from typing import Any, Callable, Mapping
 
 from .models import ExtensionPoint, LoadedExtension, PluginLoadError
 from .registry import PluginRegistry
+from .trust import PluginPermissionPolicy, PluginTrustError
 
 
 class PluginContext:
@@ -26,10 +27,14 @@ class PluginContext:
 
 
 class PluginRuntime:
-    def __init__(self, registry: PluginRegistry, *, services: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self, registry: PluginRegistry, *, services: Mapping[str, Any] | None = None,
+        permission_policy: PluginPermissionPolicy | None = None,
+    ) -> None:
         self.registry = registry
         self.context = PluginContext(services)
         self._loaded: dict[str, tuple[LoadedExtension, ...]] = {}
+        self.permission_policy = permission_policy
 
     def load_all(self) -> tuple[LoadedExtension, ...]:
         loaded: list[LoadedExtension] = []
@@ -41,6 +46,8 @@ class PluginRuntime:
         if plugin_id in self._loaded:
             return self._loaded[plugin_id]
         manifest = self.registry.get(plugin_id)
+        if self.permission_policy is not None:
+            self.permission_policy.require(manifest)
         for dependency in manifest.requires:
             self.load(dependency)
         created: list[LoadedExtension] = []

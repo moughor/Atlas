@@ -16,6 +16,7 @@ def manifest_to_dict(manifest: PluginManifest) -> dict[str, Any]:
         "name": manifest.name,
         "description": manifest.description,
         "requires": list(manifest.requires),
+        "permissions": list(manifest.permissions),
         "metadata": dict(sorted(manifest.metadata.items())),
         "extensions": [
             {
