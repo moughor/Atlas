@@ -21,3 +21,25 @@ __all__ = [
     "WorkspaceNode",
     "WorkspaceProject",
 ]
+
+# PR18 workspace catalog foundation
+from moughorai.java_workspace.catalog import WorkspaceCatalogBuilder, stable_workspace_key
+from moughorai.java_workspace.catalog_models import (
+    BinaryLibrary,
+    BuildSystem,
+    SourceRoot,
+    SourceRootKind,
+    WorkspaceCatalog,
+    WorkspaceModule,
+)
+
+__all__ += [
+    "BinaryLibrary",
+    "BuildSystem",
+    "SourceRoot",
+    "SourceRootKind",
+    "WorkspaceCatalog",
+    "WorkspaceCatalogBuilder",
+    "WorkspaceModule",
+    "stable_workspace_key",
+]
