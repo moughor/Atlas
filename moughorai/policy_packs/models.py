@@ -2,6 +2,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 from moughorai.taint_policy import TaintPolicy
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .resolution import PackDependency
 
 class PolicyPackError(ValueError):
     pass
@@ -24,6 +27,7 @@ class PolicyPack:
     description: str = ''
     metadata: tuple[tuple[str,str],...] = ()
     diagnostics: tuple[PolicyPackDiagnostic,...] = ()
+    dependencies: tuple["PackDependency",...] = ()
     def __post_init__(self):
         if not self.name.strip(): raise PolicyPackError('pack name must not be empty')
         if not self.version.strip(): raise PolicyPackError('pack version must not be empty')

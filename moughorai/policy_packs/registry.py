@@ -3,15 +3,18 @@ from dataclasses import replace
 from moughorai.security_analysis.models import Confidence, Severity
 from moughorai.taint_policy import TaintPolicy, TaintPolicyEngine
 from .models import PolicyOverride, PolicyPack, PolicyPackDiagnostic, PolicyPackError
+from .resolution import PolicyPackResolver
 
 class PolicyPackRegistry:
     def __init__(self,packs=()):
         names=[p.name for p in packs]
         if len(names)!=len(set(names)): raise PolicyPackError('duplicate policy pack name')
         self.packs=tuple(sorted(packs,key=lambda p:(p.name,p.version)))
-    def policies(self,overrides=(),strict=True):
+    def resolved_packs(self,roots=None): return PolicyPackResolver(self.packs).resolve(roots)
+    def lock(self,roots=None): return PolicyPackResolver(self.packs).lock(roots)
+    def policies(self,overrides=(),strict=True,roots=None):
         merged={}
-        for pack in self.packs:
+        for pack in self.resolved_packs(roots):
             for policy in pack.policies:
                 if policy.rule_id in merged: raise PolicyPackError(f'duplicate policy rule_id across packs: {policy.rule_id}')
                 merged[policy.rule_id]=policy
@@ -32,5 +35,5 @@ class PolicyPackRegistry:
                 except ValueError as exc: raise PolicyPackError(f'invalid override confidence: {override.confidence}') from exc
             merged[override.rule_id]=replace(current,**changes)
         return tuple(sorted(merged.values(),key=lambda p:(p.priority,p.rule_id)))
-    def engine(self,overrides=(),strict=True): return TaintPolicyEngine(self.policies(overrides,strict))
+    def engine(self,overrides=(),strict=True,roots=None): return TaintPolicyEngine(self.policies(overrides,strict,roots))
     def diagnostics(self): return tuple(d for p in self.packs for d in p.diagnostics)

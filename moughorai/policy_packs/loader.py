@@ -7,6 +7,7 @@ import yaml
 from moughorai.security_analysis.models import Confidence, Severity
 from moughorai.taint_policy import MatchMode, SymbolMatcher, TaintPolicy
 from .models import PolicyOverride, PolicyPack, PolicyPackDiagnostic, PolicyPackError
+from .resolution import PackDependency
 
 class PolicyPackLoader:
     SCHEMA_VERSION=1
@@ -28,7 +29,7 @@ class PolicyPackLoader:
         return self.load_mapping(data,source)
     def load_mapping(self,data:Any,source='<mapping>')->PolicyPack:
         if not isinstance(data,Mapping): raise PolicyPackError(f'{source}: root must be a mapping')
-        allowed={'schema_version','name','version','description','metadata','policies'}
+        allowed={'schema_version','name','version','description','metadata','policies','dependencies'}
         unknown=sorted(set(data)-allowed)
         if unknown: raise PolicyPackError(f'{source}: unknown root fields: {", ".join(unknown)}')
         schema=data.get('schema_version',1)
@@ -37,8 +38,20 @@ class PolicyPackLoader:
         if not isinstance(raw_policies,list): raise PolicyPackError(f'{source}: policies must be a list')
         policies=tuple(self._policy(x,f'{source}.policies[{i}]') for i,x in enumerate(raw_policies))
         metadata=self._string_pairs(data.get('metadata',{}),f'{source}.metadata')
+        raw_deps=data.get('dependencies',[])
+        if not isinstance(raw_deps,list): raise PolicyPackError(f'{source}: dependencies must be a list')
+        dependencies=tuple(self._dependency(v,f'{source}.dependencies[{i}]') for i,v in enumerate(raw_deps))
         diagnostics=() if policies else (PolicyPackDiagnostic('warning','empty-pack','policy pack contains no policies',source),)
-        return PolicyPack(str(data.get('name','')).strip(),str(data.get('version','')).strip(),policies,schema,str(data.get('description','')),metadata,diagnostics)
+        return PolicyPack(str(data.get('name','')).strip(),str(data.get('version','')).strip(),policies,schema,str(data.get('description','')),metadata,diagnostics,dependencies)
+
+    def _dependency(self,data,path):
+        if isinstance(data,str): return PackDependency(data)
+        if not isinstance(data,Mapping): raise PolicyPackError(f'{path}: dependency must be a string or mapping')
+        unknown=sorted(set(data)-{'name','constraint','optional'})
+        if unknown: raise PolicyPackError(f'{path}: unknown dependency fields: {", ".join(unknown)}')
+        optional=data.get('optional',False)
+        if not isinstance(optional,bool): raise PolicyPackError(f'{path}.optional: must be a boolean')
+        return PackDependency(str(data.get('name','')),str(data.get('constraint','*')),optional)
     def _policy(self,data:Any,path:str)->TaintPolicy:
         if not isinstance(data,Mapping): raise PolicyPackError(f'{path}: policy must be a mapping')
         allowed={'rule_id','title','message','sources','sinks','sanitizers','severity','confidence','cwe','owasp','priority','enabled','properties'}
