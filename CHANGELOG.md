@@ -320,3 +320,9 @@
 - Added CPU and user caps plus historical-duration overhead avoidance.
 - Added opt-in `--adaptive` execution for `atlas analyze` and `atlas check`.
 - Reused PR73 concurrency without changing default scheduling behavior.
+## PR98 — Distributed Workers
+
+- Adapted workspace projects to the PR58 transport-neutral lease coordinator.
+- Added deterministic project jobs, dependency results, capabilities, retries, and failure blocking.
+- Added stable distributed execution and workspace report conversion.
+- Preserved local and concurrent executors without introducing a mandatory network stack.
