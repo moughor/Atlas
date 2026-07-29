@@ -1,3 +1,4 @@
+from .persistence import STATE_SCHEMA_VERSION, WorkspacePersistentState, WorkspaceRestoreReport, WorkspaceStateError, WorkspaceStateStore
 from .execution import ProjectRun, ProjectRunStatus, WorkspaceAnalysisOrchestrator, WorkspaceRunReport
 from .events import FileEvent, FileEventKind
 from .incremental import IncrementalPlan, IncrementalWorkspacePlanner
@@ -10,6 +11,6 @@ from .models import Project, Workspace
 from .service import WorkspaceService
 
 __all__ = [
-    "DependencyGraph", "ProjectRun", "ProjectRunStatus", "WorkspaceAnalysisOrchestrator", "WorkspaceRunReport", "FileEvent", "FileEventKind", "FileState", "IncrementalPlan", "IncrementalWorkspacePlanner", "Project", "Workspace", "WorkspaceCache", "WorkspaceConfigError",
+    "STATE_SCHEMA_VERSION", "WorkspacePersistentState", "WorkspaceRestoreReport", "WorkspaceStateError", "WorkspaceStateStore", "DependencyGraph", "ProjectRun", "ProjectRunStatus", "WorkspaceAnalysisOrchestrator", "WorkspaceRunReport", "FileEvent", "FileEventKind", "FileState", "IncrementalPlan", "IncrementalWorkspacePlanner", "Project", "Workspace", "WorkspaceCache", "WorkspaceConfigError",
     "WatchSnapshot", "WorkspaceDependencyError", "WorkspaceDiscovery", "WorkspaceLoader", "WorkspaceService", "WorkspaceSnapshot", "WorkspaceWatcher",
 ]

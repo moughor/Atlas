@@ -1,3 +1,7 @@
+## PR70 — Persistent Workspace State
+
+- Added atomic, checksummed workspace state persistence with selective project restoration and orchestrator integration.
+
 ## PR69 — Workspace Analysis Orchestrator
 
 - Added deterministic dependency-aware workspace analysis execution, result reuse, failure blocking, cancellation, and incremental-plan integration.

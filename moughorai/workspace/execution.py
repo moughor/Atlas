@@ -8,6 +8,7 @@ from typing import Any
 
 from .incremental import IncrementalPlan, IncrementalWorkspacePlanner
 from .models import Project
+from .persistence import WorkspaceRestoreReport, WorkspaceStateStore
 from .service import WorkspaceService
 
 
@@ -92,6 +93,20 @@ class WorkspaceAnalysisOrchestrator:
 
     def result(self, project: str) -> Any:
         return self._results[project]
+
+    def save_state(self, store: WorkspaceStateStore | None = None):
+        target = store or WorkspaceStateStore(self.service)
+        return target.save(target.capture(self._results, self.planner.valid_projects))
+
+    def restore_state(self, store: WorkspaceStateStore | None = None) -> WorkspaceRestoreReport:
+        target = store or WorkspaceStateStore(self.service)
+        results, report = target.restore(target.load())
+        self._results = results
+        all_projects = set(self.service.workspace.names())
+        self.planner.invalidate(all_projects.difference(results))
+        for project in results:
+            self.planner.mark_valid(project)
+        return report
 
     def invalidate(self, projects: Iterable[str]) -> tuple[str, ...]:
         names = tuple(sorted(set(projects)))
