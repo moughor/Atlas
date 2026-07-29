@@ -1,5 +1,11 @@
 # Changelog
 
+## PR107 — LLM Provider Abstraction
+
+- Added provider-neutral LLM requests, responses, chunks, and provider protocol.
+- Added a synchronized provider registry and deterministic retry/timeout policy.
+- Added safe streaming retries that never duplicate already-emitted output.
+
 ## Chronological index (newest first)
 
 - **PR106:** Plugin Trust Model
