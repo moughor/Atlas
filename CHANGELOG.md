@@ -439,3 +439,7 @@ complete implementation detail.
 
 - Added versioned, workspace-scoped SQLite conversation memory.
 - Added ordered messages and structured references to Atlas semantic facts.
+## PR114 — Explain Engine
+
+- Added grounded Markdown explanations from ASS through the provider abstraction.
+- Activated `atlas ai explain` with optional conversation-memory recording.

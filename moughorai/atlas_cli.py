@@ -25,6 +25,9 @@ from .adaptive_scheduler import AdaptiveWorkspaceScheduler
 from .governance import GovernanceAuditLog, GovernanceError
 from .structured_logging import LogFormat, LogLevel, configure_logging, get_logger, log_event
 from .semantic_snapshot import SemanticSnapshotError, SemanticSnapshotStore
+from .ai_explain import ExplainEngine, ExplainRequest
+from .ai_memory import ConversationMemoryStore
+from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -88,6 +91,7 @@ class AtlasCliContext:
 
 Analyzer = Callable[[Project, Mapping[str, Any]], Any]
 _analyzer_factory: Callable[[WorkspaceService], Analyzer] | None = None
+_ai_provider_factory: Callable[[], Any] | None = None
 
 
 def _default_analyzer(service: WorkspaceService) -> Analyzer:
@@ -442,9 +446,24 @@ def ai_context_command(
 def ai_explain_command(
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
     snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
+    subject: Annotated[str, typer.Option("--subject", help="Workspace semantic subject.")] = "workspace",
 ) -> None:
-    """Explain snapshot knowledge (engine delivered by PR114)."""
-    _future_ai_engine("explain", root, snapshot)
+    """Explain verified semantic knowledge from an ASS artifact."""
+    def operation() -> None:
+        loaded = _load_ai_snapshot(root, snapshot)
+        provider = (_ai_provider_factory or OllamaProvider)()
+        try:
+            result = ExplainEngine(
+                LlmClient(provider),
+                memory=ConversationMemoryStore(root),
+            ).explain(loaded, ExplainRequest(subject=subject))
+            typer.echo(result.markdown)
+        finally:
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
+
+    _run_command(operation)
 
 
 @ai_app.command("ask")
