@@ -248,3 +248,9 @@
 - Added percentage, message, completion, and cancellation state.
 - Integrated progress reporting with workspace diagnostics in URI order.
 - Added notification queue delivery through the PR84 LSP flow.
+# PR86 - Rule authoring API
+
+- Added a public cross-language rule protocol and immutable author context.
+- Added validated finding reporting with locations, severities, and properties.
+- Added deterministic rule execution, deduplication, and exception attribution.
+- Added a sorted, conflict-safe rule registry.
