@@ -326,3 +326,9 @@
 - Added deterministic project jobs, dependency results, capabilities, retries, and failure blocking.
 - Added stable distributed execution and workspace report conversion.
 - Preserved local and concurrent executors without introducing a mandatory network stack.
+## PR99 — Governance
+
+- Added role-based authorization for view, analysis, fixes, distribution, configuration, and rules.
+- Added project, worker, and force-analysis policy constraints with PR71 option parsing.
+- Added append-only, SHA-256-chained governance audit records and verification.
+- Added opt-in `atlas governance` audit validation without changing existing CLI authorization.

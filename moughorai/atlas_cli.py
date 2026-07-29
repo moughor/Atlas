@@ -20,6 +20,7 @@ from .history import HistoryDatabase, HistoryDatabaseError
 from .dashboard import DashboardService
 from .profiling import PerformanceProfiler
 from .adaptive_scheduler import AdaptiveWorkspaceScheduler
+from .governance import GovernanceAuditLog, GovernanceError
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -355,6 +356,20 @@ def profile_command(
     _run_command(operation)
 
 
+@app.command("governance")
+def governance_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+) -> None:
+    """Verify the workspace governance audit chain."""
+    def operation() -> None:
+        path = root.expanduser().resolve() / ".atlas" / "governance-audit.jsonl"
+        count = GovernanceAuditLog(path).verify()
+        typer.echo(f"audit: valid")
+        typer.echo(f"records: {count}")
+
+    _run_command(operation)
+
+
 def _run_command(operation: Callable[[], None]) -> None:
     try:
         operation()
@@ -371,6 +386,7 @@ def _run_command(operation: Callable[[], None]) -> None:
         GitDiffError,
         CiTemplateError,
         HistoryDatabaseError,
+        GovernanceError,
     ) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
