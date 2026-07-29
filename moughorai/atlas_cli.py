@@ -31,6 +31,7 @@ from .ai_review import ReviewEngine, ReviewRequest
 from .ai_ask import AskEngine, AskRequest
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
+from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
@@ -554,6 +555,13 @@ def ai_git_context_command(
             nl=False,
         )
     )
+
+
+@ai_app.command("version")
+def ai_version_command() -> None:
+    """Print Atlas AI release version and capabilities."""
+    typer.echo(f"Atlas AI {ATLAS_AI_VERSION}")
+    typer.echo(atlas_ai_capabilities().to_json())
 
 
 def _run_command(operation: Callable[[], None]) -> None:

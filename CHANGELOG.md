@@ -463,3 +463,8 @@ complete implementation detail.
 
 - Added a shared ASS-based protocol for five supported IDEs.
 - Added semantic navigation and safe routing to Atlas AI engines.
+## PR120 — Atlas AI 1.0
+
+- Released the stable `moughorai.ai` facade and capability manifest.
+- Added `atlas ai version` and end-to-end release verification.
+- Documented Ollama as the only currently implemented AI provider.

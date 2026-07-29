@@ -90,3 +90,9 @@ The verified PR106 repository suite contains 3,323 tests. Benchmark timings are
 machine-dependent and are deliberately not used as pass/fail thresholds.
 
 Atlas is distributed under the MIT License.
+# Atlas AI 1.0
+
+Atlas includes an ASS-grounded AI layer with a dedicated `atlas ai` CLI,
+conversation memory, Explain/Review/Ask engines, validated non-applying patch
+proposals, Git context, and an editor-neutral IDE protocol. See
+`docs/PR120_ATLAS_AI_1_0.md`.
