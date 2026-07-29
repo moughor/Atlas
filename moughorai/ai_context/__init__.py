@@ -7,11 +7,16 @@ from .collector import (
     SemanticCollectionReport,
     SemanticContextCollector,
 )
+from .project_analyzer import SemanticProjectAnalyzer
+from .persistence import decode_analysis_result, encode_analysis_result
 
 __all__ = [
     "CollectedSemanticContext",
     "SemanticCollectionReport",
     "SemanticContextCollector",
+    "SemanticProjectAnalyzer",
+    "decode_analysis_result",
+    "encode_analysis_result",
     "WorkspaceContextBuilder",
     "WorkspaceSemanticContext",
 ]

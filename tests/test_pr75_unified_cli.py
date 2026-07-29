@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from moughorai import atlas_cli
 from moughorai.atlas_cli import app
+from moughorai.semantic import SemanticDocument
 
 
 runner = CliRunner()
@@ -196,7 +197,10 @@ def test_default_analyzer_counts_included_files(tmp_path: Path) -> None:
     service = atlas_cli.WorkspaceService(root)
     analyzer = atlas_cli._default_analyzer(service)
     value = analyzer(service.project("core"), {})
-    assert value == {"project": "core", "files": 1, "dependencies": []}
+    assert isinstance(value, SemanticDocument)
+    assert value.metadata["project"] == "core"
+    assert value.metadata["files"] == 1
+    assert value.metadata["dependencies"] == ()
 
 
 def test_flatten_is_sorted_and_recursive() -> None:

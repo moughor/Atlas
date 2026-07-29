@@ -3,7 +3,12 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from moughorai import atlas_cli
-from moughorai.ai_context import SemanticContextCollector
+from moughorai.ai_context import (
+    SemanticContextCollector,
+    SemanticProjectAnalyzer,
+    decode_analysis_result,
+    encode_analysis_result,
+)
 from moughorai.atlas_cli import app
 from moughorai.semantic import Diagnostic, DiagnosticBag, SemanticDocument
 from moughorai.semantic.types import TypeRegistry, TypeTable
@@ -55,6 +60,44 @@ def test_collector_aggregates_java_symbols_and_semantic_artifacts(tmp_path: Path
     assert payload["types"]["app"][0]["type"]["name"] == "int"
 
 
+def test_default_project_analyzer_returns_real_semantic_document(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    service = WorkspaceService(root)
+    document = SemanticProjectAnalyzer()(service.project("app"), {})
+    assert isinstance(document, SemanticDocument)
+    assert document.source == ""
+    assert document.language == "java"
+    assert len(document.syntax_tree) == 1
+    assert document.metadata["files"] == 1
+    assert any(
+        symbol.qualified_name == "demo.App"
+        for symbol in document.require_artifact("global_symbols")
+    )
+
+
+def test_project_analyzer_reports_invalid_java_without_raw_source(tmp_path: Path) -> None:
+    source = "package demo; public class"
+    root = _workspace(tmp_path, source)
+    service = WorkspaceService(root)
+    document = SemanticProjectAnalyzer()(service.project("app"), {})
+    assert document.source == ""
+    assert len(document.diagnostics) == 1
+    assert document.diagnostics.items[0].code == "ATLAS-JAVA-PARSE"
+    assert source not in repr(document.metadata)
+
+
+def test_semantic_document_persistence_round_trip_preserves_context(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    service = WorkspaceService(root)
+    original = SemanticProjectAnalyzer()(service.project("app"), {})
+    restored = decode_analysis_result(encode_analysis_result(original))
+    assert isinstance(restored, SemanticDocument)
+    assert restored.metadata == original.metadata
+    assert restored.source == ""
+    assert restored.syntax_tree == ()
+    assert restored.get_artifact("global_symbols") == original.get_artifact("global_symbols")
+
+
 def test_analyze_publishes_latest_ass_consumable_by_ai_context(tmp_path: Path) -> None:
     root = _workspace(tmp_path)
     analyzed = runner.invoke(app, ["analyze", str(root), "--no-recover"])
@@ -70,6 +113,21 @@ def test_analyze_publishes_latest_ass_consumable_by_ai_context(tmp_path: Path) -
     context = runner.invoke(app, ["ai", "context", str(root)])
     assert context.exit_code == 0
     assert "demo.App" in context.stdout
+
+
+def test_recovery_restores_semantic_results_and_republishes_context(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    first = runner.invoke(app, ["analyze", str(root)])
+    second = runner.invoke(app, ["analyze", str(root)])
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    assert "app: reused" in second.stdout
+    snapshot = SemanticSnapshotStore(WorkspaceService(root).workspace).load()
+    assert snapshot is not None
+    assert any(
+        symbol["qualified_name"] == "demo.App"
+        for symbol in snapshot.semantic_context["symbols"]
+    )
 
 
 def test_failed_analysis_does_not_publish_snapshot(tmp_path: Path) -> None:

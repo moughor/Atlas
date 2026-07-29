@@ -42,9 +42,11 @@ class SemanticContextCollector:
         diagnostics: dict[str, list[Diagnostic]] = {}
         types: dict[str, TypeTable] = {}
         symbols = GlobalSymbolDatabase()
+        projects_with_symbols: set[str] = set()
         for run in report.runs:
-            self._collect_result(run.project, run.value, diagnostics, types, symbols)
-        self._collect_java_sources(diagnostics, symbols)
+            if self._collect_result(run.project, run.value, diagnostics, types, symbols):
+                projects_with_symbols.add(run.project)
+        self._collect_java_sources(diagnostics, symbols, skip=projects_with_symbols)
         snapshot = symbols.snapshot()
         context = WorkspaceContextBuilder().build(
             self.service.workspace,
@@ -67,12 +69,16 @@ class SemanticContextCollector:
         diagnostics: dict[str, list[Diagnostic]],
         types: dict[str, TypeTable],
         symbols: GlobalSymbolDatabase,
-    ) -> None:
+    ) -> bool:
         if isinstance(value, SemanticDocument):
             diagnostics.setdefault(project, []).extend(value.diagnostics)
             if len(value.types):
                 types[project] = value.types
-            return
+            raw_symbols = value.get_artifact("global_symbols")
+            if raw_symbols is not None:
+                symbols.add_many(item for item in raw_symbols if isinstance(item, GlobalSymbol))
+                return True
+            return False
         raw_diagnostics = self._field(value, "diagnostics")
         if raw_diagnostics is not None:
             for item in raw_diagnostics:
@@ -84,15 +90,21 @@ class SemanticContextCollector:
         raw_symbols = self._field(value, "symbols")
         if raw_symbols is not None:
             symbols.add_many(item for item in raw_symbols if isinstance(item, GlobalSymbol))
+            return True
+        return False
 
     def _collect_java_sources(
         self,
         diagnostics: dict[str, list[Diagnostic]],
         symbols: GlobalSymbolDatabase,
+        *,
+        skip: set[str],
     ) -> None:
         service = JavaSymbolService()
         builder = GlobalSymbolDatabaseBuilder()
         for project in sorted(self.service.workspace.projects, key=lambda item: item.name):
+            if project.name in skip:
+                continue
             for path in self._java_files(project.path, project.include, project.exclude):
                 try:
                     index = service.index_sources({path: path.read_text(encoding="utf-8-sig")})

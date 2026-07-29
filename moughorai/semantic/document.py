@@ -103,3 +103,7 @@ class SemanticDocument:
         metadata = dict(self.metadata)
         metadata.update(values)
         return replace(self, metadata=metadata)
+
+    def to_report_value(self) -> dict[str, Any]:
+        """Return the stable, source-free value used by workspace reports."""
+        return dict(self.metadata)

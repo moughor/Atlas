@@ -117,7 +117,7 @@ class HistoryDatabase:
                             position,
                             run.project,
                             run.status.value,
-                            None if run.value is None else self._json(run.value),
+                            None if run.value is None else self._json(run.to_dict()["value"]),
                             run.error,
                             self._json(list(run.blocked_by)),
                             run.duration_ms,

@@ -7,6 +7,12 @@ analysis, watch mode, quality gates, plugin and rule SDKs, SARIF output, CI
 templates, historical reporting, profiling, dashboards, structured logging,
 and opt-in governance.
 
+`atlas analyze` now drives the complete semantic context pipeline: project
+analysis returns immutable semantic documents, successful runs publish
+`.atlas/ass/latest.ass`, and interrupted runs can restore source-free semantic
+results without reanalyzing completed projects. See
+[`docs/PR121_COMPLETE_AI_CONTEXT_PIPELINE.md`](docs/PR121_COMPLETE_AI_CONTEXT_PIPELINE.md).
+
 The current repository includes completed work through PR106. Recent production
 hardening added linear-time semantic table builders, thread-safe global symbol
 storage, a reproducible 23,000-file benchmark, a versioned public API boundary,

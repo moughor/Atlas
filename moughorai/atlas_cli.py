@@ -32,7 +32,12 @@ from .ai_ask import AskEngine, AskRequest
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
 from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
-from .ai_context import SemanticContextCollector
+from .ai_context import (
+    SemanticContextCollector,
+    SemanticProjectAnalyzer,
+    decode_analysis_result,
+    encode_analysis_result,
+)
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
@@ -101,26 +106,7 @@ _ai_provider_factory: Callable[[], Any] | None = None
 
 
 def _default_analyzer(service: WorkspaceService) -> Analyzer:
-    def analyze(project: Project, dependencies: Mapping[str, Any]) -> dict[str, Any]:
-        files = {
-            path.resolve()
-            for pattern in project.include
-            for path in project.path.glob(pattern)
-            if path.is_file()
-        }
-        excluded = {
-            path.resolve()
-            for pattern in project.exclude
-            for path in project.path.glob(pattern)
-            if path.is_file()
-        }
-        return {
-            "project": project.name,
-            "files": len(files - excluded),
-            "dependencies": sorted(dependencies),
-        }
-
-    return analyze
+    return SemanticProjectAnalyzer()
 
 
 def _context(root: Path) -> AtlasCliContext:
@@ -148,7 +134,11 @@ def _execute(
     selected = projects or context.service.workspace.names()
     analyzer = _analyzer(context.service)
     if recover:
-        manager = WorkspaceRecoveryManager(context.service)
+        manager = WorkspaceRecoveryManager(
+            context.service,
+            encoder=encode_analysis_result,
+            decoder=decode_analysis_result,
+        )
         resumed, _ = manager.resume(orchestrator, analyzer, max_workers=workers)
         if resumed is not None:
             return resumed

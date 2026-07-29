@@ -42,7 +42,8 @@ class ProjectRun:
             "duration_ms": round(self.duration_ms, 3),
         }
         if self.value is not None:
-            data["value"] = self.value
+            report_value = getattr(self.value, "to_report_value", None)
+            data["value"] = report_value() if callable(report_value) else self.value
         if self.error is not None:
             data["error"] = self.error
         if self.blocked_by:

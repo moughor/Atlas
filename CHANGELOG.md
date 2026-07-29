@@ -1,5 +1,12 @@
 # Changelog
 
+## PR121 — Complete AI Context Pipeline Integration
+
+- Replaced the default file-count analyzer with project-level semantic documents.
+- Connected parsed Java ASTs, diagnostics, and global symbols directly to ASS publication.
+- Added source-free, backward-compatible persistence for semantic recovery results.
+- Preserved deterministic workspace reports and legacy/custom analyzer behavior.
+
 ## PR107 — LLM Provider Abstraction
 
 - Added provider-neutral LLM requests, responses, chunks, and provider protocol.
