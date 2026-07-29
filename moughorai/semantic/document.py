@@ -64,6 +64,12 @@ class SemanticDocument:
     def with_type(self, node_key: object, semantic_type: Type) -> SemanticDocument:
         return self.with_artifact("types", self.types.with_type(node_key, semantic_type))
 
+    def with_types(
+        self,
+        entries: Mapping[object, Type] | Iterable[tuple[object, Type]],
+    ) -> SemanticDocument:
+        return self.with_artifact("types", self.types.with_types(entries))
+
     def get_type(self, node_key: object, default: Type | None = None) -> Type:
         if default is None:
             return self.types.get(node_key)
@@ -83,6 +89,9 @@ class SemanticDocument:
 
     def with_symbol(self, symbol: VariableSymbol) -> SemanticDocument:
         return self.with_artifact("symbols", self.symbols.with_symbol(symbol))
+
+    def with_symbols(self, symbols: Iterable[VariableSymbol]) -> SemanticDocument:
+        return self.with_artifact("symbols", self.symbols.with_symbols(symbols))
 
     def get_symbol(self, key: object, default: VariableSymbol | None = None) -> VariableSymbol | None:
         return self.symbols.get(key, default)

@@ -13,6 +13,7 @@ from moughorai.semantic import (
     PassContext,
     SemanticDocument,
     SymbolTable,
+    SymbolTableBuilder,
     VariableSymbol,
 )
 from moughorai.semantic.types import (
@@ -21,6 +22,7 @@ from moughorai.semantic.types import (
     PrimitiveType,
     Type,
     TypeRegistry,
+    TypeTableBuilder,
     UnknownType,
 )
 
@@ -208,14 +210,32 @@ class VariableTypeInferencePass(SemanticPass):
         if not isinstance(document, SemanticDocument):
             raise TypeError("document must be a SemanticDocument")
 
-        result = document
+        types = document.types.to_builder()
+        symbols = document.symbols.to_builder()
+        diagnostics: list[Diagnostic] = []
 
         def visit(node: object | None) -> None:
-            nonlocal result
             if node is None:
                 return
             if isinstance(node, LocalVariableDeclaration):
-                result = attach_variable_declaration(result, node, self.registry)
+                analyzed = analyze_variable_declaration(node, self.registry)
+                declaration_key = _stable_node_key(node, "variable-declaration")
+                initializer_key = (
+                    _stable_node_key(node.initializer, "initializer")
+                    if node.initializer is not None else None
+                )
+                types.set(declaration_key, analyzed.variable_type)
+                if initializer_key is not None and analyzed.initializer_type is not None:
+                    types.set(initializer_key, analyzed.initializer_type)
+                symbols.add(VariableSymbol(
+                    key=_stable_node_key(node, "variable-symbol"),
+                    name=node.name,
+                    semantic_type=analyzed.variable_type,
+                    declaration_key=declaration_key,
+                    initializer_key=initializer_key,
+                    inferred=analyzed.inferred,
+                ))
+                diagnostics.extend(analyzed.diagnostics)
             if hasattr(node, "__dataclass_fields__"):
                 for field_name in node.__dataclass_fields__:
                     value = getattr(node, field_name)
@@ -227,7 +247,9 @@ class VariableTypeInferencePass(SemanticPass):
                                 visit(item)
 
         visit(document.syntax_tree)
-        return result
+        result = document.with_artifact("types", types.build())
+        result = result.with_artifact("symbols", symbols.build())
+        return result.with_diagnostics(diagnostics)
 
 
 __all__ = [

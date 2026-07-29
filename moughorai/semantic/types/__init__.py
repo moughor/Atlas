@@ -6,11 +6,11 @@ from .primitive import PrimitiveType
 from .registry import TypeRegistry
 from .serialization import type_from_dict, type_to_dict
 from .special import NULL, UNKNOWN, VOID, NullType, UnknownType, VoidType
-from .table import TypeTable
+from .table import TypeTable, TypeTableBuilder
 
 __all__ = [
     "ArrayType", "ClassType", "GenericType", "NULL", "NullType",
-    "PrimitiveType", "Type", "TypeKind", "TypeRegistry", "TypeTable",
+    "PrimitiveType", "Type", "TypeKind", "TypeRegistry", "TypeTable", "TypeTableBuilder",
     "UNKNOWN", "UnknownType", "VOID", "VoidType", "type_from_dict", "type_to_dict",
 ]
 

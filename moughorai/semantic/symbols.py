@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from collections.abc import Iterable
 from typing import Hashable, Iterator, Mapping
 
 from .types import Type
@@ -53,6 +54,14 @@ class SymbolTable:
         values[symbol.key] = symbol
         return SymbolTable(values)
 
+    def with_symbols(self, symbols: Iterable[VariableSymbol]) -> SymbolTable:
+        """Return one immutable snapshot after applying a batch of symbols."""
+        return self.to_builder().extend(symbols).build()
+
+    def to_builder(self) -> SymbolTableBuilder:
+        """Create a mutable bulk-construction builder from this snapshot."""
+        return SymbolTableBuilder(self.entries.values())
+
     def get(self, key: Hashable, default: VariableSymbol | None = None) -> VariableSymbol | None:
         return self.entries.get(key, default)
 
@@ -71,4 +80,31 @@ class SymbolTable:
         return iter(self.entries)
 
 
-__all__ = ["SymbolTable", "VariableSymbol"]
+class SymbolTableBuilder:
+    """Mutable accumulator that freezes into an immutable :class:`SymbolTable`."""
+
+    __slots__ = ("_entries",)
+
+    def __init__(self, symbols: Iterable[VariableSymbol] = ()) -> None:
+        self._entries: dict[Hashable, VariableSymbol] = {}
+        self.extend(symbols)
+
+    def add(self, symbol: VariableSymbol) -> SymbolTableBuilder:
+        if not isinstance(symbol, VariableSymbol):
+            raise TypeError("symbol must be a VariableSymbol")
+        self._entries[symbol.key] = symbol
+        return self
+
+    def extend(self, symbols: Iterable[VariableSymbol]) -> SymbolTableBuilder:
+        for symbol in symbols:
+            self.add(symbol)
+        return self
+
+    def build(self) -> SymbolTable:
+        return SymbolTable(self._entries)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+
+__all__ = ["SymbolTable", "SymbolTableBuilder", "VariableSymbol"]

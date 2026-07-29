@@ -338,3 +338,9 @@
 - Added end-to-end compatibility coverage across CLI, history, dashboard, CI, profiling, and governance.
 - Updated release documentation and retained plugin/rule API 1.x compatibility.
 - Added final packaging, deterministic-output, and clean-replay verification.
+## PR101 — Semantic Table Builders
+
+- Added validated mutable builders for bulk type and symbol table construction.
+- Added additive bulk APIs while preserving immutable copy-on-write methods.
+- Refactored variable inference to freeze semantic tables once per pass.
+- Added scaling benchmarks and a 250-declaration regression test.
