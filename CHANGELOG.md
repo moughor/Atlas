@@ -1,3 +1,7 @@
+## PR71 — Workspace Configuration Layers
+
+- Added deterministic layered workspace configuration resolution.
+
 ## PR70 — Persistent Workspace State
 
 - Added atomic, checksummed workspace state persistence with selective project restoration and orchestrator integration.

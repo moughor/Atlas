@@ -7,6 +7,7 @@ from .cache import WorkspaceCache, WorkspaceSnapshot
 from .discovery import WorkspaceDiscovery
 from .graph import DependencyGraph
 from .models import Project, Workspace
+from .configuration import ResolvedConfiguration, WorkspaceConfigurationResolver
 
 
 class WorkspaceService:
@@ -34,6 +35,15 @@ class WorkspaceService:
         for name in tuple(selected):
             selected.update(self.graph.dependents(name))
         return tuple(self.workspace.get(name) for name in self.graph.order(selected))
+
+    def resolved_configuration(self, project: str, *, global_values=None, cli_overrides=None) -> ResolvedConfiguration:
+        target = self.project(project)
+        return WorkspaceConfigurationResolver().for_project(
+            global_values=global_values,
+            workspace_values=dict(self.workspace.options),
+            project_values=dict(target.options),
+            cli_overrides=cli_overrides,
+        )
 
     def snapshot(self) -> WorkspaceSnapshot:
         return self.cache.snapshot(self.workspace)
