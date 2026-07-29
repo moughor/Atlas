@@ -30,6 +30,7 @@ from .ai_memory import ConversationMemoryStore
 from .ai_review import ReviewEngine, ReviewRequest
 from .ai_ask import AskEngine, AskRequest
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
+from .ai_git_context import GitContextService
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
@@ -535,6 +536,24 @@ def ai_fix_command(
             if callable(close):
                 close()
     _run_command(operation)
+
+
+@ai_app.command("git-context")
+def ai_git_context_command(
+    root: Annotated[Path, typer.Argument(help="Git workspace root.")] = Path("."),
+    commits: Annotated[int, typer.Option("--commits", min=0)] = 20,
+    blame: Annotated[list[str] | None, typer.Option("--blame")] = None,
+) -> None:
+    """Print deterministic Git context for Atlas AI."""
+    _run_command(
+        lambda: typer.echo(
+            GitContextService(root).collect(
+                commit_limit=commits,
+                blame_files=tuple(blame or ()),
+            ).to_json(),
+            nl=False,
+        )
+    )
 
 
 def _run_command(operation: Callable[[], None]) -> None:

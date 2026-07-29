@@ -455,3 +455,7 @@ complete implementation detail.
 
 - Added grounded Git patch proposals with strict diff/path validation.
 - Activated non-applying `atlas ai fix` with `git apply --check`.
+## PR118 — Git Context
+
+- Added deterministic branch, changes, commits, blame, PR metadata, and snapshot IDs.
+- Added `atlas ai git-context`.
