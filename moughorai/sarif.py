@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 from .rule_sdk import RuleCatalog
+from .version import __version__
 from .workspace import ProjectRun, WorkspaceRunReport
 
 
@@ -45,7 +46,7 @@ class SarifExporter:
             "tool": {
                 "driver": {
                     "name": "Atlas",
-                    "version": "1.0.0",
+                    "version": __version__,
                     "informationUri": "https://github.com/moughor/Atlas",
                     "rules": rules,
                 }

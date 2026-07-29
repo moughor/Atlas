@@ -1,9 +1,10 @@
 # Atlas
 
-Atlas is a modular static-analysis platform for multi-project workspaces. Atlas
-1.0 provides deterministic analysis reports, incremental and concurrent
-execution, recovery, baselines, watch mode, quality gates, plugin discovery,
-and text, JSON, JSONL, and SARIF output.
+Atlas is a modular static-analysis platform for multi-project workspaces.
+Atlas 2.0 provides deterministic analysis reports, incremental, concurrent,
+adaptive, and distributed execution, crash recovery, baselines, Git-diff
+analysis, watch mode, quality gates, plugin and rule SDKs, SARIF output, CI
+templates, historical reporting, profiling, dashboards, and opt-in governance.
 
 ## Install
 
@@ -11,6 +12,8 @@ and text, JSON, JSONL, and SARIF output.
 python -m pip install moughorai
 atlas --version
 atlas analyze .
+atlas check . --adaptive --workers 4
+atlas dashboard .
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from

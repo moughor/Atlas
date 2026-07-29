@@ -15,13 +15,13 @@ ROOT = Path(__file__).parents[1]
 
 def test_release_version_is_canonical() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert project["version"] == __version__ == moughorai.__version__ == "1.0.0"
+    assert project["version"] == __version__ == moughorai.__version__ == "2.0.0"
 
 
 def test_version_cli() -> None:
     result = CliRunner().invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.stdout == "Atlas 1.0.0\n"
+    assert result.stdout == "Atlas 2.0.0\n"
 
 
 def test_release_metadata_and_package_discovery() -> None:
@@ -39,7 +39,7 @@ def test_release_files_exist() -> None:
 
 
 def test_built_wheel_contains_runtime_and_entry_point() -> None:
-    wheels = sorted((ROOT / "dist").glob("moughorai-1.0.0-*.whl"))
+    wheels = sorted((ROOT / "dist").glob(f"moughorai-{__version__}-*.whl"))
     if not wheels:
         return
     with zipfile.ZipFile(wheels[-1]) as archive:

@@ -37,7 +37,7 @@ def test_export_has_sarif_schema_tool_and_invocation() -> None:
     assert value["$schema"] == SARIF_SCHEMA
     run = value["runs"][0]
     assert run["tool"]["driver"]["name"] == "Atlas"
-    assert run["tool"]["driver"]["version"] == "1.0.0"
+    assert run["tool"]["driver"]["version"] == "2.0.0"
     assert run["columnKind"] == "unicodeCodePoints"
     assert run["invocations"] == [{"executionSuccessful": True}]
 

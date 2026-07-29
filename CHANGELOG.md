@@ -332,3 +332,9 @@
 - Added project, worker, and force-analysis policy constraints with PR71 option parsing.
 - Added append-only, SHA-256-chained governance audit records and verification.
 - Added opt-in `atlas governance` audit validation without changing existing CLI authorization.
+## PR100 — Atlas 2.0 Stabilization
+
+- Promoted the canonical package, CLI, and SARIF tool version to Atlas 2.0.0.
+- Added end-to-end compatibility coverage across CLI, history, dashboard, CI, profiling, and governance.
+- Updated release documentation and retained plugin/rule API 1.x compatibility.
+- Added final packaging, deterministic-output, and clean-replay verification.
