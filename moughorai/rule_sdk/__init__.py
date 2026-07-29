@@ -10,6 +10,7 @@ from .runtime import (
     RuleRunner,
 )
 from .testing import ExpectedFinding, RuleTestCase, RuleTestHarness, RuleTestResult
+from .metadata import RuleCatalog, RuleMetadata, metadata_for, rule_metadata
 
 __all__ = [
     "Rule",
@@ -19,6 +20,8 @@ __all__ = [
     "ExpectedFinding",
     "RuleFinding",
     "RuleLocation",
+    "RuleCatalog",
+    "RuleMetadata",
     "RuleRegistry",
     "RuleReporter",
     "RuleRunner",
@@ -26,4 +29,6 @@ __all__ = [
     "RuleTestCase",
     "RuleTestHarness",
     "RuleTestResult",
+    "metadata_for",
+    "rule_metadata",
 ]

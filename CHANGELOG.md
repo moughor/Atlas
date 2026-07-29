@@ -260,3 +260,9 @@
 - Added exact and subset expected-finding matching.
 - Added clean/count assertions with descriptive failure output.
 - Added stable multi-case and multi-rule execution.
+# PR88 - Rule metadata
+
+- Added validated rule titles, descriptions, categories, tags, languages, and links.
+- Added enablement, deprecation, and replacement metadata.
+- Added decorator attachment and backward-compatible metadata synthesis.
+- Added deterministic rule catalogs and metadata filtering.
