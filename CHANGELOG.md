@@ -356,3 +356,8 @@
 - Bridged all workspace lifecycle events without changing event subscriptions.
 - Added recursive sensitive-field redaction and Atlas-only logger configuration.
 - Added CLI logging controls while preserving silent default output.
+## PR104 — Large-Workspace Benchmarks
+
+- Added a reproducible 23,000-file, multi-project benchmark using production indexing and workspace fingerprinting.
+- Added phase timings, throughput, peak-memory reporting, and deterministic content verification.
+- Kept generated corpora temporary by default and avoided machine-dependent performance test thresholds.
