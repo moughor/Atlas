@@ -10,6 +10,7 @@ from typing import Annotated, Any
 import typer
 
 from .cli_output import OutputFormat, render_report
+from .finding_baseline import FindingBaselineError, FindingBaselineService, FindingBaselineStore
 from .plugin_sdk import PluginDiscovery
 from .workspace import (
     Project,
@@ -104,12 +105,16 @@ def analyze(
     force: Annotated[bool, typer.Option("--force", help="Ignore reusable results.")] = False,
     recover: Annotated[bool, typer.Option("--recover/--no-recover", help="Resume a valid interrupted run.")] = True,
     output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format: text, json, jsonl, or sarif.")] = OutputFormat.TEXT,
+    baseline: Annotated[Path | None, typer.Option("--baseline", help="Report only findings absent from this baseline.")] = None,
+    write_baseline: Annotated[Path | None, typer.Option("--write-baseline", help="Write all current findings as a baseline.")] = None,
 ) -> None:
     """Analyze a workspace."""
-    _run_command(lambda: _emit_report(
-        _execute(_context(root), projects=tuple(project or ()), workers=workers, force=force, recover=recover),
-        output_format,
-    ))
+    def operation() -> None:
+        report = _execute(_context(root), projects=tuple(project or ()), workers=workers, force=force, recover=recover)
+        report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
+        _emit_report(report, output_format)
+
+    _run_command(operation)
 
 
 @app.command()
@@ -118,10 +123,13 @@ def check(
     project: Annotated[list[str] | None, typer.Option("--project", "-p", help="Project to check.")] = None,
     workers: Annotated[int, typer.Option("--workers", "-j", min=1, help="Maximum concurrent projects.")] = 1,
     output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format: text, json, jsonl, or sarif.")] = OutputFormat.TEXT,
+    baseline: Annotated[Path | None, typer.Option("--baseline", help="Report only findings absent from this baseline.")] = None,
+    write_baseline: Annotated[Path | None, typer.Option("--write-baseline", help="Write all current findings as a baseline.")] = None,
 ) -> None:
     """Analyze a workspace and fail when project analysis fails."""
     def operation() -> None:
         report = _execute(_context(root), projects=tuple(project or ()), workers=workers, force=False, recover=True)
+        report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
         _emit_report(report, output_format)
         if not report.succeeded:
             raise typer.Exit(code=1)
@@ -198,9 +206,24 @@ def _run_command(operation: Callable[[], None]) -> None:
         ValueError,
         WorkspaceConfigurationError,
         WorkspaceStateError,
+        FindingBaselineError,
     ) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+
+
+def _apply_baseline_options(
+    report: WorkspaceRunReport,
+    *,
+    baseline: Path | None,
+    write_baseline: Path | None,
+) -> WorkspaceRunReport:
+    service = FindingBaselineService()
+    if write_baseline is not None:
+        FindingBaselineStore(write_baseline).save(service.capture(report))
+    if baseline is not None:
+        report, _ = service.filter(report, FindingBaselineStore(baseline).load())
+    return report
 
 
 def _flatten(values: Mapping[str, Any], prefix: str = "") -> tuple[tuple[str, Any], ...]:

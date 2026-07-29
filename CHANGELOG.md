@@ -1,3 +1,11 @@
+## PR77 — Finding Baselines
+
+- Added cross-language finding baselines with stable project-aware fingerprints.
+- Added atomic, checksummed baseline persistence and strict schema validation.
+- Added deterministic new/existing comparison and filtering of accepted findings.
+- Integrated `--baseline` and `--write-baseline` with `atlas analyze` and `atlas check`.
+- Applied baseline filtering consistently to text, JSON, JSONL, and SARIF output.
+
 ## PR76 — CLI Output Formats
 
 - Added deterministic `text`, `json`, `jsonl`, and SARIF 2.1.0 output for `atlas analyze` and `atlas check`.
