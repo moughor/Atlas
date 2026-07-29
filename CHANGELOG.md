@@ -206,3 +206,9 @@
 - Connected debounced file changes to incremental dependency-aware analysis.
 - Preserved deterministic report ordering and concurrent project execution.
 - Kept the existing one-shot watch snapshot behavior for backward compatibility.
+# PR79 - Quality gates
+
+- Added report-level severity and finding-count quality gates.
+- Added independently configurable finding and analysis-failure exit codes.
+- Integrated workspace configuration, CLI overrides, and PR77 baseline filtering.
+- Preserved the prior `atlas check` behavior when no gate is configured.

@@ -12,6 +12,7 @@ import typer
 from .cli_output import OutputFormat, render_report
 from .finding_baseline import FindingBaselineError, FindingBaselineService, FindingBaselineStore
 from .plugin_sdk import PluginDiscovery
+from .quality_gate import FindingSeverity, QualityGatePolicy, WorkspaceQualityGate
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -126,14 +127,38 @@ def check(
     output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format: text, json, jsonl, or sarif.")] = OutputFormat.TEXT,
     baseline: Annotated[Path | None, typer.Option("--baseline", help="Report only findings absent from this baseline.")] = None,
     write_baseline: Annotated[Path | None, typer.Option("--write-baseline", help="Write all current findings as a baseline.")] = None,
+    fail_on: Annotated[FindingSeverity | None, typer.Option("--fail-on", help="Fail on findings at or above this severity.")] = None,
+    max_findings: Annotated[int | None, typer.Option("--max-findings", min=0, help="Maximum allowed findings.")] = None,
+    finding_exit_code: Annotated[int | None, typer.Option("--finding-exit-code", min=1, max=255)] = None,
+    analysis_exit_code: Annotated[int | None, typer.Option("--analysis-exit-code", min=1, max=255)] = None,
 ) -> None:
     """Analyze a workspace and fail when project analysis fails."""
     def operation() -> None:
-        report = _execute(_context(root), projects=tuple(project or ()), workers=workers, force=False, recover=True)
+        context = _context(root)
+        report = _execute(context, projects=tuple(project or ()), workers=workers, force=False, recover=True)
         report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
         _emit_report(report, output_format)
         if not report.succeeded:
-            raise typer.Exit(code=1)
+            policy = QualityGatePolicy.from_options(
+                dict(context.service.workspace.options),
+                minimum_severity=fail_on,
+                max_findings=max_findings,
+                finding_exit_code=finding_exit_code,
+                analysis_exit_code=analysis_exit_code,
+            )
+            raise typer.Exit(code=policy.analysis_exit_code)
+        policy = QualityGatePolicy.from_options(
+            dict(context.service.workspace.options),
+            minimum_severity=fail_on,
+            max_findings=max_findings,
+            finding_exit_code=finding_exit_code,
+            analysis_exit_code=analysis_exit_code,
+        )
+        gate = WorkspaceQualityGate().evaluate(report, policy)
+        if not gate.passed:
+            for reason in gate.reasons:
+                typer.echo(f"quality-gate: {reason}", err=True)
+            raise typer.Exit(code=gate.exit_code)
 
     _run_command(operation)
 
