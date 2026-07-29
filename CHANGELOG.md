@@ -1,3 +1,7 @@
+## PR68 — Incremental Workspace Watcher
+
+- Added portable workspace file snapshots, deterministic file events, rename detection, debounce/coalescing, and dependency-aware incremental invalidation plans.
+
 ## PR67 — Workspace & Project Model
 
 - Added deterministic multi-project workspace loading, discovery, dependency planning, impact analysis, and content snapshots.
