@@ -5,9 +5,15 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import logging
 from threading import RLock
 from typing import Any
 from uuid import uuid4
+
+from ..structured_logging import current_correlation_id, get_logger, log_event
+
+
+_logger = get_logger("workspace.events")
 
 
 class WorkspaceEventKind(str, Enum):
@@ -100,13 +106,14 @@ class _Subscription:
 class WorkspaceEventBus:
     """Thread-safe synchronous event bus with deterministic delivery order."""
 
-    def __init__(self, *, history_limit: int = 100) -> None:
+    def __init__(self, *, history_limit: int = 100, correlation_id: str | None = None) -> None:
         if history_limit < 0:
             raise ValueError("history_limit must be non-negative")
         self._subscriptions: dict[str, _Subscription] = {}
         self._history: deque[WorkspaceEvent] = deque(maxlen=history_limit)
         self._lock = RLock()
         self._counter = 0
+        self._correlation_id = correlation_id or current_correlation_id()
 
     @property
     def subscription_count(self) -> int:
@@ -170,6 +177,17 @@ class WorkspaceEventBus:
         with self._lock:
             self._history.append(event)
             subscriptions = sorted(self._subscriptions.values(), key=lambda item: (-item.priority, item.order))
+        level = logging.ERROR if event.kind is WorkspaceEventKind.ERROR else logging.INFO
+        log_event(
+            _logger,
+            level,
+            f"workspace.{event.kind.value}",
+            correlation_id=self._correlation_id,
+            event_id=event.event_id,
+            project=event.project,
+            source=event.source,
+            payload=event.payload,
+        )
         delivered: list[str] = []
         failures: list[EventDeliveryFailure] = []
         remove: list[str] = []

@@ -350,3 +350,9 @@
 - Added atomic batch insertion with all-or-nothing duplicate validation.
 - Added detached, immutable, versioned snapshots for multi-step readers.
 - Added contention, duplicate-race, concurrent removal, and invariant tests.
+## PR103 — Structured Logging
+
+- Added opt-in JSON/text logging with correlation IDs and stable event schemas.
+- Bridged all workspace lifecycle events without changing event subscriptions.
+- Added recursive sensitive-field redaction and Atlas-only logger configuration.
+- Added CLI logging controls while preserving silent default output.

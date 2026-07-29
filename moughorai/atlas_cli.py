@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -21,6 +22,7 @@ from .dashboard import DashboardService
 from .profiling import PerformanceProfiler
 from .adaptive_scheduler import AdaptiveWorkspaceScheduler
 from .governance import GovernanceAuditLog, GovernanceError
+from .structured_logging import LogFormat, LogLevel, configure_logging, get_logger, log_event
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -45,6 +47,7 @@ app = typer.Typer(
     help="Atlas modular static-analysis platform.",
     no_args_is_help=True,
 )
+_logger = get_logger("cli")
 
 
 @app.callback()
@@ -53,8 +56,20 @@ def root_callback(
         bool,
         typer.Option("--version", callback=_version_callback, is_eager=True, help="Show the Atlas version and exit."),
     ] = False,
+    log_level: Annotated[LogLevel, typer.Option("--log-level", help="Atlas log level; off preserves silent defaults.")] = LogLevel.OFF,
+    log_format: Annotated[LogFormat, typer.Option("--log-format", help="Log format: json or text.")] = LogFormat.JSON,
+    log_file: Annotated[Path | None, typer.Option("--log-file", help="Write Atlas logs to this file.")] = None,
+    correlation_id: Annotated[str | None, typer.Option("--correlation-id", help="Correlation ID for this invocation.")] = None,
 ) -> None:
     """Atlas modular static-analysis platform."""
+    active = configure_logging(
+        level=log_level,
+        output_format=log_format,
+        path=log_file,
+        correlation_id=correlation_id,
+    )
+    if active is not None:
+        log_event(_logger, logging.INFO, "cli.started", version=__version__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,6 +403,13 @@ def _run_command(operation: Callable[[], None]) -> None:
         HistoryDatabaseError,
         GovernanceError,
     ) as exc:
+        log_event(
+            _logger,
+            logging.ERROR,
+            "cli.command_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
