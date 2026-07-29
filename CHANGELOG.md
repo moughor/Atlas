@@ -302,3 +302,9 @@
 - Recorded stable run metadata and ordered per-project results after CLI filtering.
 - Added deterministic history queries, lookup, pagination, and retention pruning.
 - Added `atlas history` while preserving existing analysis report formats and exit codes.
+## PR95 — Dashboard
+
+- Added a self-contained HTML dashboard backed by the PR94 historical database.
+- Added stable run summaries, status metrics, finding counts, and project activity.
+- Added responsive, accessible rendering without external assets or network services.
+- Added `atlas dashboard` with deterministic output and bounded history selection.

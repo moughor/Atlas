@@ -17,6 +17,7 @@ from .quality_gate import FindingSeverity, QualityGatePolicy, WorkspaceQualityGa
 from .version import __version__
 from .git_diff import GitDiffError, GitDiffFilter, GitDiffService
 from .history import HistoryDatabase, HistoryDatabaseError
+from .dashboard import DashboardService
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -304,6 +305,20 @@ def history_command(
                 f"{'succeeded' if run.succeeded else 'failed'} projects={len(run.runs)}"
             )
         typer.echo(f"runs: {len(runs)}")
+
+    _run_command(operation)
+
+
+@app.command("dashboard")
+def dashboard_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    output: Annotated[Path, typer.Option("--output", "-o", help="Dashboard HTML path.")] = Path(".atlas/dashboard.html"),
+    limit: Annotated[int, typer.Option("--limit", min=0, help="Maximum historical runs.")] = 100,
+) -> None:
+    """Generate a self-contained historical dashboard."""
+    def operation() -> None:
+        target = DashboardService(HistoryDatabase(root)).generate(output, limit=limit)
+        typer.echo(target.as_posix())
 
     _run_command(operation)
 
