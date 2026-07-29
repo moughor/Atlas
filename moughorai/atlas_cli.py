@@ -29,6 +29,7 @@ from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
 from .ai_review import ReviewEngine, ReviewRequest
 from .ai_ask import AskEngine, AskRequest
+from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
@@ -518,9 +519,22 @@ def ai_review_command(
 def ai_fix_command(
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
     snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
+    objective: Annotated[str, typer.Option("--objective", "-o", help="Requested code change.")] = "Fix verified diagnostics.",
 ) -> None:
-    """Propose a validated fix (engine delivered by PR117)."""
-    _future_ai_engine("fix", root, snapshot)
+    """Propose and validate a Git patch without applying it."""
+    def operation() -> None:
+        loaded = _load_ai_snapshot(root, snapshot)
+        provider = (_ai_provider_factory or OllamaProvider)()
+        try:
+            result = PatchEngine(LlmClient(provider), GitPatchValidator(root)).propose(
+                loaded, PatchRequest(objective)
+            )
+            typer.echo(result.patch, nl=False)
+        finally:
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
+    _run_command(operation)
 
 
 def _run_command(operation: Callable[[], None]) -> None:

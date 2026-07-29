@@ -451,3 +451,7 @@ complete implementation detail.
 
 - Added grounded semantic questions with bounded conversation context.
 - Activated `atlas ai ask` with durable follow-up memory.
+## PR117 — Patch Engine
+
+- Added grounded Git patch proposals with strict diff/path validation.
+- Activated non-applying `atlas ai fix` with `git apply --check`.
