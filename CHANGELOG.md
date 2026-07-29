@@ -459,3 +459,7 @@ complete implementation detail.
 
 - Added deterministic branch, changes, commits, blame, PR metadata, and snapshot IDs.
 - Added `atlas ai git-context`.
+## PR119 — IDE Assistant
+
+- Added a shared ASS-based protocol for five supported IDEs.
+- Added semantic navigation and safe routing to Atlas AI engines.
