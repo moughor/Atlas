@@ -1,6 +1,7 @@
 from .diagnostics import DiagnosticPublisher, finding_to_diagnostic, offset_to_position, offsets_to_range
 from .code_actions import CodeAction, CodeActionProvider, DefaultCodeActionProvider
 from .configuration_sync import ConfigurationSyncState, flatten_settings
+from .progress import ProgressTask, WorkDoneProgressReporter
 from .editor import DocumentChangeSet, TextChange, apply_document_changes, position_to_offset
 from .incremental_server import IncrementalWorkspaceAnalyzer, IncrementalWorkspaceLanguageServer
 from .models import Diagnostic, DiagnosticSeverity, Position, PublishDiagnostics, Range, TextDocument
@@ -13,7 +14,8 @@ __all__ = [
     "CodeAction", "CodeActionProvider", "ConfigurationSyncState",
     "DefaultCodeActionProvider", "DocumentChangeSet",
     "IncrementalWorkspaceAnalyzer", "IncrementalWorkspaceLanguageServer",
+    "ProgressTask",
     "TextChange", "WorkspaceAnalyzer", "WorkspaceLanguageServer", "apply_document_changes",
     "finding_to_diagnostic", "offset_to_position", "offsets_to_range",
-    "flatten_settings", "position_to_offset", "uri_to_path",
+    "WorkDoneProgressReporter", "flatten_settings", "position_to_offset", "uri_to_path",
 ]

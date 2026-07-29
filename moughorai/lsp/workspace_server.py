@@ -10,6 +10,7 @@ from moughorai.workspace import Project, ResolvedConfiguration, WorkspaceService
 from .models import TextDocument
 from .server import AtlasLanguageServer, LspProtocolError
 from .configuration_sync import ConfigurationSyncState
+from .progress import WorkDoneProgressReporter
 
 
 WorkspaceAnalyzer = Callable[[TextDocument, Project, ResolvedConfiguration], Iterable[Any]]
@@ -24,6 +25,7 @@ class WorkspaceLanguageServer(AtlasLanguageServer):
         self._folders: tuple[str, ...] = (self.service.workspace.root.as_uri(),)
         self._configuration = ConfigurationSyncState()
         self._outgoing: list[dict[str, Any]] = []
+        self.progress = WorkDoneProgressReporter(self._outgoing.append)
         super().__init__(self._analyze)
 
     @property
@@ -63,6 +65,7 @@ class WorkspaceLanguageServer(AtlasLanguageServer):
                     "capabilities": {
                         "textDocumentSync": 1,
                         "codeActionProvider": True,
+                        "window": {"workDoneProgress": True},
                         "diagnosticProvider": {
                             "identifier": "atlas",
                             "interFileDependencies": True,
@@ -96,7 +99,20 @@ class WorkspaceLanguageServer(AtlasLanguageServer):
             if method == "workspace/configuration":
                 return self._response(request_id, self._configuration_values(message.get("params", {})))
             if method == "workspace/diagnostic":
-                return self._response(request_id, {"items": [self._workspace_item(document) for document in self.documents]})
+                documents = self.documents
+                task = self.progress.begin("Atlas workspace diagnostics", total=len(documents))
+                items = []
+                for document in documents:
+                    if task.cancelled:
+                        break
+                    items.append(self._workspace_item(document))
+                    task.advance(document.uri)
+                task.end("Cancelled" if task.cancelled else "Completed")
+                return self._response(request_id, {"items": items})
+            if method == "window/workDoneProgress/cancel":
+                params = message.get("params", {})
+                self.progress.cancel(str(params["token"]))
+                return None
             return super().handle(message)
         except (KeyError, TypeError, ValueError) as exc:
             if request_id is None:

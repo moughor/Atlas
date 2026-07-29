@@ -242,3 +242,9 @@
 - Added scoped `workspace/configuration` responses.
 - Added watched `atlas.yaml` reload with rollback on invalid configuration.
 - Added deterministic diagnostic republishing and notification draining.
+# PR85 - LSP progress reporting
+
+- Added deterministic LSP work-done progress tokens and lifecycle messages.
+- Added percentage, message, completion, and cancellation state.
+- Integrated progress reporting with workspace diagnostics in URI order.
+- Added notification queue delivery through the PR84 LSP flow.
