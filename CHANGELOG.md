@@ -272,3 +272,9 @@
 - Added deterministic fix planning, stale-source checks, and conflict detection.
 - Added in-memory preview/application with review gating.
 - Added root-confined, staged file application with rollback on replacement errors.
+# PR90 - Rule pack builder
+
+- Added validated rule pack specifications and explicit rule entry points.
+- Added canonical metadata manifests with per-file sizes and SHA-256 hashes.
+- Added byte-reproducible ZIP construction with fixed timestamps and permissions.
+- Added archive schema, path, declaration, size, and checksum verification.

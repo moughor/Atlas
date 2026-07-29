@@ -22,6 +22,14 @@ from .fixes import (
     RuleFix,
     SourceEdit,
 )
+from .pack import (
+    RULE_PACK_SCHEMA_VERSION,
+    RulePackBuildResult,
+    RulePackBuilder,
+    RulePackError,
+    RulePackReader,
+    RulePackSpec,
+)
 
 __all__ = [
     "AutoFixError",
@@ -41,6 +49,12 @@ __all__ = [
     "RuleFix",
     "RuleCatalog",
     "RuleMetadata",
+    "RULE_PACK_SCHEMA_VERSION",
+    "RulePackBuildResult",
+    "RulePackBuilder",
+    "RulePackError",
+    "RulePackReader",
+    "RulePackSpec",
     "RuleRegistry",
     "RuleReporter",
     "RuleRunner",
