@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 import typer
 
+from .cli_output import OutputFormat, render_report
 from .plugin_sdk import PluginDiscovery
 from .workspace import (
     Project,
@@ -71,11 +72,8 @@ def _analyzer(service: WorkspaceService) -> Analyzer:
     return (_analyzer_factory or _default_analyzer)(service)
 
 
-def _emit_report(report: WorkspaceRunReport) -> None:
-    for run in report.runs:
-        typer.echo(f"{run.project}: {run.status.value}")
-    typer.echo(f"projects: {len(report.runs)}")
-    typer.echo(f"succeeded: {'yes' if report.succeeded else 'no'}")
+def _emit_report(report: WorkspaceRunReport, output_format: OutputFormat = OutputFormat.TEXT) -> None:
+    typer.echo(render_report(report, output_format))
 
 
 def _execute(
@@ -105,9 +103,13 @@ def analyze(
     workers: Annotated[int, typer.Option("--workers", "-j", min=1, help="Maximum concurrent projects.")] = 1,
     force: Annotated[bool, typer.Option("--force", help="Ignore reusable results.")] = False,
     recover: Annotated[bool, typer.Option("--recover/--no-recover", help="Resume a valid interrupted run.")] = True,
+    output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format: text, json, jsonl, or sarif.")] = OutputFormat.TEXT,
 ) -> None:
     """Analyze a workspace."""
-    _run_command(lambda: _emit_report(_execute(_context(root), projects=tuple(project or ()), workers=workers, force=force, recover=recover)))
+    _run_command(lambda: _emit_report(
+        _execute(_context(root), projects=tuple(project or ()), workers=workers, force=force, recover=recover),
+        output_format,
+    ))
 
 
 @app.command()
@@ -115,11 +117,12 @@ def check(
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
     project: Annotated[list[str] | None, typer.Option("--project", "-p", help="Project to check.")] = None,
     workers: Annotated[int, typer.Option("--workers", "-j", min=1, help="Maximum concurrent projects.")] = 1,
+    output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format: text, json, jsonl, or sarif.")] = OutputFormat.TEXT,
 ) -> None:
     """Analyze a workspace and fail when project analysis fails."""
     def operation() -> None:
         report = _execute(_context(root), projects=tuple(project or ()), workers=workers, force=False, recover=True)
-        _emit_report(report)
+        _emit_report(report, output_format)
         if not report.succeeded:
             raise typer.Exit(code=1)
 

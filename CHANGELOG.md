@@ -1,3 +1,11 @@
+## PR76 — CLI Output Formats
+
+- Added deterministic `text`, `json`, `jsonl`, and SARIF 2.1.0 output for `atlas analyze` and `atlas check`.
+- Added stable structured report payloads that omit timing-dependent fields.
+- Added one-record-per-project JSONL output with a final summary record.
+- Added sorted SARIF findings, rule metadata, severity mapping, locations, and analysis metadata.
+- Preserved PR75 plain-text output and command exit-code behavior.
+
 ## PR75 — Unified CLI
 
 - Added the `atlas` executable with `analyze`, `check`, `watch`, `config`, and `plugins` commands.

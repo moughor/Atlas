@@ -185,10 +185,10 @@ def test_existing_moughorai_entry_point_is_preserved() -> None:
     assert 'atlas = "moughorai.atlas_cli:main"' in text
 
 
-def test_plain_text_only_has_no_pr76_format_option() -> None:
+def test_pr76_format_option_is_available_after_upgrade() -> None:
     result = runner.invoke(app, ["analyze", "--help"])
     assert result.exit_code == 0
-    assert "--format" not in result.stdout
+    assert "--format" in result.stdout
 
 
 def test_default_analyzer_counts_included_files(tmp_path: Path) -> None:
