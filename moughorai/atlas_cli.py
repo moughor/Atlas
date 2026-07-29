@@ -27,6 +27,7 @@ from .structured_logging import LogFormat, LogLevel, configure_logging, get_logg
 from .semantic_snapshot import SemanticSnapshotError, SemanticSnapshotStore
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
+from .ai_review import ReviewEngine, ReviewRequest
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
@@ -483,9 +484,21 @@ def ai_ask_command(
 def ai_review_command(
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
     snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
+    category: Annotated[list[str] | None, typer.Option("--category", "-c")] = None,
 ) -> None:
-    """Review snapshot knowledge (engine delivered by PR115)."""
-    _future_ai_engine("review", root, snapshot)
+    """Review architecture using verified semantic knowledge."""
+    def operation() -> None:
+        loaded = _load_ai_snapshot(root, snapshot)
+        provider = (_ai_provider_factory or OllamaProvider)()
+        try:
+            request = ReviewRequest(categories=tuple(category)) if category else ReviewRequest()
+            result = ReviewEngine(LlmClient(provider), memory=ConversationMemoryStore(root)).review(loaded, request)
+            typer.echo(result.markdown)
+        finally:
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
+    _run_command(operation)
 
 
 @ai_app.command("fix")

@@ -443,3 +443,7 @@ complete implementation detail.
 
 - Added grounded Markdown explanations from ASS through the provider abstraction.
 - Activated `atlas ai explain` with optional conversation-memory recording.
+## PR115 — Review Engine
+
+- Added semantic architecture reviews with deterministic category selection.
+- Activated `atlas ai review` and conversation-memory recording.
