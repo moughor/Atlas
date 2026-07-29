@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 
 from .events import FileEvent, FileEventKind
+from .event_bus import WorkspaceEventBus, WorkspaceEventKind
 from .models import Project, Workspace
 
 
@@ -33,12 +34,14 @@ class WorkspaceWatcher:
         *,
         clock_ns: Callable[[], int] = time.time_ns,
         debounce_ms: int = 100,
+        event_bus: WorkspaceEventBus | None = None,
     ) -> None:
         if debounce_ms < 0:
             raise ValueError("debounce_ms must be non-negative")
         self.workspace = workspace
         self.clock_ns = clock_ns
         self.debounce_ns = debounce_ms * 1_000_000
+        self.event_bus = event_bus
         self._snapshot: WatchSnapshot | None = None
         self._pending: dict[tuple[str, Path], FileEvent] = {}
         self._last_seen_ns: dict[tuple[str, Path], int] = {}
@@ -70,7 +73,14 @@ class WorkspaceWatcher:
         detected = self.diff(self._snapshot, current, timestamp_ns=timestamp)
         self._snapshot = current
         self._enqueue(detected, timestamp)
-        return self.flush(now_ns=timestamp, force=flush)
+        events = self.flush(now_ns=timestamp, force=flush)
+        if events and self.event_bus is not None:
+            self.event_bus.emit(
+                WorkspaceEventKind.FILES_CHANGED,
+                source="workspace.watcher",
+                payload={"events": [event.to_dict(root=self.workspace.root) for event in events]},
+            )
+        return events
 
     def flush(self, *, now_ns: int | None = None, force: bool = False) -> tuple[FileEvent, ...]:
         timestamp = self.clock_ns() if now_ns is None else now_ns

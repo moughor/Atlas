@@ -158,3 +158,6 @@
 - Added guaranteed-return and missing-return analysis.
 - Added invalid break/continue validation and infinite-loop detection.
 - Added 52 focused regression tests.
+## PR72 — Workspace Event Bus
+
+- Added a thread-safe deterministic workspace event bus with filtering, priorities, one-shot subscriptions, bounded history, and structured delivery reports.

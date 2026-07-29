@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .events import FileEvent
+from .event_bus import WorkspaceEventKind
 from .models import Project
 from .service import WorkspaceService
 
@@ -41,11 +42,23 @@ class IncrementalWorkspacePlanner:
         impacted = self.service.impacted_projects(changed)
         invalidated = tuple(project.name for project in impacted)
         self.invalidate(invalidated)
-        return IncrementalPlan(events, changed, invalidated, impacted)
+        plan = IncrementalPlan(events, changed, invalidated, impacted)
+        self.service.events.emit(
+            WorkspaceEventKind.PLAN_CREATED,
+            source="workspace.incremental",
+            payload=plan.to_dict(),
+        )
+        return plan
 
     def invalidate(self, projects: tuple[str, ...] | list[str] | set[str]) -> tuple[str, ...]:
         removed = tuple(sorted(self._valid_projects.intersection(projects)))
         self._valid_projects.difference_update(projects)
+        if removed:
+            self.service.events.emit(
+                WorkspaceEventKind.CACHE_INVALIDATED,
+                source="workspace.incremental",
+                payload={"projects": list(removed)},
+            )
         return removed
 
     def mark_valid(self, project: str) -> None:

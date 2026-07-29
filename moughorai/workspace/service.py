@@ -8,13 +8,15 @@ from .discovery import WorkspaceDiscovery
 from .graph import DependencyGraph
 from .models import Project, Workspace
 from .configuration import ResolvedConfiguration, WorkspaceConfigurationResolver
+from .event_bus import WorkspaceEventBus, WorkspaceEventKind
 
 
 class WorkspaceService:
-    def __init__(self, root: Path | str, *, max_depth: int = 4) -> None:
+    def __init__(self, root: Path | str, *, max_depth: int = 4, event_bus: WorkspaceEventBus | None = None) -> None:
         self.workspace = WorkspaceDiscovery().discover(root, max_depth=max_depth)
         self.graph = DependencyGraph(self.workspace)
         self.cache = WorkspaceCache()
+        self.events = event_bus or WorkspaceEventBus()
 
     def project(self, name: str) -> Project:
         return self.workspace.get(name)
@@ -38,12 +40,19 @@ class WorkspaceService:
 
     def resolved_configuration(self, project: str, *, global_values=None, cli_overrides=None) -> ResolvedConfiguration:
         target = self.project(project)
-        return WorkspaceConfigurationResolver().for_project(
+        resolved = WorkspaceConfigurationResolver().for_project(
             global_values=global_values,
             workspace_values=dict(self.workspace.options),
             project_values=dict(target.options),
             cli_overrides=cli_overrides,
         )
+        self.events.emit(
+            WorkspaceEventKind.CONFIGURATION_RESOLVED,
+            project=project,
+            source="workspace.configuration",
+            payload={"keys": sorted(resolved.values)},
+        )
+        return resolved
 
     def snapshot(self) -> WorkspaceSnapshot:
         return self.cache.snapshot(self.workspace)

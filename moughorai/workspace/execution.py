@@ -7,6 +7,7 @@ from time import monotonic
 from typing import Any
 
 from .incremental import IncrementalPlan, IncrementalWorkspacePlanner
+from .event_bus import WorkspaceEventKind
 from .models import Project
 from .persistence import WorkspaceRestoreReport, WorkspaceStateStore
 from .service import WorkspaceService
@@ -127,7 +128,18 @@ class WorkspaceAnalysisOrchestrator:
     ) -> WorkspaceRunReport:
         requested = tuple(sorted(set(projects or self.service.workspace.names())))
         order = self.service.analysis_order(requested, include_dependencies=include_dependencies)
-        return self._execute_order(order, requested, analyzer, force=force, cancelled=cancelled)
+        self.service.events.emit(
+            WorkspaceEventKind.ANALYSIS_STARTED,
+            source="workspace.execution",
+            payload={"requested": list(requested), "analysis_order": [project.name for project in order]},
+        )
+        report = self._execute_order(order, requested, analyzer, force=force, cancelled=cancelled)
+        self.service.events.emit(
+            WorkspaceEventKind.ANALYSIS_COMPLETED,
+            source="workspace.execution",
+            payload=report.to_dict(),
+        )
+        return report
 
     def execute_plan(
         self,
@@ -160,6 +172,12 @@ class WorkspaceAnalysisOrchestrator:
         values: dict[str, Any] = dict(self._results)
 
         for project in order:
+            self.service.events.emit(
+                WorkspaceEventKind.PROJECT_STARTED,
+                project=project.name,
+                source="workspace.execution",
+                payload={"dependencies": list(project.dependencies)},
+            )
             if cancelled is not None and cancelled():
                 run = ProjectRun(project.name, ProjectRunStatus.CANCELLED)
                 runs.append(run)
@@ -175,6 +193,9 @@ class WorkspaceAnalysisOrchestrator:
                 run = ProjectRun(project.name, ProjectRunStatus.BLOCKED, blocked_by=blocked_by)
                 runs.append(run)
                 status[project.name] = run.status
+                self.service.events.emit(
+                    WorkspaceEventKind.PROJECT_BLOCKED, project=project.name, source="workspace.execution", payload=run.to_dict()
+                )
                 continue
 
             if not force and project.name in self._results and project.name in self.planner.valid_projects:
@@ -200,6 +221,8 @@ class WorkspaceAnalysisOrchestrator:
                 run = ProjectRun(project.name, ProjectRunStatus.SUCCEEDED, value=value, duration_ms=elapsed)
             runs.append(run)
             status[project.name] = run.status
+            event_kind = WorkspaceEventKind.PROJECT_FAILED if run.status is ProjectRunStatus.FAILED else WorkspaceEventKind.PROJECT_COMPLETED
+            self.service.events.emit(event_kind, project=project.name, source="workspace.execution", payload=run.to_dict())
 
         return WorkspaceRunReport(
             tuple(runs),

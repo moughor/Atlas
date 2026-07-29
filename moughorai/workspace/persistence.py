@@ -11,6 +11,7 @@ import tempfile
 from typing import Any
 
 from .cache import WorkspaceCache, WorkspaceSnapshot
+from .event_bus import WorkspaceEventKind
 from .service import WorkspaceService
 
 STATE_SCHEMA_VERSION = 1
@@ -138,6 +139,11 @@ class WorkspaceStateStore:
         finally:
             if temp_path.exists():
                 temp_path.unlink()
+        self.service.events.emit(
+            WorkspaceEventKind.STATE_SAVED,
+            source="workspace.persistence",
+            payload={"path": str(self.path), "projects": list(state.valid_projects)},
+        )
         return self.path
 
     def load(self) -> WorkspacePersistentState | None:
@@ -177,7 +183,13 @@ class WorkspaceStateStore:
                 restored[name] = self.decoder(result_map[name])
             except Exception as exc:
                 raise WorkspaceStateError(f"cannot decode result for project {name!r}: {exc}") from exc
-        return restored, WorkspaceRestoreReport(tuple(sorted(restored)), tuple(invalidated), tuple(ignored), True)
+        report = WorkspaceRestoreReport(tuple(sorted(restored)), tuple(invalidated), tuple(ignored), True)
+        self.service.events.emit(
+            WorkspaceEventKind.STATE_RESTORED,
+            source="workspace.persistence",
+            payload=report.to_dict(),
+        )
+        return restored, report
 
     def delete(self) -> bool:
         if not self.path.exists():
