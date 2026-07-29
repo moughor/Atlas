@@ -212,3 +212,9 @@
 - Added independently configurable finding and analysis-failure exit codes.
 - Integrated workspace configuration, CLI overrides, and PR77 baseline filtering.
 - Preserved the prior `atlas check` behavior when no gate is configured.
+# PR80 - Atlas 1.0 packaging
+
+- Promoted the distribution and runtime version to 1.0.0.
+- Corrected setuptools discovery to package the repository's actual modules.
+- Added release metadata, README, MIT license, and canonical version API.
+- Added `atlas --version` and verified the built wheel and console entry point.

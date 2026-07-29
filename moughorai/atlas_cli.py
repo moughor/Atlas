@@ -13,6 +13,7 @@ from .cli_output import OutputFormat, render_report
 from .finding_baseline import FindingBaselineError, FindingBaselineService, FindingBaselineStore
 from .plugin_sdk import PluginDiscovery
 from .quality_gate import FindingSeverity, QualityGatePolicy, WorkspaceQualityGate
+from .version import __version__
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -26,11 +27,27 @@ from .workspace import (
 )
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"Atlas {__version__}")
+        raise typer.Exit()
+
+
 app = typer.Typer(
     name="atlas",
     help="Atlas modular static-analysis platform.",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def root_callback(
+    version: Annotated[
+        bool,
+        typer.Option("--version", callback=_version_callback, is_eager=True, help="Show the Atlas version and exit."),
+    ] = False,
+) -> None:
+    """Atlas modular static-analysis platform."""
 
 
 @dataclass(frozen=True, slots=True)
