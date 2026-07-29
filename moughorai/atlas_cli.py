@@ -32,6 +32,7 @@ from .ai_ask import AskEngine, AskRequest
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
 from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
+from .ai_context import SemanticContextCollector
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
@@ -179,7 +180,12 @@ def analyze(
         report = _execute(context, projects=selected, workers=actual_workers, force=force, recover=recover)
         report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
         report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
-        HistoryDatabase(root).record(report)
+        history = HistoryDatabase(root)
+        run_id = history.record(report)
+        if report.succeeded:
+            collected = SemanticContextCollector(context.service).collect(report)
+            store = SemanticSnapshotStore(context.service.workspace)
+            store.save(store.capture(collected.context, history_reference=run_id))
         _emit_report(report, output_format)
 
     _run_command(operation)

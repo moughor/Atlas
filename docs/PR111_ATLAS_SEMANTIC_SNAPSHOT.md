@@ -23,3 +23,10 @@ context = WorkspaceContextBuilder.from_snapshot(loaded)
 The format contains no provider configuration or source text added by the
 snapshot layer. Existing history, workspace-state, and recovery files remain
 unchanged.
+
+## Runtime publication
+
+Successful `atlas analyze` runs pass their real analyzer artifacts through
+`SemanticContextCollector`. The collector indexes Java symbols and aggregates
+compatible diagnostics and semantic type tables before atomically publishing
+`latest.ass`. Failed analyses never replace the latest successful snapshot.

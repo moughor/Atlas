@@ -14,3 +14,6 @@ manifest. The manifest intentionally does not claim OpenAI or Anthropic support.
 
 The LLM reasons over verified semantic data. Atlas remains the owner of facts,
 and patch proposals remain subject to deterministic validation.
+
+`atlas analyze` now completes the runtime pipeline by collecting semantic
+artifacts and publishing `.atlas/ass/latest.ass` after successful analysis.

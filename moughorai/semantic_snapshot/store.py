@@ -67,9 +67,13 @@ class SemanticSnapshotStore:
             self.directory.mkdir(parents=True, exist_ok=True)
             if historical.exists():
                 if historical.read_text(encoding="utf-8") != text:
-                    raise SemanticSnapshotError(
-                        f"immutable semantic snapshot already exists: {historical.name}"
-                    )
+                    historical = self.directory / f"{timestamp}-{snapshot.snapshot_id[:12]}.ass"
+                    if historical.exists() and historical.read_text(encoding="utf-8") != text:
+                        raise SemanticSnapshotError(
+                            f"semantic snapshot identifier collision: {historical.name}"
+                        )
+                    if not historical.exists():
+                        self._atomic_write(historical, text, replace=False)
             else:
                 self._atomic_write(historical, text, replace=False)
             self._atomic_write(self.latest_path, text, replace=True)

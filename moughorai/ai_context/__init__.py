@@ -2,5 +2,16 @@
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
+from .collector import (
+    CollectedSemanticContext,
+    SemanticCollectionReport,
+    SemanticContextCollector,
+)
 
-__all__ = ["WorkspaceContextBuilder", "WorkspaceSemanticContext"]
+__all__ = [
+    "CollectedSemanticContext",
+    "SemanticCollectionReport",
+    "SemanticContextCollector",
+    "WorkspaceContextBuilder",
+    "WorkspaceSemanticContext",
+]

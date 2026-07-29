@@ -468,3 +468,9 @@ complete implementation detail.
 - Released the stable `moughorai.ai` facade and capability manifest.
 - Added `atlas ai version` and end-to-end release verification.
 - Documented Ollama as the only currently implemented AI provider.
+## AI context pipeline integration fix
+
+- Connected successful `atlas analyze` runs to PR108 semantic collection and
+  PR111 ASS publication.
+- Added real Java symbol aggregation plus compatible diagnostic/type collection.
+- Ensured failed analyses cannot replace `latest.ass`.

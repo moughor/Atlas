@@ -53,13 +53,15 @@ def test_save_writes_immutable_history_and_latest(tmp_path: Path) -> None:
     assert store.load(historical) == snapshot
 
 
-def test_same_timestamp_cannot_overwrite_different_snapshot(tmp_path: Path) -> None:
+def test_same_timestamp_preserves_both_immutable_snapshots(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     store = SemanticSnapshotStore(workspace, clock=lambda: NOW)
     store.save(store.capture(_context(workspace)))
     changed = WorkspaceContextBuilder().build(workspace, diagnostics=(Diagnostic("B2", "changed"),))
-    with pytest.raises(SemanticSnapshotError, match="immutable"):
-        store.save(store.capture(changed))
+    second = store.save(store.capture(changed))
+    assert second.name.startswith("2026-07-29T20-52-57Z-")
+    assert len(store.list()) == 2
+    assert store.load(second).semantic_context["diagnostics"][0]["code"] == "B2"
 
 
 def test_context_builder_consumes_loaded_snapshot(tmp_path: Path) -> None:
