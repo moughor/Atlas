@@ -50,6 +50,7 @@ class WorkspaceLanguageServer(AtlasLanguageServer):
                 return self._response(request_id, {
                     "capabilities": {
                         "textDocumentSync": 1,
+                        "codeActionProvider": True,
                         "diagnosticProvider": {
                             "identifier": "atlas",
                             "interFileDependencies": True,

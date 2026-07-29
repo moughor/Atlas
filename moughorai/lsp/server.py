@@ -5,6 +5,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from .diagnostics import DiagnosticPublisher
 from .models import TextDocument
+from .code_actions import CodeActionProvider, DefaultCodeActionProvider
 
 
 class LspProtocolError(ValueError):
@@ -12,8 +13,14 @@ class LspProtocolError(ValueError):
 
 
 class AtlasLanguageServer:
-    def __init__(self, analyzer: Callable[[TextDocument], Iterable[Any]]) -> None:
+    def __init__(
+        self,
+        analyzer: Callable[[TextDocument], Iterable[Any]],
+        *,
+        code_action_provider: CodeActionProvider | None = None,
+    ) -> None:
         self.publisher = DiagnosticPublisher(analyzer)
+        self.code_action_provider = code_action_provider or DefaultCodeActionProvider()
         self._documents: dict[str, TextDocument] = {}
 
     @property
@@ -26,7 +33,7 @@ class AtlasLanguageServer:
         request_id = message.get("id")
         try:
             if method == "initialize":
-                result = {"capabilities": {"textDocumentSync": 1, "diagnosticProvider": {"interFileDependencies": False, "workspaceDiagnostics": False}}}
+                result = {"capabilities": {"textDocumentSync": 1, "codeActionProvider": True, "diagnosticProvider": {"interFileDependencies": False, "workspaceDiagnostics": False}}}
                 return self._response(request_id, result)
             if method == "shutdown":
                 return self._response(request_id, None)
@@ -48,6 +55,21 @@ class AtlasLanguageServer:
                 document = self._documents.pop(uri, None)
                 version = document.version if document else 0
                 return self._notification("textDocument/publishDiagnostics", self.publisher.clear(uri, version=version).to_dict())
+            if method == "textDocument/codeAction":
+                uri = params["textDocument"]["uri"]
+                document = self._documents.get(uri)
+                if document is None:
+                    raise LspProtocolError(f"document is not open: {uri}")
+                payload = self.publisher.last(uri)
+                diagnostics = payload.diagnostics if payload is not None else ()
+                requested = params.get("context", {}).get("only", ())
+                actions = tuple(self.code_action_provider.actions(document, diagnostics))
+                if requested:
+                    actions = tuple(
+                        action for action in actions
+                        if any(action.kind == kind or action.kind.startswith(f"{kind}.") for kind in requested)
+                    )
+                return self._response(request_id, [action.to_dict() for action in actions])
             if method == "exit":
                 return None
             raise LspProtocolError(f"method not supported: {method}")

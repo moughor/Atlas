@@ -230,3 +230,9 @@
 - Added incremental workspace analyzer callbacks with normalized change sets.
 - Added full-analysis fallback for existing PR81 analyzers.
 - Added deterministic publication of incremental findings.
+# PR83 - LSP code actions
+
+- Added deterministic explain, suppress, and rescan actions for diagnostics.
+- Added LSP code-action capability advertisement and context filtering.
+- Added a provider protocol for host-defined code actions.
+- Kept actions command-based; source auto-fixes remain reserved for PR89.
