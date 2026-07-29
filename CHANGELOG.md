@@ -1,3 +1,10 @@
+## PR73 — Concurrent Project Execution
+
+- Added dependency-aware parallel workspace analysis with configurable worker limits.
+- Preserved deterministic topological report ordering across concurrent completion.
+- Added cancellation, fail-fast scheduling, cache reuse, failure blocking, and incremental-plan support.
+- Added regression coverage for concurrency limits, events, dependency results, and sequential compatibility.
+
 ## PR71 — Workspace Configuration Layers
 
 - Added deterministic layered workspace configuration resolution.

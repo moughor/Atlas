@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from enum import Enum
 from time import monotonic
@@ -125,6 +126,8 @@ class WorkspaceAnalysisOrchestrator:
         include_dependencies: bool = True,
         force: bool = False,
         cancelled: Callable[[], bool] | None = None,
+        max_workers: int = 1,
+        fail_fast: bool = False,
     ) -> WorkspaceRunReport:
         requested = tuple(sorted(set(projects or self.service.workspace.names())))
         order = self.service.analysis_order(requested, include_dependencies=include_dependencies)
@@ -133,7 +136,14 @@ class WorkspaceAnalysisOrchestrator:
             source="workspace.execution",
             payload={"requested": list(requested), "analysis_order": [project.name for project in order]},
         )
-        report = self._execute_order(order, requested, analyzer, force=force, cancelled=cancelled)
+        if max_workers < 1:
+            raise ValueError("max_workers must be at least 1")
+        if max_workers == 1:
+            report = self._execute_order(order, requested, analyzer, force=force, cancelled=cancelled)
+        else:
+            report = self._execute_concurrent(
+                order, requested, analyzer, force=force, cancelled=cancelled, max_workers=max_workers, fail_fast=fail_fast
+            )
         self.service.events.emit(
             WorkspaceEventKind.ANALYSIS_COMPLETED,
             source="workspace.execution",
@@ -147,9 +157,18 @@ class WorkspaceAnalysisOrchestrator:
         analyzer: Callable[[Project, Mapping[str, Any]], Any],
         *,
         cancelled: Callable[[], bool] | None = None,
+        max_workers: int = 1,
+        fail_fast: bool = False,
     ) -> WorkspaceRunReport:
+        if max_workers < 1:
+            raise ValueError("max_workers must be at least 1")
         self.invalidate(plan.invalidated)
-        report = self._execute_order(plan.analysis_order, plan.directly_changed, analyzer, force=True, cancelled=cancelled)
+        if max_workers == 1:
+            report = self._execute_order(plan.analysis_order, plan.directly_changed, analyzer, force=True, cancelled=cancelled)
+        else:
+            report = self._execute_concurrent(
+                plan.analysis_order, plan.directly_changed, analyzer, force=True, cancelled=cancelled, max_workers=max_workers, fail_fast=fail_fast
+            )
         if report.succeeded:
             self.planner.mark_plan_valid(plan)
         else:
@@ -157,6 +176,134 @@ class WorkspaceAnalysisOrchestrator:
                 if run.successful:
                     self.planner.mark_valid(run.project)
         return report
+
+
+    def _execute_concurrent(
+        self,
+        order: tuple[Project, ...],
+        requested: tuple[str, ...],
+        analyzer: Callable[[Project, Mapping[str, Any]], Any],
+        *,
+        force: bool,
+        cancelled: Callable[[], bool] | None,
+        max_workers: int,
+        fail_fast: bool,
+    ) -> WorkspaceRunReport:
+        projects = {project.name: project for project in order}
+        order_names = tuple(project.name for project in order)
+        selected = set(order_names)
+        status: dict[str, ProjectRunStatus] = {}
+        runs: dict[str, ProjectRun] = {}
+        values: dict[str, Any] = dict(self._results)
+        pending = set(order_names)
+        abort = False
+
+        def dependency_statuses(project: Project) -> tuple[str, ...]:
+            return tuple(
+                dependency
+                for dependency in project.dependencies
+                if dependency in selected
+                and status.get(dependency)
+                in {ProjectRunStatus.FAILED, ProjectRunStatus.BLOCKED, ProjectRunStatus.CANCELLED}
+            )
+
+        def dependencies_finished(project: Project) -> bool:
+            return all(dependency not in selected or dependency in status for dependency in project.dependencies)
+
+        def finish_without_worker(project: Project) -> bool:
+            nonlocal abort
+            blocked_by = dependency_statuses(project)
+            if blocked_by:
+                run = ProjectRun(project.name, ProjectRunStatus.BLOCKED, blocked_by=blocked_by)
+                runs[project.name] = run
+                status[project.name] = run.status
+                pending.remove(project.name)
+                self.service.events.emit(
+                    WorkspaceEventKind.PROJECT_BLOCKED, project=project.name, source="workspace.execution", payload=run.to_dict()
+                )
+                return True
+            if abort or (cancelled is not None and cancelled()):
+                run = ProjectRun(project.name, ProjectRunStatus.CANCELLED)
+                runs[project.name] = run
+                status[project.name] = run.status
+                pending.remove(project.name)
+                return True
+            if not force and project.name in self._results and project.name in self.planner.valid_projects:
+                run = ProjectRun(project.name, ProjectRunStatus.REUSED, value=self._results[project.name])
+                runs[project.name] = run
+                status[project.name] = run.status
+                pending.remove(project.name)
+                return True
+            return False
+
+        def analyze(project: Project, dependency_results: Mapping[str, Any]) -> ProjectRun:
+            started = monotonic()
+            try:
+                value = analyzer(project, dependency_results)
+            except Exception as exc:  # analyzer boundary
+                elapsed = (monotonic() - started) * 1000
+                return ProjectRun(
+                    project.name, ProjectRunStatus.FAILED, error=f"{type(exc).__name__}: {exc}", duration_ms=elapsed
+                )
+            elapsed = (monotonic() - started) * 1000
+            return ProjectRun(project.name, ProjectRunStatus.SUCCEEDED, value=value, duration_ms=elapsed)
+
+        futures: dict[Future[ProjectRun], str] = {}
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="atlas-workspace") as executor:
+            while pending or futures:
+                made_progress = True
+                while made_progress:
+                    made_progress = False
+                    for name in order_names:
+                        if name not in pending or len(futures) >= max_workers:
+                            continue
+                        project = projects[name]
+                        if not dependencies_finished(project):
+                            continue
+                        self.service.events.emit(
+                            WorkspaceEventKind.PROJECT_STARTED,
+                            project=project.name,
+                            source="workspace.execution",
+                            payload={"dependencies": list(project.dependencies)},
+                        )
+                        if finish_without_worker(project):
+                            made_progress = True
+                            continue
+                        dependency_results = {dep: values[dep] for dep in project.dependencies if dep in values}
+                        pending.remove(name)
+                        futures[executor.submit(analyze, project, dependency_results)] = name
+                        made_progress = True
+
+                if not futures:
+                    if not pending:
+                        break
+                    # Remaining projects become reachable only through a failed/cancelled dependency.
+                    continue
+
+                done, _ = wait(tuple(futures), return_when=FIRST_COMPLETED)
+                for future in done:
+                    name = futures.pop(future)
+                    run = future.result()
+                    runs[name] = run
+                    status[name] = run.status
+                    if run.status is ProjectRunStatus.SUCCEEDED:
+                        self._results[name] = run.value
+                        values[name] = run.value
+                        self.planner.mark_valid(name)
+                        event_kind = WorkspaceEventKind.PROJECT_COMPLETED
+                    else:
+                        self._results.pop(name, None)
+                        self.planner.invalidate((name,))
+                        event_kind = WorkspaceEventKind.PROJECT_FAILED
+                        if fail_fast:
+                            abort = True
+                    self.service.events.emit(event_kind, project=name, source="workspace.execution", payload=run.to_dict())
+
+        return WorkspaceRunReport(
+            tuple(runs[name] for name in order_names),
+            requested,
+            order_names,
+        )
 
     def _execute_order(
         self,
