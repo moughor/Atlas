@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 import typer
 
+from .ci_templates import CiProvider, CiTemplateError, CiTemplateService
 from .cli_output import OutputFormat, render_report
 from .finding_baseline import FindingBaselineError, FindingBaselineService, FindingBaselineStore
 from .plugin_sdk import PluginDiscovery
@@ -264,6 +265,28 @@ def plugins(
     _run_command(operation)
 
 
+@app.command("ci")
+def ci_command(
+    provider: Annotated[CiProvider, typer.Argument(help="CI provider: github, gitlab, or azure.")],
+    root: Annotated[Path, typer.Option("--root", help="Repository root.")] = Path("."),
+    output: Annotated[Path | None, typer.Option("--output", "-o", help="Override the provider's canonical path.")] = None,
+    python_version: Annotated[str, typer.Option("--python-version", help="Python version used by the CI job.")] = "3.12",
+    force: Annotated[bool, typer.Option("--force", help="Replace an existing template.")] = False,
+) -> None:
+    """Install a deterministic Atlas CI template."""
+    def operation() -> None:
+        target = CiTemplateService().write(
+            root,
+            provider,
+            output=output,
+            python_version=python_version,
+            force=force,
+        )
+        typer.echo(target.as_posix())
+
+    _run_command(operation)
+
+
 def _run_command(operation: Callable[[], None]) -> None:
     try:
         operation()
@@ -278,6 +301,7 @@ def _run_command(operation: Callable[[], None]) -> None:
         WorkspaceStateError,
         FindingBaselineError,
         GitDiffError,
+        CiTemplateError,
     ) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc

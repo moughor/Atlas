@@ -290,3 +290,9 @@
 - Added deterministic unified-diff files, hunks, renames, binary flags, and lines.
 - Added report filtering to findings on newly added lines.
 - Added `analyze` and `check` Git diff CLI options after PR77 baseline filtering.
+## PR93 — CI Templates
+
+- Added deterministic GitHub Actions, GitLab CI, and Azure Pipelines templates.
+- Added `atlas ci` with canonical output paths, Python version selection, and safe overwrite controls.
+- Configured generated jobs to run Atlas quality gates and retain or upload SARIF results.
+- Added atomic template writes while preserving all existing CLI behavior.
