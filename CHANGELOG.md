@@ -419,3 +419,9 @@ complete implementation detail.
 - Added deterministic, versioned semantic prompt templates.
 - Added provider-neutral token estimation and preflight input budgets.
 - Preserved the existing `PromptBuilder` API.
+## PR110 — Ollama Integration
+
+- Added local Ollama chat completion and NDJSON streaming through the PR107
+  provider interface.
+- Integrated `llm.provider`, `llm.endpoint`, and `llm.model` with PR71 layered
+  configuration.
