@@ -18,6 +18,7 @@ from .version import __version__
 from .git_diff import GitDiffError, GitDiffFilter, GitDiffService
 from .history import HistoryDatabase, HistoryDatabaseError
 from .dashboard import DashboardService
+from .profiling import PerformanceProfiler
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -319,6 +320,29 @@ def dashboard_command(
     def operation() -> None:
         target = DashboardService(HistoryDatabase(root)).generate(output, limit=limit)
         typer.echo(target.as_posix())
+
+    _run_command(operation)
+
+
+@app.command("profile")
+def profile_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    project: Annotated[list[str] | None, typer.Option("--project", "-p", help="Project to profile.")] = None,
+    workers: Annotated[int, typer.Option("--workers", "-j", min=1, help="Maximum concurrent projects.")] = 1,
+) -> None:
+    """Analyze a workspace and emit deterministic performance metrics."""
+    def operation() -> None:
+        context = _context(root)
+        profiler = PerformanceProfiler()
+        orchestrator = WorkspaceAnalysisOrchestrator(context.service)
+        selected = tuple(project or context.service.workspace.names())
+        with profiler.measure("workspace"):
+            orchestrator.execute(
+                profiler.wrap_analyzer(_analyzer(context.service)),
+                projects=selected,
+                max_workers=workers,
+            )
+        typer.echo(profiler.report().to_json(), nl=False)
 
     _run_command(operation)
 

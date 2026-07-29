@@ -308,3 +308,9 @@
 - Added stable run summaries, status metrics, finding counts, and project activity.
 - Added responsive, accessible rendering without external assets or network services.
 - Added `atlas dashboard` with deterministic output and bounded history selection.
+## PR96 — Performance Profiler
+
+- Added opt-in elapsed-time profiling with thread-safe concurrent sample collection.
+- Added stable aggregate call, total, minimum, maximum, and average metrics.
+- Added analyzer wrapping and workspace-level timing through `atlas profile`.
+- Preserved ordinary analysis behavior and avoided scheduler policy changes.
