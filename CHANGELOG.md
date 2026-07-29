@@ -366,3 +366,8 @@
 - Added a curated, versioned `moughorai.public_api` facade for external consumers.
 - Added a frozen constructor-signature manifest and deterministic compatibility checks.
 - Preserved legacy imports and object identity while documenting versioning and deprecation policy.
+## PR106 — Plugin Trust Model
+
+- Documented the exact plugin integrity and permission controls Atlas enforces.
+- Explicitly documented in-process execution, opt-in defaults, TOCTOU risk, and absent sandbox/signature guarantees.
+- Added production isolation guidance, trust assumptions, and documentation contract tests.

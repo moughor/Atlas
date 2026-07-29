@@ -87,3 +87,12 @@ Valid plugins appear in `result.plugins`. Rejected plugins appear as determinist
 - PR59 manifests without `permissions` load unchanged.
 - `PluginRuntime` behavior is unchanged when no permission policy is passed.
 - Trust enforcement is opt-in through `PluginDiscovery(require_trust=True)`.
+
+## Security boundary clarification
+
+Plugins execute as trusted in-process Python code. Digest verification and
+permission policy are opt-in admission controls, not a sandbox. Permissions
+are not intercepted after loading, and the `signer` field is not a
+cryptographic signature. See
+[PR106 Plugin Trust Model](PR106_PLUGIN_TRUST_MODEL.md) for the full threat
+model, limitations, and production deployment guidance.
