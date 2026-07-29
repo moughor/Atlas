@@ -200,3 +200,9 @@
 ## PR72 — Workspace Event Bus
 
 - Added a thread-safe deterministic workspace event bus with filtering, priorities, one-shot subscriptions, bounded history, and structured delivery reports.
+# PR78 - Watch mode
+
+- Added continuous and bounded polling modes to the unified `atlas watch` command.
+- Connected debounced file changes to incremental dependency-aware analysis.
+- Preserved deterministic report ordering and concurrent project execution.
+- Kept the existing one-shot watch snapshot behavior for backward compatibility.

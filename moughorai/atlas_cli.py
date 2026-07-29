@@ -20,6 +20,7 @@ from .workspace import (
     WorkspaceRunReport,
     WorkspaceService,
     WorkspaceStateError,
+    WorkspaceWatchManager,
     WorkspaceWatcher,
 )
 
@@ -140,15 +141,31 @@ def check(
 @app.command()
 def watch(
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    continuous: Annotated[bool, typer.Option("--continuous", help="Keep polling until interrupted.")] = False,
+    iterations: Annotated[int, typer.Option("--iterations", min=0, help="Bounded poll count (ignored with --continuous).")] = 0,
+    interval: Annotated[float, typer.Option("--interval", min=0, help="Seconds between polls.")] = 0.5,
+    workers: Annotated[int, typer.Option("--workers", "-j", min=1, help="Maximum concurrent projects.")] = 1,
+    output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format for changed runs.")] = OutputFormat.TEXT,
 ) -> None:
-    """Initialize workspace watching and print its deterministic snapshot."""
+    """Watch a workspace and incrementally analyze changed projects."""
     def operation() -> None:
         context = _context(root)
-        snapshot = WorkspaceWatcher(context.service.workspace, event_bus=context.service.events).start()
+        watcher = WorkspaceWatcher(context.service.workspace, event_bus=context.service.events)
+        manager = WorkspaceWatchManager(
+            watcher,
+            WorkspaceAnalysisOrchestrator(context.service),
+            _analyzer(context.service),
+            interval_seconds=interval,
+            max_workers=workers,
+        )
+        poll_limit = None if continuous else iterations
+        result = manager.run(iterations=poll_limit, on_report=lambda report: _emit_report(report, output_format))
         typer.echo(f"workspace: {context.root.as_posix()}")
         typer.echo(f"projects: {len(context.service.workspace.projects)}")
-        typer.echo(f"tracked_files: {len(snapshot.files)}")
-        typer.echo("status: ready")
+        typer.echo(f"tracked_files: {len(result.snapshot.files)}")
+        typer.echo(f"polls: {result.polls}")
+        typer.echo(f"analyses: {len(result.reports)}")
+        typer.echo("status: stopped" if (continuous or iterations) else "status: ready")
 
     _run_command(operation)
 
