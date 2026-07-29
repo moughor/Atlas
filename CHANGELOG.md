@@ -414,3 +414,8 @@ complete implementation detail.
 - Added deterministic semantic JSON snapshots for workspace, project,
   diagnostic, history, symbol, type, and performance data.
 - Added strict normalization that rejects process-specific context values.
+## PR109 — Prompt Builder
+
+- Added deterministic, versioned semantic prompt templates.
+- Added provider-neutral token estimation and preflight input budgets.
+- Preserved the existing `PromptBuilder` API.
