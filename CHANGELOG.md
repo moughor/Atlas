@@ -425,3 +425,8 @@ complete implementation detail.
   provider interface.
 - Integrated `llm.provider`, `llm.endpoint`, and `llm.model` with PR71 layered
   configuration.
+## PR111 — Atlas Semantic Snapshot
+
+- Added immutable, checksummed semantic snapshot archives under `.atlas/ass/`.
+- Added atomic `latest.ass` publication, workspace fingerprints, analyzer
+  versioning, history references, and offline PR108 context restoration.

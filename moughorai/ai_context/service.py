@@ -22,6 +22,17 @@ class WorkspaceContextBuilder:
 
     SCHEMA_VERSION = 1
 
+    @staticmethod
+    def from_snapshot(snapshot: object) -> WorkspaceSemanticContext:
+        """Restore deterministic context without re-running workspace analysis."""
+        converter = getattr(snapshot, "to_context", None)
+        if not callable(converter):
+            raise TypeError("snapshot must provide to_context()")
+        context = converter()
+        if not isinstance(context, WorkspaceSemanticContext):
+            raise TypeError("snapshot did not produce WorkspaceSemanticContext")
+        return context
+
     def build(
         self,
         workspace: Workspace,
