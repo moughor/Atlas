@@ -6,3 +6,5 @@ __all__=['PolicyOverride','PolicyPack','PolicyPackDiagnostic','PolicyPackError',
 
 from .resolution import PackDependency,SemanticVersion,VersionConstraint,LockedPack,PolicyPackLock,PolicyPackResolver,pack_digest
 __all__ += ['PackDependency','SemanticVersion','VersionConstraint','LockedPack','PolicyPackLock','PolicyPackResolver','pack_digest']
+from .lifecycle import LifecycleEvent,LifecycleReport,PolicyPackLifecycleManager
+__all__ += ['LifecycleEvent','LifecycleReport','PolicyPackLifecycleManager']
