@@ -23,6 +23,11 @@ class WorkspaceEventKind(str, Enum):
     STATE_SAVED = "state_saved"
     STATE_RESTORED = "state_restored"
     CONFIGURATION_RESOLVED = "configuration_resolved"
+    RECOVERY_STARTED = "recovery_started"
+    RECOVERY_JOURNAL_SAVED = "recovery_journal_saved"
+    RECOVERY_RESUMED = "recovery_resumed"
+    RECOVERY_INVALIDATED = "recovery_invalidated"
+    RECOVERY_COMPLETED = "recovery_completed"
     ERROR = "error"
 
 

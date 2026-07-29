@@ -1,3 +1,11 @@
+## PR74 — Workspace Recovery Manager
+
+- Added atomic, checksummed recovery journals for interrupted workspace analyses.
+- Added deterministic status inspection and selective resume of unfinished projects.
+- Invalidated corrupt, inconsistent, stale, workspace-mismatched, and configuration-mismatched journals.
+- Integrated recovery with workspace persistence, layered configuration, lifecycle events, and concurrent execution.
+- Preserved the existing orchestration API while adding an opt-in recovery manager.
+
 ## PR73 — Concurrent Project Execution
 
 - Added dependency-aware parallel workspace analysis with configurable worker limits.
