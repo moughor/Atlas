@@ -3,8 +3,38 @@ from .source import SourceSpan
 from .tokens import Token, TokenKind
 from .lexer import JavaLexer
 from .token_stream import TokenStream
-from .expressions import *
-from .statements import *
+from .expressions import (
+    ArrayAccessExpression,
+    AssignmentExpression,
+    BinaryExpression,
+    CastExpression,
+    ConditionalExpression,
+    FieldAccessExpression,
+    JavaExpression,
+    LiteralExpression,
+    MethodCallExpression,
+    ObjectCreationExpression,
+    ParenthesizedExpression,
+    SuperExpression,
+    ThisExpression,
+    UnaryExpression,
+    UnknownExpression,
+    UnresolvedNameExpression,
+    VariableExpression,
+)
+from .statements import (
+    BlockStatement,
+    BreakStatement,
+    ContinueStatement,
+    ExpressionStatement,
+    IfStatement,
+    JavaStatement,
+    LocalVariableDeclaration,
+    ReturnStatement,
+    ThrowStatement,
+    UnknownStatement,
+    WhileStatement,
+)
 from .parser import JavaSemanticParser
 from .scopes import (
     Scope,
@@ -16,14 +46,23 @@ from .scopes import (
     ResolutionResult,
 )
 from .serialization import semantic_to_dict
-from .service import JavaSemanticFrontEnd, SemanticDocument
+from .service import JavaAnalysisResult, JavaSemanticFrontEnd, SemanticDocument
 
 __all__ = [
     "Diagnostic", "DiagnosticBag", "DiagnosticSeverity",
     "SourceSpan", "Token", "TokenKind", "JavaLexer", "TokenStream",
     "JavaSemanticParser", "Scope", "ScopeKind", "Symbol", "SymbolKind",
     "ScopeBuilder", "LocalResolver", "ResolutionResult",
-    "semantic_to_dict", "JavaSemanticFrontEnd", "SemanticDocument",
+    "semantic_to_dict", "JavaAnalysisResult", "JavaSemanticFrontEnd", "SemanticDocument",
+    "ArrayAccessExpression", "AssignmentExpression", "BinaryExpression",
+    "CastExpression", "ConditionalExpression", "FieldAccessExpression",
+    "JavaExpression", "LiteralExpression", "MethodCallExpression",
+    "ObjectCreationExpression", "ParenthesizedExpression", "SuperExpression",
+    "ThisExpression", "UnaryExpression", "UnknownExpression",
+    "UnresolvedNameExpression", "VariableExpression", "BlockStatement",
+    "BreakStatement", "ContinueStatement", "ExpressionStatement", "IfStatement",
+    "JavaStatement", "LocalVariableDeclaration", "ReturnStatement",
+    "ThrowStatement", "UnknownStatement", "WhileStatement",
 ]
 
 # Atlas PR11: flow-sensitive definite-assignment analysis

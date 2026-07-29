@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import defaultdict, deque
-from .models import *
+from .models import CallSite, DataFlowProgram, FlowNode, FlowPath, FlowRole, MethodFlow, MethodId
 from .graph import build_call_graph
 
 class InterproceduralDataFlowEngine:

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from .models import *
+from .models import KnowledgeReference, ReferenceKind, Remediation, SecurityKnowledge
 
 CWE_BASE='https://cwe.mitre.org/data/definitions/'
 OWASP_BASE='https://owasp.org/Top10/'

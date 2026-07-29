@@ -143,6 +143,11 @@ def infer_expression_type(expression: JavaExpression, symbols=None,
 
 def attach_expression_type(document: SemanticDocument, expression: JavaExpression,
                            registry: TypeRegistry | None = None) -> SemanticDocument:
+    """Attach one expression type.
+
+    This compatibility helper performs one immutable document update. Use
+    ``ExpressionTypeInferencePass`` when processing a syntax tree in bulk.
+    """
     result = infer_expression_type(expression, document.symbols, registry)
     updated = document.with_type(expression_node_key(expression), result.semantic_type)
     return updated.with_diagnostics(result.diagnostics)
@@ -156,11 +161,20 @@ class ExpressionTypeInferencePass(SemanticPass):
 
     def run(self, document: SemanticDocument, context: PassContext) -> SemanticDocument:
         result = document
-        seen: set[int] = set()
+        seen: set[Hashable] = set()
         def visit(node: object | None) -> None:
             nonlocal result
-            if node is None or id(node) in seen: return
-            seen.add(id(node))
+            if node is None:
+                return
+            key = expression_node_key(node) if isinstance(node, JavaExpression) else (
+                "node",
+                node.__class__.__name__,
+                getattr(getattr(node, "span", None), "start", None),
+                getattr(getattr(node, "span", None), "end", None),
+            )
+            if key in seen:
+                return
+            seen.add(key)
             if isinstance(node, JavaExpression):
                 result = attach_expression_type(result, node, self.registry)
             if hasattr(node, "__dataclass_fields__"):

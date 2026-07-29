@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
+from types import MappingProxyType
 
 from moughorai.global_symbols.models import GlobalSymbol, GlobalSymbolKind, SymbolId
 
@@ -19,21 +20,41 @@ class GlobalSymbolSnapshot:
 
     version: int
     symbols: tuple[GlobalSymbol, ...]
+    _by_id: Mapping[SymbolId, GlobalSymbol] = field(init=False, repr=False, compare=False)
+    _by_qualified: Mapping[str, GlobalSymbol] = field(init=False, repr=False, compare=False)
+    _by_name: Mapping[str, tuple[GlobalSymbol, ...]] = field(init=False, repr=False, compare=False)
+    _by_kind: Mapping[GlobalSymbolKind, tuple[GlobalSymbol, ...]] = field(init=False, repr=False, compare=False)
+    _by_source: Mapping[Path, tuple[GlobalSymbol, ...]] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        by_name: defaultdict[str, list[GlobalSymbol]] = defaultdict(list)
+        by_kind: defaultdict[GlobalSymbolKind, list[GlobalSymbol]] = defaultdict(list)
+        by_source: defaultdict[Path, list[GlobalSymbol]] = defaultdict(list)
+        for symbol in self.symbols:
+            by_name[symbol.name].append(symbol)
+            by_kind[symbol.kind].append(symbol)
+            if symbol.source is not None:
+                by_source[symbol.source].append(symbol)
+        object.__setattr__(self, "_by_id", MappingProxyType({symbol.id: symbol for symbol in self.symbols}))
+        object.__setattr__(self, "_by_qualified", MappingProxyType({symbol.qualified_name: symbol for symbol in self.symbols}))
+        object.__setattr__(self, "_by_name", MappingProxyType({key: tuple(value) for key, value in by_name.items()}))
+        object.__setattr__(self, "_by_kind", MappingProxyType({key: tuple(value) for key, value in by_kind.items()}))
+        object.__setattr__(self, "_by_source", MappingProxyType({key: tuple(value) for key, value in by_source.items()}))
 
     def get(self, symbol_id: SymbolId) -> GlobalSymbol | None:
-        return next((symbol for symbol in self.symbols if symbol.id == symbol_id), None)
+        return self._by_id.get(symbol_id)
 
     def by_qualified_name(self, name: str) -> GlobalSymbol | None:
-        return next((symbol for symbol in self.symbols if symbol.qualified_name == name), None)
+        return self._by_qualified.get(name)
 
     def find_simple(self, name: str) -> tuple[GlobalSymbol, ...]:
-        return tuple(symbol for symbol in self.symbols if symbol.name == name)
+        return self._by_name.get(name, ())
 
     def by_kind(self, kind: GlobalSymbolKind) -> tuple[GlobalSymbol, ...]:
-        return tuple(symbol for symbol in self.symbols if symbol.kind is kind)
+        return self._by_kind.get(kind, ())
 
     def by_source(self, source: Path) -> tuple[GlobalSymbol, ...]:
-        return tuple(symbol for symbol in self.symbols if symbol.source == source)
+        return self._by_source.get(source, ())
 
     def __len__(self) -> int:
         return len(self.symbols)

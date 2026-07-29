@@ -170,6 +170,11 @@ def attach_variable_declaration(
     declaration: LocalVariableDeclaration,
     registry: TypeRegistry | None = None,
 ) -> SemanticDocument:
+    """Attach one declaration using immutable updates.
+
+    Use ``VariableTypeInferencePass`` for bulk syntax-tree processing; the pass
+    freezes its builders once rather than copying tables for each declaration.
+    """
     if not isinstance(document, SemanticDocument):
         raise TypeError("document must be a SemanticDocument")
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from .models import *
+from .models import CallSite, DataFlowProgram, MethodId
 
 @dataclass(frozen=True, slots=True)
 class CallGraph:

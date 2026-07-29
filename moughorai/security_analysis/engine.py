@@ -1,7 +1,20 @@
 from __future__ import annotations
 import re
 from dataclasses import dataclass
-from .models import *
+from .models import (
+    Assignment,
+    Confidence,
+    Expression,
+    Invocation,
+    ScanStatistics,
+    SecurityFinding,
+    SecurityProgram,
+    SecurityReport,
+    Severity,
+    SourceLocation,
+    TraceStep,
+    ValueKind,
+)
 from .rules import TAINT_RULES, SOURCES, SANITIZERS
 
 @dataclass(frozen=True, slots=True)

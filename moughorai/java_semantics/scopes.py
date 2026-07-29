@@ -1,8 +1,31 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from .expressions import *
-from .statements import *
+from .expressions import (
+    ArrayAccessExpression,
+    AssignmentExpression,
+    BinaryExpression,
+    CastExpression,
+    ConditionalExpression,
+    FieldAccessExpression,
+    JavaExpression,
+    MethodCallExpression,
+    ObjectCreationExpression,
+    ParenthesizedExpression,
+    UnaryExpression,
+    UnresolvedNameExpression,
+    VariableExpression,
+)
+from .statements import (
+    BlockStatement,
+    ExpressionStatement,
+    IfStatement,
+    JavaStatement,
+    LocalVariableDeclaration,
+    ReturnStatement,
+    ThrowStatement,
+    WhileStatement,
+)
 
 class ScopeKind(str, Enum):
     METHOD = "METHOD"

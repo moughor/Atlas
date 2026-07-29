@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from .models import *
+from .models import SecurityFinding, SecurityReport, Severity, SourceLocation
 
 class SecurityReportExporter:
     def __init__(self, knowledge_base=None, explanation_engine=None): self.knowledge_base=knowledge_base; self.explanation_engine=explanation_engine

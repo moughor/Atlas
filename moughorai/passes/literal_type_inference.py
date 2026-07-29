@@ -192,6 +192,8 @@ def attach_java_literal_type(
 
     The original document is never mutated. A new document containing an
     updated immutable ``TypeTable`` is returned.
+    This is a single-shot compatibility helper; bulk callers should collect
+    inferred types with ``TypeTableBuilder`` and freeze once.
 
     Args:
         document:

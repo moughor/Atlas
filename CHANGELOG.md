@@ -1,3 +1,36 @@
+# Changelog
+
+## Chronological index (newest first)
+
+- **PR106:** Plugin Trust Model
+- **PR105:** Public API Boundary
+- **PR104:** Large-Workspace Benchmarks
+- **PR103:** Structured Logging
+- **PR102:** Global Symbol Concurrency
+- **PR101:** Semantic Table Builders
+- **PR100:** Atlas 2.0 Stabilization
+- **PR96–PR99:** Profiler, adaptive scheduling, distributed workers, and governance
+- **PR91–PR95:** SARIF, Git diff, CI templates, history, and dashboard
+- **PR86–PR90:** Rule authoring, testing, metadata, fixes, and packs
+- **PR81–PR85:** Workspace LSP and editor integration
+- **PR74–PR80:** Recovery, unified CLI, reports, baselines, watch, gates, and packaging
+- **PR67–PR73:** Workspace model, persistence, configuration, events, and concurrency
+- **PR36–PR66:** Interprocedural analysis, security platform, plugins, policies, LSP, and API
+- **PR18–PR35:** Project inventory, indexes, symbols, graphs, search, and Spring modeling
+- **PR1–PR17:** Semantic foundations, typing, flow analysis, patterns, CFG, and reachability
+
+Detailed release notes follow in their original historical sections. The index
+is the canonical navigation order; per-PR documentation in `docs/` contains the
+complete implementation detail.
+
+## Post-PR106 production hardening
+
+- Completed strict incremental-state persistence round trips.
+- Added immutable indexes to global symbol snapshots.
+- Replaced production wildcard imports with explicit dependencies.
+- Clarified bulk semantic-pass APIs and preserved Java result compatibility.
+- Added deterministic adversarial parser coverage and architecture guidance.
+
 ## PR77 — Finding Baselines
 
 - Added cross-language finding baselines with stable project-aware fingerprints.
@@ -56,8 +89,6 @@
 ## PR67 — Workspace & Project Model
 
 - Added deterministic multi-project workspace loading, discovery, dependency planning, impact analysis, and content snapshots.
-
-# Changelog
 
 ## Atlas Sprint 3 - PR #7
 

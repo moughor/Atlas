@@ -3,7 +3,25 @@ from .diagnostics import Diagnostic, DiagnosticBag, DiagnosticSeverity
 from .document import SemanticDocument
 from .serialization import semantic_document_to_dict
 from .symbols import SymbolTable, SymbolTableBuilder, VariableSymbol
-from .types import *
+from .types import (
+    ArrayType,
+    ClassType,
+    GenericType,
+    NULL,
+    NullType,
+    PrimitiveType,
+    Type,
+    TypeKind,
+    TypeRegistry,
+    TypeTable,
+    TypeTableBuilder,
+    UNKNOWN,
+    UnknownType,
+    VOID,
+    VoidType,
+    type_from_dict,
+    type_to_dict,
+)
 from .types import __all__ as _types_all
 
 __all__ = [

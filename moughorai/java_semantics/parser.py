@@ -4,8 +4,38 @@ from .lexer import JavaLexer
 from .token_stream import TokenStream
 from .tokens import TokenKind
 from .source import SourceSpan
-from .expressions import *
-from .statements import *
+from .expressions import (
+    ArrayAccessExpression,
+    AssignmentExpression,
+    BinaryExpression,
+    CastExpression,
+    ConditionalExpression,
+    FieldAccessExpression,
+    JavaExpression,
+    LiteralExpression,
+    MethodCallExpression,
+    ObjectCreationExpression,
+    ParenthesizedExpression,
+    SuperExpression,
+    ThisExpression,
+    UnaryExpression,
+    UnknownExpression,
+    UnresolvedNameExpression,
+    VariableExpression,
+)
+from .statements import (
+    BlockStatement,
+    BreakStatement,
+    ContinueStatement,
+    ExpressionStatement,
+    IfStatement,
+    JavaStatement,
+    LocalVariableDeclaration,
+    ReturnStatement,
+    ThrowStatement,
+    UnknownStatement,
+    WhileStatement,
+)
 
 _PRECEDENCE = {
     TokenKind.EQ: 1, TokenKind.PLUS_EQ: 1, TokenKind.MINUS_EQ: 1,

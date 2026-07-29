@@ -2,7 +2,7 @@ from __future__ import annotations
 from fnmatch import fnmatch
 from moughorai.security_analysis import ScanStatistics,SecurityReport
 from .baseline import SecurityBaseline
-from .models import *
+from .models import FindingDisposition, GateResult, GateStatus, SEVERITY_RANK, ScanPolicy, Suppression
 
 class SecurityQualityGate:
     def evaluate(self,report:SecurityReport,policy:ScanPolicy|None=None,baseline:SecurityBaseline|None=None)->GateResult:

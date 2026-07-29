@@ -6,7 +6,7 @@ from .scopes import Scope, ScopeBuilder, LocalResolver
 from .statements import BlockStatement
 
 @dataclass(frozen=True, slots=True)
-class SemanticDocument:
+class JavaAnalysisResult:
     source: str
     root: BlockStatement
     root_scope: Scope
@@ -14,15 +14,19 @@ class SemanticDocument:
     diagnostics: tuple[Diagnostic, ...]
 
 class JavaSemanticFrontEnd:
-    def analyze_method_body(self, source: str) -> SemanticDocument:
+    def analyze_method_body(self, source: str) -> JavaAnalysisResult:
         parser = JavaSemanticParser(source)
         root = parser.parse_block()
         scope = ScopeBuilder().build(root)
         resolved = LocalResolver().resolve(root, scope)
-        return SemanticDocument(
+        return JavaAnalysisResult(
             source=source,
             root=resolved.root,
             root_scope=scope,
             unresolved_names=resolved.unresolved_names,
             diagnostics=parser.diagnostics.snapshot(),
         )
+
+
+# Backwards-compatible alias for consumers of the pre-hardening name.
+SemanticDocument = JavaAnalysisResult

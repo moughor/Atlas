@@ -76,6 +76,7 @@ or container isolation. Read
 [`docs/PR106_PLUGIN_TRUST_MODEL.md`](docs/PR106_PLUGIN_TRUST_MODEL.md) before
 deploying third-party plugins.
 
+Start with the [architecture and concepts guide](docs/ARCHITECTURE.md).
 Detailed feature documentation is available in [`docs/`](docs/).
 
 ## Development
