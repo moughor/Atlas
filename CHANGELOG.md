@@ -1,3 +1,7 @@
+## PR69 — Workspace Analysis Orchestrator
+
+- Added deterministic dependency-aware workspace analysis execution, result reuse, failure blocking, cancellation, and incremental-plan integration.
+
 ## PR68 — Incremental Workspace Watcher
 
 - Added portable workspace file snapshots, deterministic file events, rename detection, debounce/coalescing, and dependency-aware incremental invalidation plans.
