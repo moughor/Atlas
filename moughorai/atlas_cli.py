@@ -19,6 +19,7 @@ from .git_diff import GitDiffError, GitDiffFilter, GitDiffService
 from .history import HistoryDatabase, HistoryDatabaseError
 from .dashboard import DashboardService
 from .profiling import PerformanceProfiler
+from .adaptive_scheduler import AdaptiveWorkspaceScheduler
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -135,10 +136,14 @@ def analyze(
     diff_base: Annotated[str | None, typer.Option("--diff-base", help="Git base revision for changed-line analysis.")] = None,
     diff_head: Annotated[str | None, typer.Option("--diff-head", help="Git head revision (requires --diff-base).")] = None,
     staged: Annotated[bool, typer.Option("--staged", help="Analyze staged Git changes.")] = False,
+    adaptive: Annotated[bool, typer.Option("--adaptive", help="Adapt workers to topology and historical timings.")] = False,
 ) -> None:
     """Analyze a workspace."""
     def operation() -> None:
-        report = _execute(_context(root), projects=tuple(project or ()), workers=workers, force=force, recover=recover)
+        context = _context(root)
+        selected = tuple(project or ())
+        actual_workers = _adaptive_workers(context, selected, workers) if adaptive else workers
+        report = _execute(context, projects=selected, workers=actual_workers, force=force, recover=recover)
         report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
         report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
         HistoryDatabase(root).record(report)
@@ -163,11 +168,14 @@ def check(
     max_findings: Annotated[int | None, typer.Option("--max-findings", min=0, help="Maximum allowed findings.")] = None,
     finding_exit_code: Annotated[int | None, typer.Option("--finding-exit-code", min=1, max=255)] = None,
     analysis_exit_code: Annotated[int | None, typer.Option("--analysis-exit-code", min=1, max=255)] = None,
+    adaptive: Annotated[bool, typer.Option("--adaptive", help="Adapt workers to topology and historical timings.")] = False,
 ) -> None:
     """Analyze a workspace and fail when project analysis fails."""
     def operation() -> None:
         context = _context(root)
-        report = _execute(context, projects=tuple(project or ()), workers=workers, force=False, recover=True)
+        selected = tuple(project or ())
+        actual_workers = _adaptive_workers(context, selected, workers) if adaptive else workers
+        report = _execute(context, projects=selected, workers=actual_workers, force=False, recover=True)
         report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
         report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
         HistoryDatabase(root).record(report)
@@ -396,6 +404,21 @@ def _apply_diff_options(
     resolved = root.expanduser().resolve()
     diff = GitDiffService(resolved).collect(base=base, head=head, staged=staged)
     return GitDiffFilter().filter_report(report, diff, root=resolved)
+
+
+def _adaptive_workers(context: AtlasCliContext, projects: tuple[str, ...], worker_cap: int) -> int:
+    selected = projects or context.service.workspace.names()
+    ordered = context.service.analysis_order(selected)
+    durations: dict[str, list[float]] = {}
+    for historical in HistoryDatabase(context.root).list(limit=20):
+        for run in historical.runs:
+            durations.setdefault(run.project, []).append(run.duration_ms)
+    averages = {name: sum(values) / len(values) for name, values in durations.items()}
+    return AdaptiveWorkspaceScheduler().recommend(
+        ordered,
+        worker_cap=worker_cap,
+        duration_ms=averages,
+    ).workers
 
 
 def _flatten(values: Mapping[str, Any], prefix: str = "") -> tuple[tuple[str, Any], ...]:

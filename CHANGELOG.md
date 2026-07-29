@@ -314,3 +314,9 @@
 - Added stable aggregate call, total, minimum, maximum, and average metrics.
 - Added analyzer wrapping and workspace-level timing through `atlas profile`.
 - Preserved ordinary analysis behavior and avoided scheduler policy changes.
+## PR97 — Adaptive Scheduler
+
+- Added deterministic worker recommendations from dependency-wave parallelism.
+- Added CPU and user caps plus historical-duration overhead avoidance.
+- Added opt-in `--adaptive` execution for `atlas analyze` and `atlas check`.
+- Reused PR73 concurrency without changing default scheduling behavior.
