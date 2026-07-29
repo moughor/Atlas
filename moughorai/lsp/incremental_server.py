@@ -53,13 +53,13 @@ class IncrementalWorkspaceLanguageServer(WorkspaceLanguageServer):
                 findings = self.workspace_analyzer(
                     change_set.current,
                     project,
-                    self.service.resolved_configuration(project.name),
+                    self._resolved_configuration(project.name),
                 )
             else:
                 findings = self.incremental_analyzer(
                     change_set.current,
                     project,
-                    self.service.resolved_configuration(project.name),
+                    self._resolved_configuration(project.name),
                     change_set,
                 )
             payload = self.publisher.publish(change_set.current, findings)

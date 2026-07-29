@@ -1,5 +1,6 @@
 from .diagnostics import DiagnosticPublisher, finding_to_diagnostic, offset_to_position, offsets_to_range
 from .code_actions import CodeAction, CodeActionProvider, DefaultCodeActionProvider
+from .configuration_sync import ConfigurationSyncState, flatten_settings
 from .editor import DocumentChangeSet, TextChange, apply_document_changes, position_to_offset
 from .incremental_server import IncrementalWorkspaceAnalyzer, IncrementalWorkspaceLanguageServer
 from .models import Diagnostic, DiagnosticSeverity, Position, PublishDiagnostics, Range, TextDocument
@@ -9,9 +10,10 @@ from .workspace_server import WorkspaceAnalyzer, WorkspaceLanguageServer, uri_to
 __all__ = [
     "AtlasLanguageServer", "Diagnostic", "DiagnosticPublisher", "DiagnosticSeverity",
     "LspProtocolError", "Position", "PublishDiagnostics", "Range", "TextDocument",
-    "CodeAction", "CodeActionProvider", "DefaultCodeActionProvider", "DocumentChangeSet",
+    "CodeAction", "CodeActionProvider", "ConfigurationSyncState",
+    "DefaultCodeActionProvider", "DocumentChangeSet",
     "IncrementalWorkspaceAnalyzer", "IncrementalWorkspaceLanguageServer",
     "TextChange", "WorkspaceAnalyzer", "WorkspaceLanguageServer", "apply_document_changes",
     "finding_to_diagnostic", "offset_to_position", "offsets_to_range",
-    "position_to_offset", "uri_to_path",
+    "flatten_settings", "position_to_offset", "uri_to_path",
 ]

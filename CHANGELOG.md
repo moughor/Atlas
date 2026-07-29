@@ -236,3 +236,9 @@
 - Added LSP code-action capability advertisement and context filtering.
 - Added a provider protocol for host-defined code actions.
 - Kept actions command-based; source auto-fixes remain reserved for PR89.
+# PR84 - LSP configuration synchronization
+
+- Added synchronized client configuration overrides with generation tracking.
+- Added scoped `workspace/configuration` responses.
+- Added watched `atlas.yaml` reload with rollback on invalid configuration.
+- Added deterministic diagnostic republishing and notification draining.
