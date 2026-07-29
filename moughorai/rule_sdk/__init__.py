@@ -11,8 +11,26 @@ from .runtime import (
 )
 from .testing import ExpectedFinding, RuleTestCase, RuleTestHarness, RuleTestResult
 from .metadata import RuleCatalog, RuleMetadata, metadata_for, rule_metadata
+from .fixes import (
+    AutoFixError,
+    AutoFixPlanner,
+    AutoFixResult,
+    FileFixApplier,
+    FixPlan,
+    FixProvider,
+    FixSafety,
+    RuleFix,
+    SourceEdit,
+)
 
 __all__ = [
+    "AutoFixError",
+    "AutoFixPlanner",
+    "AutoFixResult",
+    "FileFixApplier",
+    "FixPlan",
+    "FixProvider",
+    "FixSafety",
     "Rule",
     "RuleAuthoringError",
     "RuleContext",
@@ -20,6 +38,7 @@ __all__ = [
     "ExpectedFinding",
     "RuleFinding",
     "RuleLocation",
+    "RuleFix",
     "RuleCatalog",
     "RuleMetadata",
     "RuleRegistry",
@@ -29,6 +48,7 @@ __all__ = [
     "RuleTestCase",
     "RuleTestHarness",
     "RuleTestResult",
+    "SourceEdit",
     "metadata_for",
     "rule_metadata",
 ]

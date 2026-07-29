@@ -266,3 +266,9 @@
 - Added enablement, deprecation, and replacement metadata.
 - Added decorator attachment and backward-compatible metadata synthesis.
 - Added deterministic rule catalogs and metadata filtering.
+# PR89 - Auto-fix framework
+
+- Added safe and review-required rule fixes with validated source edits.
+- Added deterministic fix planning, stale-source checks, and conflict detection.
+- Added in-memory preview/application with review gating.
+- Added root-confined, staged file application with rollback on replacement errors.
