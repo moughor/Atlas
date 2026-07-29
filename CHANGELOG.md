@@ -361,3 +361,8 @@
 - Added a reproducible 23,000-file, multi-project benchmark using production indexing and workspace fingerprinting.
 - Added phase timings, throughput, peak-memory reporting, and deterministic content verification.
 - Kept generated corpora temporary by default and avoided machine-dependent performance test thresholds.
+## PR105 — Public API Boundary
+
+- Added a curated, versioned `moughorai.public_api` facade for external consumers.
+- Added a frozen constructor-signature manifest and deterministic compatibility checks.
+- Preserved legacy imports and object identity while documenting versioning and deprecation policy.
