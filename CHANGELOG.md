@@ -224,3 +224,9 @@
 - Added resolved project configuration to workspace analyzer callbacks.
 - Added workspace diagnostic requests and workspace-folder lifecycle support.
 - Preserved the PR65 document-local language-server API.
+# PR82 - Incremental editor analysis
+
+- Added ordered LSP range-edit application and validated document versions.
+- Added incremental workspace analyzer callbacks with normalized change sets.
+- Added full-analysis fallback for existing PR81 analyzers.
+- Added deterministic publication of incremental findings.

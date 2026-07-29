@@ -82,12 +82,15 @@ class DiagnosticPublisher:
         self._last_payload: dict[str, PublishDiagnostics] = {}
 
     def analyze(self, document: TextDocument) -> PublishDiagnostics:
+        return self.publish(document, self._analyzer(document))
+
+    def publish(self, document: TextDocument, findings: Iterable[Any]) -> PublishDiagnostics:
         current = self._versions.get(document.uri, -1)
         if document.version < current:
             raise ValueError(f"stale document version: {document.version} < {current}")
         diagnostics = tuple(
             sorted(
-                (finding_to_diagnostic(document, finding) for finding in self._analyzer(document)),
+                (finding_to_diagnostic(document, finding) for finding in findings),
                 key=lambda item: (
                     item.range.start.line,
                     item.range.start.character,
