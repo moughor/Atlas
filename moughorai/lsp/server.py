@@ -16,6 +16,10 @@ class AtlasLanguageServer:
         self.publisher = DiagnosticPublisher(analyzer)
         self._documents: dict[str, TextDocument] = {}
 
+    @property
+    def documents(self) -> tuple[TextDocument, ...]:
+        return tuple(sorted(self._documents.values(), key=lambda item: item.uri))
+
     def handle(self, message: Mapping[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
         params = message.get("params", {})

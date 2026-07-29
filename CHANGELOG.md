@@ -218,3 +218,9 @@
 - Corrected setuptools discovery to package the repository's actual modules.
 - Added release metadata, README, MIT license, and canonical version API.
 - Added `atlas --version` and verified the built wheel and console entry point.
+# PR81 - Workspace LSP
+
+- Added workspace-aware document routing to the most-specific Atlas project.
+- Added resolved project configuration to workspace analyzer callbacks.
+- Added workspace diagnostic requests and workspace-folder lifecycle support.
+- Preserved the PR65 document-local language-server API.
