@@ -1,3 +1,7 @@
+## PR67 — Workspace & Project Model
+
+- Added deterministic multi-project workspace loading, discovery, dependency planning, impact analysis, and content snapshots.
+
 # Changelog
 
 ## Atlas Sprint 3 - PR #7
