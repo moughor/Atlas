@@ -14,6 +14,7 @@ from .finding_baseline import FindingBaselineError, FindingBaselineService, Find
 from .plugin_sdk import PluginDiscovery
 from .quality_gate import FindingSeverity, QualityGatePolicy, WorkspaceQualityGate
 from .version import __version__
+from .git_diff import GitDiffError, GitDiffFilter, GitDiffService
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -126,11 +127,16 @@ def analyze(
     output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format: text, json, jsonl, or sarif.")] = OutputFormat.TEXT,
     baseline: Annotated[Path | None, typer.Option("--baseline", help="Report only findings absent from this baseline.")] = None,
     write_baseline: Annotated[Path | None, typer.Option("--write-baseline", help="Write all current findings as a baseline.")] = None,
+    diff: Annotated[bool, typer.Option("--diff", help="Report findings only on changed Git lines.")] = False,
+    diff_base: Annotated[str | None, typer.Option("--diff-base", help="Git base revision for changed-line analysis.")] = None,
+    diff_head: Annotated[str | None, typer.Option("--diff-head", help="Git head revision (requires --diff-base).")] = None,
+    staged: Annotated[bool, typer.Option("--staged", help="Analyze staged Git changes.")] = False,
 ) -> None:
     """Analyze a workspace."""
     def operation() -> None:
         report = _execute(_context(root), projects=tuple(project or ()), workers=workers, force=force, recover=recover)
         report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
+        report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
         _emit_report(report, output_format)
 
     _run_command(operation)
@@ -144,6 +150,10 @@ def check(
     output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format: text, json, jsonl, or sarif.")] = OutputFormat.TEXT,
     baseline: Annotated[Path | None, typer.Option("--baseline", help="Report only findings absent from this baseline.")] = None,
     write_baseline: Annotated[Path | None, typer.Option("--write-baseline", help="Write all current findings as a baseline.")] = None,
+    diff: Annotated[bool, typer.Option("--diff", help="Report findings only on changed Git lines.")] = False,
+    diff_base: Annotated[str | None, typer.Option("--diff-base", help="Git base revision for changed-line analysis.")] = None,
+    diff_head: Annotated[str | None, typer.Option("--diff-head", help="Git head revision (requires --diff-base).")] = None,
+    staged: Annotated[bool, typer.Option("--staged", help="Analyze staged Git changes.")] = False,
     fail_on: Annotated[FindingSeverity | None, typer.Option("--fail-on", help="Fail on findings at or above this severity.")] = None,
     max_findings: Annotated[int | None, typer.Option("--max-findings", min=0, help="Maximum allowed findings.")] = None,
     finding_exit_code: Annotated[int | None, typer.Option("--finding-exit-code", min=1, max=255)] = None,
@@ -154,6 +164,7 @@ def check(
         context = _context(root)
         report = _execute(context, projects=tuple(project or ()), workers=workers, force=False, recover=True)
         report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
+        report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
         _emit_report(report, output_format)
         if not report.succeeded:
             policy = QualityGatePolicy.from_options(
@@ -266,6 +277,7 @@ def _run_command(operation: Callable[[], None]) -> None:
         WorkspaceConfigurationError,
         WorkspaceStateError,
         FindingBaselineError,
+        GitDiffError,
     ) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -283,6 +295,22 @@ def _apply_baseline_options(
     if baseline is not None:
         report, _ = service.filter(report, FindingBaselineStore(baseline).load())
     return report
+
+
+def _apply_diff_options(
+    report: WorkspaceRunReport,
+    root: Path,
+    *,
+    enabled: bool,
+    base: str | None,
+    head: str | None,
+    staged: bool,
+) -> WorkspaceRunReport:
+    if not (enabled or base is not None or head is not None or staged):
+        return report
+    resolved = root.expanduser().resolve()
+    diff = GitDiffService(resolved).collect(base=base, head=head, staged=staged)
+    return GitDiffFilter().filter_report(report, diff, root=resolved)
 
 
 def _flatten(values: Mapping[str, Any], prefix: str = "") -> tuple[tuple[str, Any], ...]:

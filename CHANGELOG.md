@@ -284,3 +284,9 @@
 - Added deterministic rule descriptors, results, locations, and fingerprints.
 - Added PR88 metadata enrichment, invocation status, automation IDs, and fixes.
 - Integrated the exporter with the backward-compatible PR76 CLI format.
+# PR92 - Git diff analysis
+
+- Added safe Git working-tree, staged, and base/head diff collection.
+- Added deterministic unified-diff files, hunks, renames, binary flags, and lines.
+- Added report filtering to findings on newly added lines.
+- Added `analyze` and `check` Git diff CLI options after PR77 baseline filtering.
