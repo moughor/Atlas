@@ -29,6 +29,16 @@ class PluginRegistry:
             )
         self._manifests[manifest.plugin_id] = manifest
 
+    def replace(self, manifest: PluginManifest) -> PluginManifest:
+        old = self.get(manifest.plugin_id)
+        constraint = VersionConstraint(manifest.api_version)
+        if not constraint.matches(self.api_version):
+            raise PluginCompatibilityError(
+                f"plugin {manifest.plugin_id} requires API {manifest.api_version}; running {self.api_version}"
+            )
+        self._manifests[manifest.plugin_id] = manifest
+        return old
+
     def unregister(self, plugin_id: str) -> PluginManifest:
         try:
             return self._manifests.pop(plugin_id)
