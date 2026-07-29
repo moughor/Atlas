@@ -1,3 +1,11 @@
+## PR75 — Unified CLI
+
+- Added the `atlas` executable with `analyze`, `check`, `watch`, `config`, and `plugins` commands.
+- Unified workspace execution, PR74 recovery, PR73 concurrency, PR71 configuration, and plugin discovery behind one deterministic command surface.
+- Preserved the existing `moughorai` executable and `ask` command.
+- Kept output intentionally plain-text; structured formats remain scoped to PR76.
+- Added snapshot initialization for `watch`; continuous analysis remains scoped to PR78.
+
 ## PR74 — Workspace Recovery Manager
 
 - Added atomic, checksummed recovery journals for interrupted workspace analyses.
