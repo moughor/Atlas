@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 from .workspace import ProjectRun, WorkspaceRunReport
+from .sarif import SarifExporter
 
 
 class OutputFormat(str, Enum):
@@ -64,43 +65,7 @@ def _run_payload(run: ProjectRun) -> dict[str, Any]:
 
 
 def _sarif(report: WorkspaceRunReport) -> dict[str, Any]:
-    results: list[dict[str, Any]] = []
-    rules: dict[str, dict[str, Any]] = {}
-    for run in report.runs:
-        for finding in _findings(run):
-            rule_id = str(finding.get("rule_id", finding.get("ruleId", "atlas.finding")))
-            message = str(finding.get("message", finding.get("description", rule_id)))
-            level = _sarif_level(finding.get("level", finding.get("severity", "warning")))
-            result: dict[str, Any] = {
-                "ruleId": rule_id,
-                "level": level,
-                "message": {"text": message},
-                "properties": {"project": run.project},
-            }
-            location = _location(finding)
-            if location is not None:
-                result["locations"] = [location]
-            results.append(result)
-            rules.setdefault(rule_id, {"id": rule_id, "shortDescription": {"text": rule_id}})
-    results.sort(key=_result_key)
-    return {
-        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-        "version": "2.1.0",
-        "runs": [{
-            "tool": {
-                "driver": {
-                    "name": "Atlas",
-                    "informationUri": "https://github.com/atlas",
-                    "rules": [rules[key] for key in sorted(rules)],
-                }
-            },
-            "results": results,
-            "properties": {
-                "analysisOrder": list(report.analysis_order),
-                "succeeded": report.succeeded,
-            },
-        }],
-    }
+    return SarifExporter().to_dict(report)
 
 
 def _findings(run: ProjectRun) -> tuple[Mapping[str, Any], ...]:

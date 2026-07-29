@@ -278,3 +278,9 @@
 - Added canonical metadata manifests with per-file sizes and SHA-256 hashes.
 - Added byte-reproducible ZIP construction with fixed timestamps and permissions.
 - Added archive schema, path, declaration, size, and checksum verification.
+# PR91 - SARIF 2.1.0
+
+- Added a reusable validated SARIF 2.1.0 workspace exporter.
+- Added deterministic rule descriptors, results, locations, and fingerprints.
+- Added PR88 metadata enrichment, invocation status, automation IDs, and fixes.
+- Integrated the exporter with the backward-compatible PR76 CLI format.
