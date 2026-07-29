@@ -344,3 +344,9 @@
 - Added additive bulk APIs while preserving immutable copy-on-write methods.
 - Refactored variable inference to freeze semantic tables once per pass.
 - Added scaling benchmarks and a 250-declaration regression test.
+## PR102 — Global Symbol Concurrency
+
+- Made every `GlobalSymbolDatabase` operation linearizable under one `RLock`.
+- Added atomic batch insertion with all-or-nothing duplicate validation.
+- Added detached, immutable, versioned snapshots for multi-step readers.
+- Added contention, duplicate-race, concurrent removal, and invariant tests.
