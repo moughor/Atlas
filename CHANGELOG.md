@@ -435,3 +435,7 @@ complete implementation detail.
 - Added the `atlas ai` namespace with `context`, `explain`, `ask`, `review`,
   and `fix` entry points.
 - Added deterministic ASS context output and explicit future-engine boundaries.
+## PR113 — Conversation Memory
+
+- Added versioned, workspace-scoped SQLite conversation memory.
+- Added ordered messages and structured references to Atlas semantic facts.
