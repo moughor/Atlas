@@ -78,7 +78,6 @@ def test_future_engine_commands_are_explicit_and_do_not_call_provider(tmp_path: 
     root = _workspace(tmp_path)
     _snapshot(root)
     invocations = {
-        "ask": ["ai", "ask", "Why?", str(root)],
         "fix": ["ai", "fix", str(root)],
     }
     for command, arguments in invocations.items():

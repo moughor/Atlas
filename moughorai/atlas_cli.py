@@ -28,6 +28,7 @@ from .semantic_snapshot import SemanticSnapshotError, SemanticSnapshotStore
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
 from .ai_review import ReviewEngine, ReviewRequest
+from .ai_ask import AskEngine, AskRequest
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
@@ -473,11 +474,23 @@ def ai_ask_command(
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
     snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
 ) -> None:
-    """Ask about snapshot knowledge (engine delivered by PR116)."""
+    """Ask a semantic question about an ASS artifact."""
     if not question.strip():
         typer.echo("error: question must not be empty", err=True)
         raise typer.Exit(code=2)
-    _future_ai_engine("ask", root, snapshot)
+    def operation() -> None:
+        loaded = _load_ai_snapshot(root, snapshot)
+        provider = (_ai_provider_factory or OllamaProvider)()
+        try:
+            result = AskEngine(LlmClient(provider), memory=ConversationMemoryStore(root)).ask(
+                loaded, AskRequest(question)
+            )
+            typer.echo(result.answer)
+        finally:
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
+    _run_command(operation)
 
 
 @ai_app.command("review")

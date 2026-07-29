@@ -447,3 +447,7 @@ complete implementation detail.
 
 - Added semantic architecture reviews with deterministic category selection.
 - Activated `atlas ai review` and conversation-memory recording.
+## PR116 — Ask Engine
+
+- Added grounded semantic questions with bounded conversation context.
+- Activated `atlas ai ask` with durable follow-up memory.
