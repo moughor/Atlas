@@ -296,3 +296,9 @@
 - Added `atlas ci` with canonical output paths, Python version selection, and safe overwrite controls.
 - Configured generated jobs to run Atlas quality gates and retain or upload SARIF results.
 - Added atomic template writes while preserving all existing CLI behavior.
+## PR94 — Historical Database
+
+- Added a versioned, transactional SQLite database for workspace analysis history.
+- Recorded stable run metadata and ordered per-project results after CLI filtering.
+- Added deterministic history queries, lookup, pagination, and retention pruning.
+- Added `atlas history` while preserving existing analysis report formats and exit codes.

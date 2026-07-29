@@ -16,6 +16,7 @@ from .plugin_sdk import PluginDiscovery
 from .quality_gate import FindingSeverity, QualityGatePolicy, WorkspaceQualityGate
 from .version import __version__
 from .git_diff import GitDiffError, GitDiffFilter, GitDiffService
+from .history import HistoryDatabase, HistoryDatabaseError
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -138,6 +139,7 @@ def analyze(
         report = _execute(_context(root), projects=tuple(project or ()), workers=workers, force=force, recover=recover)
         report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
         report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
+        HistoryDatabase(root).record(report)
         _emit_report(report, output_format)
 
     _run_command(operation)
@@ -166,6 +168,7 @@ def check(
         report = _execute(context, projects=tuple(project or ()), workers=workers, force=False, recover=True)
         report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
         report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
+        HistoryDatabase(root).record(report)
         _emit_report(report, output_format)
         if not report.succeeded:
             policy = QualityGatePolicy.from_options(
@@ -287,6 +290,24 @@ def ci_command(
     _run_command(operation)
 
 
+@app.command("history")
+def history_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    limit: Annotated[int, typer.Option("--limit", min=0, help="Maximum runs to display.")] = 20,
+) -> None:
+    """List recorded workspace analyses, newest first."""
+    def operation() -> None:
+        runs = HistoryDatabase(root).list(limit=limit)
+        for run in runs:
+            typer.echo(
+                f"{run.run_id} {run.created_at} "
+                f"{'succeeded' if run.succeeded else 'failed'} projects={len(run.runs)}"
+            )
+        typer.echo(f"runs: {len(runs)}")
+
+    _run_command(operation)
+
+
 def _run_command(operation: Callable[[], None]) -> None:
     try:
         operation()
@@ -302,6 +323,7 @@ def _run_command(operation: Callable[[], None]) -> None:
         FindingBaselineError,
         GitDiffError,
         CiTemplateError,
+        HistoryDatabaseError,
     ) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
