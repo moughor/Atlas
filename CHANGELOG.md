@@ -254,3 +254,9 @@
 - Added validated finding reporting with locations, severities, and properties.
 - Added deterministic rule execution, deduplication, and exception attribution.
 - Added a sorted, conflict-safe rule registry.
+# PR87 - Rule testing framework
+
+- Added dependency-free rule test cases, harnesses, and deterministic results.
+- Added exact and subset expected-finding matching.
+- Added clean/count assertions with descriptive failure output.
+- Added stable multi-case and multi-rule execution.

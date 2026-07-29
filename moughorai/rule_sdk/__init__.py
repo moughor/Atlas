@@ -9,16 +9,21 @@ from .runtime import (
     RuleReporter,
     RuleRunner,
 )
+from .testing import ExpectedFinding, RuleTestCase, RuleTestHarness, RuleTestResult
 
 __all__ = [
     "Rule",
     "RuleAuthoringError",
     "RuleContext",
     "RuleExecutionError",
+    "ExpectedFinding",
     "RuleFinding",
     "RuleLocation",
     "RuleRegistry",
     "RuleReporter",
     "RuleRunner",
     "RuleSeverity",
+    "RuleTestCase",
+    "RuleTestHarness",
+    "RuleTestResult",
 ]
