@@ -9,7 +9,8 @@ PR106 production review without adding product features.
   identifier, qualified-name, simple-name, kind, and source lookups.
 - Public single-shot semantic attachment helpers explicitly direct bulk callers
   to the corresponding pass APIs.
-- Expression traversal uses semantic node keys instead of object identities.
+- Expression traversal uses semantic node keys instead of object identities and
+  accumulates types through one builder, freezing once per pass.
 - The Java frontend result is named `JavaAnalysisResult`; `SemanticDocument`
   remains an identity-preserving compatibility alias.
 - Production modules use explicit imports instead of wildcard imports.
@@ -37,8 +38,11 @@ Final focused result:
 Final complete suite:
 
 ```text
-3331 passed, 1 skipped in 7.12s
+3332 passed, 1 skipped in 8.23s
 ```
 
 The skipped test requires file-symlink creation, which was unavailable in the
 Windows test environment. It is reported as skipped rather than passed.
+
+The final expression-builder focused matrix passed **22 tests with 1 skipped in
+0.23s**.

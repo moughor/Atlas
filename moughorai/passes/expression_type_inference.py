@@ -160,10 +160,11 @@ class ExpressionTypeInferencePass(SemanticPass):
         self.registry = registry if registry is not None else TypeRegistry()
 
     def run(self, document: SemanticDocument, context: PassContext) -> SemanticDocument:
-        result = document
+        types = document.types.to_builder()
+        diagnostics: list[Diagnostic] = []
         seen: set[Hashable] = set()
+
         def visit(node: object | None) -> None:
-            nonlocal result
             if node is None:
                 return
             key = expression_node_key(node) if isinstance(node, JavaExpression) else (
@@ -176,16 +177,22 @@ class ExpressionTypeInferencePass(SemanticPass):
                 return
             seen.add(key)
             if isinstance(node, JavaExpression):
-                result = attach_expression_type(result, node, self.registry)
+                inferred = infer_expression_type(node, document.symbols, self.registry)
+                types.set(expression_node_key(node), inferred.semantic_type)
+                diagnostics.extend(inferred.diagnostics)
             if hasattr(node, "__dataclass_fields__"):
                 for field_name in node.__dataclass_fields__:
                     value = getattr(node, field_name)
-                    if hasattr(value, "__dataclass_fields__"): visit(value)
+                    if hasattr(value, "__dataclass_fields__"):
+                        visit(value)
                     elif isinstance(value, tuple):
                         for item in value:
-                            if hasattr(item, "__dataclass_fields__"): visit(item)
+                            if hasattr(item, "__dataclass_fields__"):
+                                visit(item)
+
         visit(document.syntax_tree)
-        return result
+        result = document.with_artifact("types", types.build())
+        return result.with_diagnostics(diagnostics)
 
 
 __all__ = ["EXPRESSION_INVALID_OPERANDS", "EXPRESSION_CONDITIONAL_MISMATCH", "EXPRESSION_UNKNOWN_NAME",

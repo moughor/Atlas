@@ -9,7 +9,10 @@ from moughorai.global_symbols import GlobalSymbol, GlobalSymbolDatabase, GlobalS
 from moughorai.incremental_analysis.models import IncrementalAnalysisPlan
 from moughorai.incremental_analysis.state import IncrementalStateStore
 from moughorai.java_semantics import JavaAnalysisResult, JavaSemanticFrontEnd, SemanticDocument
+from moughorai.passes import ExpressionTypeInferencePass
 from moughorai.project_index import ProjectFileIndexer
+from moughorai.semantic import PassContext, SemanticDocument as CoreSemanticDocument
+from moughorai.semantic.types import TypeTable
 
 
 def _symbol(name: str, source: Path | None = None) -> GlobalSymbol:
@@ -106,3 +109,22 @@ def test_project_indexer_does_not_follow_file_symlinks(tmp_path: Path) -> None:
     indexed = ProjectFileIndexer().build(tmp_path)
 
     assert tuple(item.relative_path for item in indexed.files) == (Path("target.java"),)
+
+
+def test_expression_pass_uses_bulk_type_builder(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = "{ " + " ".join(f"{index} + {index + 1};" for index in range(250)) + " }"
+    syntax_tree = JavaSemanticFrontEnd().analyze_method_body(source).root
+    document = CoreSemanticDocument(
+        language="java",
+        source=source,
+        syntax_tree=syntax_tree,
+    )
+
+    def reject_copy_on_write(*args: object, **kwargs: object) -> object:
+        raise AssertionError("expression pass used TypeTable.with_type")
+
+    monkeypatch.setattr(TypeTable, "with_type", reject_copy_on_write)
+
+    result = ExpressionTypeInferencePass().run(document, PassContext())
+
+    assert len(result.types) >= 500

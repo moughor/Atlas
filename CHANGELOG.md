@@ -28,7 +28,8 @@ complete implementation detail.
 - Completed strict incremental-state persistence round trips.
 - Added immutable indexes to global symbol snapshots.
 - Replaced production wildcard imports with explicit dependencies.
-- Clarified bulk semantic-pass APIs and preserved Java result compatibility.
+- Applied bulk type construction to expression inference, clarified pass APIs,
+  and preserved Java result compatibility.
 - Added deterministic adversarial parser coverage and architecture guidance.
 
 ## PR77 — Finding Baselines
