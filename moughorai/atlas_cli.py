@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import json
 import logging
 from pathlib import Path
 from typing import Annotated, Any
@@ -23,6 +24,7 @@ from .profiling import PerformanceProfiler
 from .adaptive_scheduler import AdaptiveWorkspaceScheduler
 from .governance import GovernanceAuditLog, GovernanceError
 from .structured_logging import LogFormat, LogLevel, configure_logging, get_logger, log_event
+from .semantic_snapshot import SemanticSnapshotError, SemanticSnapshotStore
 from .workspace import (
     Project,
     WorkspaceAnalysisOrchestrator,
@@ -47,6 +49,12 @@ app = typer.Typer(
     help="Atlas modular static-analysis platform.",
     no_args_is_help=True,
 )
+ai_app = typer.Typer(
+    name="ai",
+    help="Reason over verified Atlas semantic snapshots.",
+    no_args_is_help=True,
+)
+app.add_typer(ai_app, name="ai")
 _logger = get_logger("cli")
 
 
@@ -385,6 +393,91 @@ def governance_command(
     _run_command(operation)
 
 
+def _load_ai_snapshot(root: Path, snapshot: Path | None):
+    context = _context(root)
+    store = SemanticSnapshotStore(context.service.workspace)
+    loaded = store.load(snapshot)
+    if loaded is None:
+        target = snapshot or store.latest_path
+        raise SemanticSnapshotError(
+            f"semantic snapshot not found: {target}; run analysis snapshot creation first"
+        )
+    return loaded
+
+
+def _future_ai_engine(command: str, root: Path, snapshot: Path | None) -> None:
+    def operation() -> None:
+        _load_ai_snapshot(root, snapshot)
+        typer.echo(
+            f"error: atlas ai {command} requires its roadmap engine, which is not implemented yet",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    _run_command(operation)
+
+
+@ai_app.command("context")
+def ai_context_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    snapshot: Annotated[
+        Path | None,
+        typer.Option("--snapshot", help="Read a specific .ass file instead of latest.ass."),
+    ] = None,
+    metadata: Annotated[
+        bool,
+        typer.Option("--metadata", help="Include snapshot metadata instead of semantic context only."),
+    ] = False,
+) -> None:
+    """Print deterministic semantic context from an Atlas snapshot."""
+    def operation() -> None:
+        loaded = _load_ai_snapshot(root, snapshot)
+        payload = loaded.to_dict() if metadata else loaded.to_context().to_dict()
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+    _run_command(operation)
+
+
+@ai_app.command("explain")
+def ai_explain_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
+) -> None:
+    """Explain snapshot knowledge (engine delivered by PR114)."""
+    _future_ai_engine("explain", root, snapshot)
+
+
+@ai_app.command("ask")
+def ai_ask_command(
+    question: Annotated[str, typer.Argument(help="Question about the workspace.")],
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
+) -> None:
+    """Ask about snapshot knowledge (engine delivered by PR116)."""
+    if not question.strip():
+        typer.echo("error: question must not be empty", err=True)
+        raise typer.Exit(code=2)
+    _future_ai_engine("ask", root, snapshot)
+
+
+@ai_app.command("review")
+def ai_review_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
+) -> None:
+    """Review snapshot knowledge (engine delivered by PR115)."""
+    _future_ai_engine("review", root, snapshot)
+
+
+@ai_app.command("fix")
+def ai_fix_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
+) -> None:
+    """Propose a validated fix (engine delivered by PR117)."""
+    _future_ai_engine("fix", root, snapshot)
+
+
 def _run_command(operation: Callable[[], None]) -> None:
     try:
         operation()
@@ -402,6 +495,7 @@ def _run_command(operation: Callable[[], None]) -> None:
         CiTemplateError,
         HistoryDatabaseError,
         GovernanceError,
+        SemanticSnapshotError,
     ) as exc:
         log_event(
             _logger,

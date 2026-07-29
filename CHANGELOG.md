@@ -430,3 +430,8 @@ complete implementation detail.
 - Added immutable, checksummed semantic snapshot archives under `.atlas/ass/`.
 - Added atomic `latest.ass` publication, workspace fingerprints, analyzer
   versioning, history references, and offline PR108 context restoration.
+## PR112 — Atlas AI CLI
+
+- Added the `atlas ai` namespace with `context`, `explain`, `ask`, `review`,
+  and `fix` entry points.
+- Added deterministic ASS context output and explicit future-engine boundaries.
