@@ -409,3 +409,8 @@ complete implementation detail.
 - Documented the exact plugin integrity and permission controls Atlas enforces.
 - Explicitly documented in-process execution, opt-in defaults, TOCTOU risk, and absent sandbox/signature guarantees.
 - Added production isolation guidance, trust assumptions, and documentation contract tests.
+## PR108 — Workspace Context Builder
+
+- Added deterministic semantic JSON snapshots for workspace, project,
+  diagnostic, history, symbol, type, and performance data.
+- Added strict normalization that rejects process-specific context values.
