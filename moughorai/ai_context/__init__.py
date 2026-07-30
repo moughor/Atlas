@@ -8,6 +8,13 @@ from .collector import (
     SemanticContextCollector,
 )
 from .project_analyzer import SemanticProjectAnalyzer
+from .analyzer_registry import (
+    AnalyzerRegistration,
+    AnalyzerRegistry,
+    JavaLanguageAnalyzer,
+    LanguageAnalyzer,
+    PythonLanguageAnalyzer,
+)
 from .persistence import decode_analysis_result, encode_analysis_result
 
 __all__ = [
@@ -15,6 +22,11 @@ __all__ = [
     "SemanticCollectionReport",
     "SemanticContextCollector",
     "SemanticProjectAnalyzer",
+    "AnalyzerRegistration",
+    "AnalyzerRegistry",
+    "JavaLanguageAnalyzer",
+    "LanguageAnalyzer",
+    "PythonLanguageAnalyzer",
     "decode_analysis_result",
     "encode_analysis_result",
     "WorkspaceContextBuilder",

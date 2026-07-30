@@ -1,5 +1,13 @@
 # Changelog
 
+## PR124 — Analyzer Registry
+
+- Replaced hard-coded language routing with a synchronized analyzer registry.
+- Kept Java and Python as built-in analyzers.
+- Added a deterministic plugin contract for Kotlin, JavaScript, TypeScript,
+  Rust, Go, and additional language frontends.
+- Preserved the `SemanticProjectAnalyzer` facade and stable report shape.
+
 ## PR123 — Project-Scoped Java Type Identity
 
 - Scoped global symbol identity and lookup by workspace project.

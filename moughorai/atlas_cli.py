@@ -33,6 +33,7 @@ from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
 from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
 from .ai_context import (
+    AnalyzerRegistry,
     SemanticContextCollector,
     SemanticProjectAnalyzer,
     decode_analysis_result,
@@ -106,7 +107,7 @@ _ai_provider_factory: Callable[[], Any] | None = None
 
 
 def _default_analyzer(service: WorkspaceService) -> Analyzer:
-    return SemanticProjectAnalyzer()
+    return AnalyzerRegistry()
 
 
 def _context(root: Path) -> AtlasCliContext:
