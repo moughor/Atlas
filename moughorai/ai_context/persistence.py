@@ -8,6 +8,7 @@ from moughorai.global_symbols import GlobalSymbol, GlobalSymbolKind
 from moughorai.global_symbols.models import SymbolId
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable, type_from_dict, type_to_dict
+from moughorai.dependency_intelligence import DeclaredDependency
 
 
 _DOCUMENT_MARKER = "atlas.semantic-document.v1"
@@ -38,6 +39,11 @@ def encode_analysis_result(value: Any) -> Any:
             for key, item in sorted(value.types.entries.items(), key=lambda pair: str(pair[0]))
             if isinstance(key, (str, int, float, bool)) or key is None
         ],
+        "declared_dependencies": [
+            item.to_dict()
+            for item in value.get_artifact("declared_dependencies", ())
+            if isinstance(item, DeclaredDependency)
+        ],
     }
 
 
@@ -61,6 +67,18 @@ def decode_analysis_result(value: Any) -> Any:
             item["key"]: type_from_dict(item["type"])
             for item in value.get("types", ())
         }),
+    )
+    document = document.with_artifact(
+        "declared_dependencies",
+        tuple(
+            DeclaredDependency(
+                str(item["ecosystem"]), str(item["name"]),
+                None if item.get("version") is None else str(item["version"]),
+                str(item["scope"]), Path(str(item["source"])),
+                bool(item.get("optional", False)),
+            )
+            for item in value.get("declared_dependencies", ())
+        ),
     )
     return document.with_diagnostics(
         Diagnostic(

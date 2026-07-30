@@ -12,6 +12,7 @@ from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
 from moughorai.workspace import WorkspaceRunReport, WorkspaceService
 from moughorai.workspace.files import project_files
+from moughorai.dependency_intelligence import DeclaredDependency
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -44,7 +45,13 @@ class SemanticContextCollector:
         types: dict[str, TypeTable] = {}
         symbols = GlobalSymbolDatabase()
         projects_with_symbols: set[str] = set()
+        declared_dependencies: list[DeclaredDependency] = []
         for run in report.runs:
+            if isinstance(run.value, SemanticDocument):
+                declared_dependencies.extend(
+                    item for item in run.value.get_artifact("declared_dependencies", ())
+                    if isinstance(item, DeclaredDependency)
+                )
             if self._collect_result(run.project, run.value, diagnostics, types, symbols):
                 projects_with_symbols.add(run.project)
         self._collect_java_sources(diagnostics, symbols, skip=projects_with_symbols)
@@ -54,6 +61,7 @@ class SemanticContextCollector:
             diagnostics=diagnostics,
             symbols=snapshot.symbols,
             types=types,
+            declared_dependencies=declared_dependencies,
         )
         collection = SemanticCollectionReport(
             tuple(run.project for run in report.runs),

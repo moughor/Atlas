@@ -8,6 +8,7 @@ from threading import RLock
 from typing import Any, Protocol
 
 from moughorai.global_symbols import GlobalSymbol, GlobalSymbolKind
+from moughorai.dependency_intelligence import DependencyIntelligenceService
 from moughorai.global_symbols.builder import GlobalSymbolDatabaseBuilder
 from moughorai.global_symbols.models import SymbolId
 from moughorai.java_ast import JavaParser
@@ -113,7 +114,11 @@ class AnalyzerRegistry:
             for registration in registrations
             if grouped.get(registration.language)
         ]
-        return self._merge(project, dependencies, files, documents)
+        merged = self._merge(project, dependencies, files, documents)
+        return merged.with_artifact(
+            "declared_dependencies",
+            DependencyIntelligenceService().analyze(project.path, files),
+        )
 
     @staticmethod
     def _merge(

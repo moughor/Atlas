@@ -1,5 +1,12 @@
 # Changelog
 
+## PR126 — Dependency Intelligence
+
+- Normalized Maven, Gradle, pip, Poetry, npm, and Cargo declarations.
+- Added deterministic ecosystem, version, scope, optionality, and source data.
+- Persisted dependency facts through recovery and semantic snapshots.
+- Kept parsing local and non-executing; malformed manifests remain isolated.
+
 ## PR125 — Cross-Language Workspace
 
 - Added a shared deterministic semantic graph for Java, Python, and TypeScript.

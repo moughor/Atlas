@@ -13,6 +13,7 @@ from moughorai.semantic import Diagnostic
 from moughorai.semantic.types import TypeTable
 from moughorai.semantic.types.serialization import type_to_dict
 from moughorai.workspace import Project, Workspace
+from moughorai.dependency_intelligence import DeclaredDependency
 
 from .models import WorkspaceSemanticContext
 
@@ -43,6 +44,7 @@ class WorkspaceContextBuilder:
         symbols: Iterable[GlobalSymbol] = (),
         types: Mapping[str, TypeTable] | TypeTable | None = None,
         metrics: ProfileReport | Iterable[ProfileMetric] = (),
+        declared_dependencies: Iterable[DeclaredDependency] = (),
     ) -> WorkspaceSemanticContext:
         selected = tuple(projects) if projects is not None else workspace.projects
         semantic_symbols = tuple(symbols)
@@ -80,6 +82,10 @@ class WorkspaceContextBuilder:
                 key=lambda item: item["name"],
             ),
             "semantic_graph": self._semantic_graph(semantic_symbols),
+            "dependencies": [
+                item.to_dict(root=workspace.root)
+                for item in sorted(set(declared_dependencies))
+            ],
         }
         return WorkspaceSemanticContext(payload)
 
