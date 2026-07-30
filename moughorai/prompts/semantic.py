@@ -65,7 +65,15 @@ class SemanticPromptBuilder:
             "workspace name, discovered project count, module hierarchy, primary "
             "languages, build systems, frameworks, major repository areas, entry "
             "points, dependency overview, and high-level architecture. End with "
-            "important limitations or uncertainty. Never invent missing facts and "
+            "important limitations or uncertainty. State confidence for every "
+            "architecture pattern. Present findings below 0.75 as possibilities, "
+            "not facts. Reconcile or explain classification_conflicts. Treat "
+            "dependency counts as declared dependency records or manifest counts "
+            "according to their exact labels, never as resolved external packages. "
+            "Do not claim that cycles or directionality issues are absent unless "
+            "dependency_analysis.executed is true and evidence_edge_count is positive. "
+            "Qualify frameworks using framework_evidence scope; test-or-sample "
+            "evidence is not repository-wide adoption. Never invent missing facts and "
             "never request or reproduce raw source code."
         ),
         user=(

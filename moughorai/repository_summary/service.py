@@ -53,17 +53,27 @@ class RepositorySummaryService:
         projects: list[ProjectSummary] = []
         language_counts: Counter[str] = Counter()
         dependency_counts: Counter[str] = Counter()
+        dependency_manifests: set[tuple[str, Path]] = set()
         build_systems: set[str] = set()
         frameworks: set[str] = set()
         entry_points: set[str] = set()
+        framework_evidence: set[tuple[str, str, str, str]] = set()
         production = test = generated = 0
         for project in sorted(self.service.workspace.projects, key=lambda item: item.name):
             summary, project_dependencies = self._project(project)
             projects.append(summary)
             language_counts.update(dict(summary.languages))
             dependency_counts.update(item.ecosystem for item in project_dependencies)
+            dependency_manifests.update(
+                (item.ecosystem, item.source.resolve())
+                for item in project_dependencies
+            )
             build_systems.update(summary.build_systems)
             frameworks.update(summary.frameworks)
+            framework_evidence.update(
+                (framework, project.name, scope, reference)
+                for framework, scope, reference in summary.framework_evidence
+            )
             entry_points.update(f"{project.name}:{path}" for path in summary.entry_points)
             production += summary.production_files
             test += summary.test_files
@@ -80,6 +90,10 @@ class RepositorySummaryService:
             test,
             generated,
             tuple(sorted(dependency_counts.items())),
+            tuple(sorted(Counter(
+                ecosystem for ecosystem, _ in dependency_manifests
+            ).items())),
+            tuple(sorted(framework_evidence)),
         )
 
     def _project(self, project: Project):
@@ -106,7 +120,7 @@ class RepositorySummaryService:
             if item.category is TechnologyCategory.BUILD
         ))
         dependencies = self.dependencies.analyze(project.path, paths)
-        frameworks = self._frameworks(paths, dependencies)
+        frameworks, framework_evidence = self._frameworks(project, paths, dependencies)
         entries = self._entry_points(project, classified)
         generated = sum(item.kind is FileKind.GENERATED for item in classified)
         tests = sum(
@@ -135,6 +149,7 @@ class RepositorySummaryService:
             tests,
             generated,
             len(dependencies),
+            framework_evidence,
         )
         return summary, dependencies
 
@@ -151,27 +166,47 @@ class RepositorySummaryService:
             if not any(self._contains(root, path.resolve()) for root in nested_roots)
         )
 
-    def _frameworks(self, paths, dependencies) -> tuple[str, ...]:
+    def _frameworks(self, project, paths, dependencies):
         values: set[str] = set()
+        evidence: set[tuple[str, str, str]] = set()
+        scope = self._framework_scope(project)
         for dependency in dependencies:
             normalized = dependency.name.casefold()
             for token, framework in self._FRAMEWORK_DEPENDENCIES.items():
                 if normalized == token or token in normalized:
                     values.add(framework)
+                    evidence.add((framework, scope, dependency.name))
             for token, framework in (
                 ("spring", "Spring"), ("quarkus", "Quarkus"), ("micronaut", "Micronaut"),
             ):
                 if token in normalized:
                     values.add(framework)
+                    evidence.add((framework, scope, dependency.name))
         for pom in (path for path in paths if path.name == "pom.xml"):
             try:
-                values.update(
-                    item.name
-                    for item in self.maven_frameworks.analyze(pom).technologies
-                )
+                for item in self.maven_frameworks.analyze(pom).technologies:
+                    values.add(item.name)
+                    for detail in item.evidence:
+                        evidence.add((item.name, scope, detail.coordinate))
             except (MavenParseError, OSError, ValueError):
                 continue
-        return tuple(sorted(values))
+        return tuple(sorted(values)), tuple(sorted(evidence))
+
+    def _framework_scope(self, project: Project) -> str:
+        try:
+            relative = project.path.resolve().relative_to(
+                self.service.workspace.root.resolve()
+            )
+        except ValueError:
+            relative = Path(project.name)
+        terms = {
+            part.casefold()
+            for part in (*relative.parts, project.name)
+        }
+        markers = ("test", "tests", "sample", "samples", "example", "examples", "documentation", "tooling")
+        if any(marker in term for marker in markers for term in terms):
+            return "test-or-sample"
+        return "project-local"
 
     def _entry_points(self, project: Project, files) -> tuple[str, ...]:
         entries: set[str] = set()

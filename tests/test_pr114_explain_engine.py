@@ -88,6 +88,12 @@ def test_default_repository_explanation_prioritizes_compact_summary() -> None:
             "languages": {"Java": 120, "Python": 30},
             "build_systems": ["Gradle"],
             "frameworks": ["Spring"],
+            "framework_evidence": [{
+                "framework": "Spring",
+                "project": "sample",
+                "scope": "test-or-sample",
+                "reference": "spring-test",
+            }],
             "entry_points": ["api:Main.java"],
             "dependencies_by_ecosystem": {"gradle": 12},
         },
@@ -118,10 +124,15 @@ def test_default_repository_explanation_prioritizes_compact_summary() -> None:
     system, user = (message.content for message in request.messages)
     assert request.metadata["prompt_template"] == "atlas-repository-explanation-v1"
     assert "Prioritize repository_summary" in system
+    assert "Present findings below 0.75 as possibilities" in system
+    assert "Do not claim that cycles" in system
     assert '"repository_summary"' in user
     assert '"project_count":2' in user
     assert '"Gradle"' in user and '"Spring"' in user
+    assert '"scope":"test-or-sample"' in user
     assert '"layered"' in user
+    assert '"total_declared_dependency_records":12' in user
+    assert '"dependencies_by_ecosystem"' not in user
     assert "OMITTED_MARKER" not in user
     assert "source-free" in user
     assert result.estimated_input_tokens < 2_000

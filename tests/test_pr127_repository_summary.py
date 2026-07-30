@@ -46,6 +46,16 @@ def test_summary_composes_existing_inventory_capabilities(tmp_path: Path) -> Non
     assert api["entry_points"] == ["main.py"]
     assert (api["production_files"], api["test_files"], api["generated_files"]) == (1, 1, 1)
     assert payload["dependencies_by_ecosystem"] == {"pypi": 1}
+    assert payload["declared_dependency_count_by_ecosystem"] == {"pypi": 1}
+    assert payload["total_declared_dependencies"] == 1
+    assert payload["dependency_manifest_count_by_ecosystem"] == {"pypi": 1}
+    assert payload["total_dependency_manifests"] == 1
+    assert payload["framework_evidence"] == [{
+        "framework": "FastAPI",
+        "project": "api",
+        "scope": "project-local",
+        "reference": "fastapi",
+    }]
     assert payload["module_hierarchy"] == [
         {"project": "api", "parent": "repository"},
         {"project": "repository", "parent": None},

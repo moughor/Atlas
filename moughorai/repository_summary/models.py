@@ -18,6 +18,7 @@ class ProjectSummary:
     test_files: int
     generated_files: int
     dependencies: int
+    framework_evidence: tuple[tuple[str, str, str], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -33,6 +34,10 @@ class ProjectSummary:
             "test_files": self.test_files,
             "generated_files": self.generated_files,
             "dependencies": self.dependencies,
+            "framework_evidence": [
+                {"framework": framework, "scope": scope, "reference": reference}
+                for framework, scope, reference in self.framework_evidence
+            ],
         }
 
 
@@ -49,6 +54,8 @@ class RepositorySummary:
     test_files: int
     generated_files: int
     dependencies_by_ecosystem: tuple[tuple[str, int], ...]
+    dependency_manifests_by_ecosystem: tuple[tuple[str, int], ...] = ()
+    framework_evidence: tuple[tuple[str, str, str, str], ...] = ()
     schema_version: int = 1
 
     def to_dict(self) -> dict[str, object]:
@@ -68,4 +75,21 @@ class RepositorySummary:
             "test_files": self.test_files,
             "generated_files": self.generated_files,
             "dependencies_by_ecosystem": dict(self.dependencies_by_ecosystem),
+            "declared_dependency_count_by_ecosystem": dict(self.dependencies_by_ecosystem),
+            "total_declared_dependencies": sum(value for _, value in self.dependencies_by_ecosystem),
+            "dependency_manifest_count_by_ecosystem": dict(
+                self.dependency_manifests_by_ecosystem
+            ),
+            "total_dependency_manifests": sum(
+                value for _, value in self.dependency_manifests_by_ecosystem
+            ),
+            "framework_evidence": [
+                {
+                    "framework": framework,
+                    "project": project,
+                    "scope": scope,
+                    "reference": reference,
+                }
+                for framework, project, scope, reference in self.framework_evidence
+            ],
         }

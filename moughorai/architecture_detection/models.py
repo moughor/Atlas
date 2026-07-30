@@ -46,6 +46,9 @@ class ArchitectureReport:
     ports: tuple[str, ...]
     adapters: tuple[str, ...]
     infrastructure_layers: tuple[str, ...]
+    dependency_analysis_executed: bool = False
+    dependency_evidence_edges: int = 0
+    classification_conflicts: tuple[str, ...] = ()
     schema_version: int = 1
 
     def to_dict(self) -> dict[str, object]:
@@ -61,4 +64,9 @@ class ArchitectureReport:
             "ports": list(self.ports),
             "adapters": list(self.adapters),
             "infrastructure_layers": list(self.infrastructure_layers),
+            "dependency_analysis": {
+                "executed": self.dependency_analysis_executed,
+                "evidence_edge_count": self.dependency_evidence_edges,
+            },
+            "classification_conflicts": list(self.classification_conflicts),
         }

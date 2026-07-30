@@ -22,6 +22,7 @@ class _ArchitectureFacts:
         values = [
             (str(node.get("id", "")), str(node.get("qualified_name", "")))
             for node in self.nodes
+            if node.get("kind") in (None, "package", "type")
         ]
         values.extend(
             (
@@ -52,11 +53,13 @@ class _TokenDetector:
         *,
         minimum_groups: int,
         base_confidence: float,
+        require_relationship: bool = False,
     ) -> None:
         self.name = name
         self.groups = groups
         self.minimum_groups = minimum_groups
         self.base_confidence = base_confidence
+        self.require_relationship = require_relationship
 
     def detect(self, facts: _ArchitectureFacts) -> ArchitectureFinding | None:
         evidence: list[ArchitectureEvidence] = []
@@ -72,6 +75,13 @@ class _TokenDetector:
                 matched_groups += 1
                 evidence.extend(group_matches[:2])
         if matched_groups < self.minimum_groups:
+            return None
+        references = {item.reference for item in evidence}
+        if self.require_relationship and not any(
+            str(edge.get("source")) in references
+            and str(edge.get("target")) in references
+            for edge in facts.edges
+        ):
             return None
         confidence = min(0.98, self.base_confidence + 0.06 * (matched_groups - self.minimum_groups))
         return ArchitectureFinding(self.name, confidence, tuple(sorted(set(evidence))))
@@ -103,9 +113,16 @@ class _MicroservicesDetector:
     name = "microservices"
 
     def detect(self, facts: _ArchitectureFacts) -> ArchitectureFinding | None:
+        server_frameworks = {
+            "spring", "quarkus", "micronaut", "flask", "fastapi",
+            "django", "nestjs",
+        }
         services = [
             project for project in facts.summary.get("projects", ())
             if project.get("entry_points")
+            and server_frameworks.intersection(
+                str(item).casefold() for item in project.get("frameworks", ())
+            )
         ]
         if len(services) < 2:
             return None
@@ -132,7 +149,8 @@ class ArchitectureDetectionService:
                 "layered",
                 (("controller", "api"), ("service", "application"), ("repository", "dao", "persistence")),
                 minimum_groups=2,
-                base_confidence=0.72,
+                base_confidence=0.58,
+                require_relationship=True,
             ),
             _ModularMonolithDetector(),
             _MicroservicesDetector(),
@@ -140,31 +158,36 @@ class ArchitectureDetectionService:
                 "hexagonal",
                 (("port",), ("adapter",), ("domain",)),
                 minimum_groups=2,
-                base_confidence=0.76,
+                base_confidence=0.62,
+                require_relationship=True,
             ),
             _TokenDetector(
                 "clean-architecture",
                 (("domain", "entity"), ("application", "usecase"), ("infrastructure",), ("interface", "presenter")),
                 minimum_groups=3,
-                base_confidence=0.78,
+                base_confidence=0.6,
+                require_relationship=True,
             ),
             _TokenDetector(
                 "cqrs",
-                (("command", "commandhandler"), ("query", "queryhandler")),
-                minimum_groups=2,
-                base_confidence=0.82,
+                (("command",), ("query",), ("handler",)),
+                minimum_groups=3,
+                base_confidence=0.72,
+                require_relationship=True,
             ),
             _TokenDetector(
                 "event-driven",
                 (("event",), ("listener", "subscriber", "consumer"), ("publisher", "producer")),
                 minimum_groups=2,
-                base_confidence=0.76,
+                base_confidence=0.56,
+                require_relationship=True,
             ),
             _TokenDetector(
                 "plugin-architecture",
                 (("plugin",), ("extension",), ("provider",)),
                 minimum_groups=2,
-                base_confidence=0.74,
+                base_confidence=0.6,
+                require_relationship=True,
             ),
         )
 
@@ -194,6 +217,7 @@ class ArchitectureDetectionService:
             (str(node.get("id", "")), str(node.get("qualified_name", "")))
             for node in facts.nodes
         )
+        conflicts = self._conflicts(findings)
         return ArchitectureReport(
             findings,
             directions,
@@ -202,7 +226,22 @@ class ArchitectureDetectionService:
             self._matching(names, ("port",)),
             self._matching(names, ("adapter",)),
             self._matching(names, ("infrastructure", "persistence", "repository")),
+            bool(directions),
+            len(directions),
+            conflicts,
         )
+
+    @staticmethod
+    def _conflicts(
+        findings: tuple[ArchitectureFinding, ...],
+    ) -> tuple[str, ...]:
+        names = {item.architecture for item in findings}
+        conflicts = []
+        if {"modular-monolith", "microservices"} <= names:
+            conflicts.append(
+                "modular-monolith and microservices evidence coexist; deployment boundaries require manual confirmation"
+            )
+        return tuple(conflicts)
 
     @staticmethod
     def _directions(facts: _ArchitectureFacts) -> tuple[tuple[str, str], ...]:

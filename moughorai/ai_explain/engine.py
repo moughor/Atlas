@@ -113,16 +113,48 @@ class ExplainEngine:
         ]
         if not findings:
             limitations.append("No high-confidence architecture finding is available.")
+        if isinstance(summary, Mapping) and not summary.get("framework_evidence"):
+            limitations.append(
+                "Framework scope evidence is unavailable in this snapshot; framework names are unscoped."
+            )
         return WorkspaceSemanticContext({
             "schema_version": source.get("schema_version"),
             "workspace": {
                 "root": source.get("workspace", {}).get("root"),
                 "project_count": len(projects),
             },
-            "repository_summary": summary,
+            "repository_summary": ExplainEngine._compact_summary(summary),
             "architecture": ExplainEngine._compact_architecture(architecture),
             "limitations": limitations,
         })
+
+    @staticmethod
+    def _compact_summary(value: object) -> object:
+        if not isinstance(value, Mapping):
+            return {}
+        declared = value.get(
+            "declared_dependency_count_by_ecosystem",
+            value.get("dependencies_by_ecosystem", {}),
+        )
+        return {
+            key: value.get(key)
+            for key in (
+                "schema_version", "root", "projects", "languages",
+                "build_systems", "frameworks", "framework_evidence",
+                "entry_points", "module_hierarchy", "production_files",
+                "test_files", "generated_files",
+            )
+        } | {
+            "declared_dependency_count_by_ecosystem": declared,
+            "total_declared_dependency_records": value.get(
+                "total_declared_dependencies",
+                sum(declared.values()) if isinstance(declared, Mapping) else None,
+            ),
+            "dependency_manifest_count_by_ecosystem": value.get(
+                "dependency_manifest_count_by_ecosystem",
+            ),
+            "total_dependency_manifests": value.get("total_dependency_manifests"),
+        }
 
     @staticmethod
     def _compact_architecture(value: object) -> object:
@@ -143,4 +175,9 @@ class ExplainEngine:
             "adapter_count": len(adapters),
             "infrastructure_layers": infrastructure[:25],
             "infrastructure_layer_count": len(infrastructure),
+            "dependency_analysis": value.get("dependency_analysis", {
+                "executed": False,
+                "evidence_edge_count": 0,
+            }),
+            "classification_conflicts": value.get("classification_conflicts", ()),
         }

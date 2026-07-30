@@ -37,8 +37,8 @@ def _summary():
 def _graph():
     names = (
         ("a", "orders.domain.Order"),
-        ("b", "orders.application.CreateOrderCommand"),
-        ("c", "orders.application.FindOrderQuery"),
+        ("b", "orders.application.CreateOrderCommandHandler"),
+        ("c", "orders.application.FindOrderQueryHandler"),
         ("d", "orders.port.OrderPort"),
         ("e", "orders.adapter.OrderAdapter"),
         ("f", "orders.infrastructure.OrderRepository"),
@@ -65,8 +65,13 @@ def _graph():
             for identifier, name in names
         ],
         "edges": [
+            {"source": "b", "target": "c", "kind": "imports"},
+            {"source": "b", "target": "f", "kind": "imports"},
+            {"source": "e", "target": "d", "kind": "imports"},
+            {"source": "e", "target": "a", "kind": "imports"},
             {"source": "g", "target": "h", "kind": "imports"},
             {"source": "h", "target": "g", "kind": "imports"},
+            {"source": "i", "target": "j", "kind": "imports"},
         ],
     }
 
@@ -75,9 +80,10 @@ def test_detects_requested_architectures_with_evidence() -> None:
     report = ArchitectureDetectionService().detect(_summary(), _graph())
     findings = {item.architecture: item for item in report.findings}
     assert {
-        "layered", "modular-monolith", "microservices", "hexagonal",
+        "layered", "modular-monolith", "hexagonal",
         "clean-architecture", "cqrs", "event-driven", "plugin-architecture",
     } <= set(findings)
+    assert "microservices" not in findings
     assert all(item.evidence for item in findings.values())
     assert all(0.0 <= item.confidence <= 1.0 for item in findings.values())
 
@@ -87,6 +93,7 @@ def test_reports_directions_cycles_contexts_ports_and_infrastructure() -> None:
     assert report.dependency_directions == (
         ("billing-service", "orders-api"),
         ("orders-api", "billing-service"),
+        ("orders-api", "order-repository"),
     )
     assert report.dependency_cycles == (("billing-service", "orders-api"),)
     assert report.bounded_contexts == ("billing-service", "order-repository", "orders-api")
@@ -116,6 +123,17 @@ def test_optional_java_architecture_graph_is_reused() -> None:
         java_graph=graph,
     )
     assert report.dependency_directions == (("demo.Api", "demo.Service"),)
+
+
+def test_conflicting_deployment_models_are_explicit() -> None:
+    summary = _summary()
+    summary["projects"][1]["frameworks"] = ["Spring"]
+    summary["projects"][2]["frameworks"] = ["FastAPI"]
+    report = ArchitectureDetectionService().detect(summary, _graph())
+    assert {"modular-monolith", "microservices"} <= {
+        item.architecture for item in report.findings
+    }
+    assert report.classification_conflicts
 
 
 def test_report_is_deterministic() -> None:
@@ -167,9 +185,10 @@ def test_architecture_is_published_in_semantic_snapshot(tmp_path: Path) -> None:
     assert result.exit_code == 0
     snapshot = SemanticSnapshotStore(WorkspaceService(tmp_path).workspace).load()
     architecture = snapshot.semantic_context["architecture"]
-    layered = next(
-        item for item in architecture["findings"]
-        if item["architecture"] == "layered"
-    )
-    assert layered["evidence"]
-    assert all(set(item) == {"kind", "reference", "detail"} for item in layered["evidence"])
+    assert "layered" not in {
+        item["architecture"] for item in architecture["findings"]
+    }
+    assert architecture["dependency_analysis"] == {
+        "executed": False,
+        "evidence_edge_count": 0,
+    }
