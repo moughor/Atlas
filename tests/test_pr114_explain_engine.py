@@ -87,17 +87,18 @@ def test_default_repository_explanation_prioritizes_compact_summary() -> None:
             "module_hierarchy": [{"project": "api", "parent": "core"}],
             "languages": {"Java": 120, "Python": 30},
             "build_systems": ["Gradle"],
-            "frameworks": ["Spring"],
+            "frameworks": ["Spring Framework"],
             "framework_evidence": [{
-                "framework": "Spring",
-                "project": "sample",
+                "framework": "Spring Framework",
+                "project": "documentation",
                 "scope": "test-or-sample",
-                "reference": "spring-test",
+                "reference": "@springio/antora-extensions",
             }],
             "entry_points": ["api:Main.java"],
             "dependencies_by_ecosystem": {"gradle": 12},
         },
         "architecture": {
+            "bounded_contexts": ["api", "core"],
             "findings": [{
                 "architecture": "layered",
                 "confidence": 0.84,
@@ -128,8 +129,13 @@ def test_default_repository_explanation_prioritizes_compact_summary() -> None:
     assert "Do not claim that cycles" in system
     assert '"repository_summary"' in user
     assert '"project_count":2' in user
-    assert '"Gradle"' in user and '"Spring"' in user
+    assert '"Gradle"' in user and '"Spring Framework"' in user
+    assert '"display_name":"Spring-related documentation tooling"' in user
+    assert "does not establish repository-wide Spring Framework adoption" in user
     assert '"scope":"test-or-sample"' in user
+    assert '"architectural_areas":["api","core"]' in user
+    assert '"bounded_contexts"' not in user
+    assert "'Modules' or 'Architectural Areas'" in system
     assert '"layered"' in user
     assert '"total_declared_dependency_records":12' in user
     assert '"dependencies_by_ecosystem"' not in user

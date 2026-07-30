@@ -73,8 +73,11 @@ class SemanticPromptBuilder:
             "Do not claim that cycles or directionality issues are absent unless "
             "dependency_analysis.executed is true and evidence_edge_count is positive. "
             "Qualify frameworks using framework_evidence scope; test-or-sample "
-            "evidence is not repository-wide adoption. Never invent missing facts and "
-            "never request or reproduce raw source code."
+            "evidence is not repository-wide adoption. Use 'Modules' or "
+            "'Architectural Areas', not 'Bounded Contexts', unless the metadata "
+            "contains explicit Domain-Driven Design evidence. Use each framework's "
+            "qualified display_name and adoption note when present. Never invent "
+            "missing facts and never request or reproduce raw source code."
         ),
         user=(
             "Repository explanation request:\n{request}\n\n"

@@ -136,15 +136,21 @@ class ExplainEngine:
             "declared_dependency_count_by_ecosystem",
             value.get("dependencies_by_ecosystem", {}),
         )
+        framework_evidence = value.get("framework_evidence", ())
         return {
             key: value.get(key)
             for key in (
                 "schema_version", "root", "projects", "languages",
-                "build_systems", "frameworks", "framework_evidence",
+                "build_systems",
                 "entry_points", "module_hierarchy", "production_files",
                 "test_files", "generated_files",
             )
         } | {
+            "frameworks": ExplainEngine._framework_presentations(
+                value.get("frameworks", ()),
+                framework_evidence,
+            ),
+            "framework_evidence": framework_evidence,
             "declared_dependency_count_by_ecosystem": declared,
             "total_declared_dependency_records": value.get(
                 "total_declared_dependencies",
@@ -168,7 +174,7 @@ class ExplainEngine:
             "findings": value.get("findings", ()),
             "dependency_directions": value.get("dependency_directions", ()),
             "dependency_cycles": value.get("dependency_cycles", ()),
-            "bounded_contexts": value.get("bounded_contexts", ()),
+            "architectural_areas": value.get("bounded_contexts", ()),
             "ports": ports[:25],
             "port_count": len(ports),
             "adapters": adapters[:25],
@@ -181,3 +187,46 @@ class ExplainEngine:
             }),
             "classification_conflicts": value.get("classification_conflicts", ()),
         }
+
+    @staticmethod
+    def _framework_presentations(
+        frameworks: object,
+        evidence: object,
+    ) -> list[object]:
+        if not isinstance(frameworks, (list, tuple)):
+            return []
+        records = tuple(evidence) if isinstance(evidence, (list, tuple)) else ()
+        presentations: list[object] = []
+        for framework in frameworks:
+            related = [
+                record for record in records
+                if isinstance(record, Mapping)
+                and record.get("framework") == framework
+            ]
+            scopes = sorted({
+                str(record.get("scope"))
+                for record in related
+                if record.get("scope")
+            })
+            presentation: dict[str, object] = {"name": framework}
+            if scopes:
+                presentation["evidence_scopes"] = scopes
+            if (
+                str(framework).casefold().startswith("spring")
+                and related
+                and "project-local" not in scopes
+            ):
+                references = " ".join(
+                    f"{record.get('project', '')} {record.get('reference', '')}"
+                    for record in related
+                ).casefold()
+                if any(term in references for term in ("antora", "documentation", "docs")):
+                    presentation["display_name"] = "Spring-related documentation tooling"
+                else:
+                    presentation["display_name"] = "Spring-related test or sample evidence"
+                presentation["adoption"] = (
+                    "Project-local evidence only; does not establish repository-wide "
+                    "Spring Framework adoption."
+                )
+            presentations.append(presentation)
+        return presentations
