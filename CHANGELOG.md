@@ -1,5 +1,12 @@
 # Changelog
 
+## PR125 — Cross-Language Workspace
+
+- Added a shared deterministic semantic graph for Java, Python, and TypeScript.
+- Added a built-in TypeScript/TSX declaration frontend through PR124.
+- Published project-scoped graph nodes plus ownership and resolved-import edges.
+- Kept existing semantic snapshot fields backward compatible.
+
 ## PR124 — Analyzer Registry
 
 - Replaced hard-coded language routing with a synchronized analyzer registry.

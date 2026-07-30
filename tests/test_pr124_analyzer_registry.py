@@ -23,7 +23,9 @@ class RecordingAnalyzer:
 
 def test_default_registry_contains_java_and_python() -> None:
     registry = AnalyzerRegistry()
-    assert tuple(item.language for item in registry.registrations()) == ("java", "python")
+    assert tuple(item.language for item in registry.registrations()) == (
+        "java", "python", "typescript",
+    )
     assert registry.analyzer_for("Main.java").language == "java"
     assert registry.analyzer_for("app.PY").language == "python"
     assert registry.analyzer_for("README.md") is None

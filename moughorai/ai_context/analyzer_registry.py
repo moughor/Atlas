@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from threading import RLock
 from typing import Any, Protocol
 
-from moughorai.global_symbols import GlobalSymbol
+from moughorai.global_symbols import GlobalSymbol, GlobalSymbolKind
 from moughorai.global_symbols.builder import GlobalSymbolDatabaseBuilder
 from moughorai.global_symbols.models import SymbolId
 from moughorai.java_ast import JavaParser
@@ -46,7 +47,9 @@ class AnalyzerRegistry:
         self._lock = RLock()
         self._by_language: dict[str, AnalyzerRegistration] = {}
         self._by_extension: dict[str, str] = {}
-        selected = analyzers if analyzers is not None else (JavaLanguageAnalyzer(), PythonLanguageAnalyzer())
+        selected = analyzers if analyzers is not None else (
+            JavaLanguageAnalyzer(), PythonLanguageAnalyzer(), TypeScriptLanguageAnalyzer(),
+        )
         for analyzer in selected:
             self.register(analyzer)
 
@@ -207,6 +210,66 @@ class PythonLanguageAnalyzer:
         document = document.with_artifact("python_modules", result.modules)
         document = document.with_artifact("types", result.types)
         return document.with_diagnostics(result.diagnostics)
+
+
+class TypeScriptLanguageAnalyzer:
+    """Conservative declaration frontend for TypeScript/TSX repositories."""
+
+    language = "typescript"
+    extensions = (".ts", ".tsx")
+    _IMPORT = re.compile(r"""(?m)^\s*import(?:.*?\sfrom\s*)?["']([^"']+)["']\s*;?""")
+    _TYPE = re.compile(
+        r"""(?m)^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?"""
+        r"""(class|interface|enum|type)\s+([A-Za-z_$][\w$]*)"""
+    )
+    _FUNCTION = re.compile(
+        r"""(?m)^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?"""
+        r"""function\s+([A-Za-z_$][\w$]*)\s*\("""
+    )
+
+    def analyze(self, project, paths, dependencies) -> SemanticDocument:
+        symbols: list[GlobalSymbol] = []
+        diagnostics: list[Diagnostic] = []
+        modules: list[str] = []
+        for path in paths:
+            try:
+                source = path.read_text(encoding="utf-8-sig")
+            except (OSError, UnicodeError) as exc:
+                diagnostics.append(Diagnostic(
+                    "ATLAS-TYPESCRIPT-PARSE", str(exc), DiagnosticSeverity.ERROR,
+                    location=path, pass_name="typescript-language-analyzer",
+                ))
+                continue
+            module = path.resolve().relative_to(project.path.resolve()).with_suffix("").as_posix()
+            module = module.replace("/", ".")
+            modules.append(module)
+            imports = tuple(sorted(set(self._IMPORT.findall(source))))
+            owner = GlobalSymbol.create(
+                GlobalSymbolKind.PACKAGE,
+                module.rsplit(".", 1)[-1],
+                module,
+                source=path,
+                metadata={"language": "typescript", "imports": ",".join(imports)},
+                project_id=project.name,
+            )
+            symbols.append(owner)
+            for _, name in self._TYPE.findall(source):
+                symbols.append(GlobalSymbol.create(
+                    GlobalSymbolKind.TYPE, name, f"{module}.{name}",
+                    owner_id=owner.id, source=path,
+                    metadata={"language": "typescript"}, project_id=project.name,
+                ))
+            for name in self._FUNCTION.findall(source):
+                symbols.append(GlobalSymbol.create(
+                    GlobalSymbolKind.METHOD, name, f"{module}#{name}()",
+                    owner_id=owner.id, source=path,
+                    metadata={"language": "typescript"}, project_id=project.name,
+                ))
+        document = SemanticDocument("typescript", "", tuple(sorted(modules)))
+        return document.with_artifact(
+            "global_symbols",
+            tuple(sorted(symbols, key=lambda item: (item.qualified_name, item.kind.value))),
+        ).with_diagnostics(diagnostics)
 
 
 def _normalize_extension(value: str) -> str:

@@ -14,6 +14,7 @@ from .analyzer_registry import (
     JavaLanguageAnalyzer,
     LanguageAnalyzer,
     PythonLanguageAnalyzer,
+    TypeScriptLanguageAnalyzer,
 )
 from .persistence import decode_analysis_result, encode_analysis_result
 
@@ -27,6 +28,7 @@ __all__ = [
     "JavaLanguageAnalyzer",
     "LanguageAnalyzer",
     "PythonLanguageAnalyzer",
+    "TypeScriptLanguageAnalyzer",
     "decode_analysis_result",
     "encode_analysis_result",
     "WorkspaceContextBuilder",

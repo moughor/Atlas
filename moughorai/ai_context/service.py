@@ -45,6 +45,7 @@ class WorkspaceContextBuilder:
         metrics: ProfileReport | Iterable[ProfileMetric] = (),
     ) -> WorkspaceSemanticContext:
         selected = tuple(projects) if projects is not None else workspace.projects
+        semantic_symbols = tuple(symbols)
         names = {project.name for project in selected}
         unknown = names.difference(workspace.names())
         if unknown:
@@ -65,7 +66,7 @@ class WorkspaceContextBuilder:
                 key=lambda item: (item["created_at"], item["run_id"]),
             ),
             "symbols": sorted(
-                (self._symbol(symbol, workspace.root) for symbol in symbols),
+                (self._symbol(symbol, workspace.root) for symbol in semantic_symbols),
                 key=lambda item: (
                     item["qualified_name"],
                     item.get("project_id") or "",
@@ -78,8 +79,49 @@ class WorkspaceContextBuilder:
                 (self._metric(metric) for metric in self._metrics(metrics)),
                 key=lambda item: item["name"],
             ),
+            "semantic_graph": self._semantic_graph(semantic_symbols),
         }
         return WorkspaceSemanticContext(payload)
+
+    @staticmethod
+    def _semantic_graph(symbols: tuple[GlobalSymbol, ...]) -> dict[str, Any]:
+        ordered = tuple(sorted(symbols, key=lambda item: str(item.id)))
+        nodes = []
+        edges: set[tuple[str, str, str]] = set()
+        by_name = {symbol.qualified_name: symbol for symbol in ordered}
+        by_suffix = {
+            symbol.qualified_name.rsplit(".", 1)[-1]: symbol
+            for symbol in ordered
+        }
+        for symbol in ordered:
+            metadata = dict(symbol.metadata)
+            language = metadata.get("language")
+            if language is None and symbol.source is not None:
+                language = {
+                    ".java": "java", ".py": "python", ".pyi": "python",
+                    ".ts": "typescript", ".tsx": "typescript",
+                }.get(symbol.source.suffix.casefold(), "unknown")
+            nodes.append({
+                "id": str(symbol.id),
+                "project_id": symbol.project_id,
+                "language": language or "unknown",
+                "kind": symbol.kind.value,
+                "qualified_name": symbol.qualified_name,
+            })
+            if symbol.owner_id is not None:
+                edges.add((str(symbol.id), str(symbol.owner_id), "member_of"))
+            for imported in filter(None, metadata.get("imports", "").split(",")):
+                normalized = imported.lstrip(".").replace("/", ".")
+                target = by_name.get(normalized) or by_suffix.get(normalized.rsplit(".", 1)[-1])
+                if target is not None:
+                    edges.add((str(symbol.id), str(target.id), "imports"))
+        return {
+            "nodes": nodes,
+            "edges": [
+                {"source": source, "target": target, "kind": kind}
+                for source, target, kind in sorted(edges)
+            ],
+        }
 
     def _diagnostics(
         self,

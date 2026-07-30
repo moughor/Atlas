@@ -210,6 +210,7 @@ ADR-0011
 | ADR-0005 | Ollama Provider Abstraction | Implemented |
 | ADR-0011 | Project-Scoped Symbol Identity | Implemented |
 | ADR-0012 | Analyzer Registry | Implemented |
+| ADR-0013 | Cross-Language Semantic Graph | Implemented |
 
 ---
 
