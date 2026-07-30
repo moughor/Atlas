@@ -1,5 +1,14 @@
 # Changelog
 
+## PR127 — Repository Summary Engine
+
+- Composed existing inventory, workspace, framework, and dependency services
+  into one deterministic repository model.
+- Added language, build-system, framework, entry-point, module, source-role,
+  generated-source, and dependency summaries.
+- Prevented nested workspace projects from being double-counted.
+- Published source-free repository metadata in semantic snapshots for AI use.
+
 ## PR126 — Dependency Intelligence
 
 - Normalized Maven, Gradle, pip, Poetry, npm, and Cargo declarations.

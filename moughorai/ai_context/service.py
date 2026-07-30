@@ -45,6 +45,7 @@ class WorkspaceContextBuilder:
         types: Mapping[str, TypeTable] | TypeTable | None = None,
         metrics: ProfileReport | Iterable[ProfileMetric] = (),
         declared_dependencies: Iterable[DeclaredDependency] = (),
+        repository_summary: object | None = None,
     ) -> WorkspaceSemanticContext:
         selected = tuple(projects) if projects is not None else workspace.projects
         semantic_symbols = tuple(symbols)
@@ -86,6 +87,11 @@ class WorkspaceContextBuilder:
                 item.to_dict(root=workspace.root)
                 for item in sorted(set(declared_dependencies))
             ],
+            "repository_summary": (
+                {}
+                if repository_summary is None
+                else self._value(repository_summary.to_dict())
+            ),
         }
         return WorkspaceSemanticContext(payload)
 

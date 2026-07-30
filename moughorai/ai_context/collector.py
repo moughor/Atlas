@@ -13,6 +13,7 @@ from moughorai.semantic.types import TypeTable
 from moughorai.workspace import WorkspaceRunReport, WorkspaceService
 from moughorai.workspace.files import project_files
 from moughorai.dependency_intelligence import DeclaredDependency
+from moughorai.repository_summary import RepositorySummaryService
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -62,6 +63,7 @@ class SemanticContextCollector:
             symbols=snapshot.symbols,
             types=types,
             declared_dependencies=declared_dependencies,
+            repository_summary=RepositorySummaryService(self.service).build(),
         )
         collection = SemanticCollectionReport(
             tuple(run.project for run in report.runs),
