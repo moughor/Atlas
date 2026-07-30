@@ -14,6 +14,7 @@ from moughorai.semantic.types import TypeTable
 from moughorai.semantic.types.serialization import type_to_dict
 from moughorai.workspace import Project, Workspace
 from moughorai.dependency_intelligence import DeclaredDependency
+from moughorai.knowledge_graph import KnowledgeGraphBuilder
 
 from .models import WorkspaceSemanticContext
 
@@ -93,18 +94,50 @@ class WorkspaceContextBuilder:
                 else self._value(repository_summary.to_dict())
             ),
         }
+        payload["semantic_graph"] = KnowledgeGraphBuilder().build_context(payload).to_dict()
         return WorkspaceSemanticContext(payload)
 
     @staticmethod
     def _semantic_graph(symbols: tuple[GlobalSymbol, ...]) -> dict[str, Any]:
         ordered = tuple(sorted(symbols, key=lambda item: str(item.id)))
         nodes = []
-        edges: set[tuple[str, str, str]] = set()
-        by_name = {symbol.qualified_name: symbol for symbol in ordered}
-        by_suffix = {
-            symbol.qualified_name.rsplit(".", 1)[-1]: symbol
+        edges: dict[tuple[str, str, str], set[str]] = {}
+        by_name: dict[str, list[GlobalSymbol]] = {}
+        by_suffix: dict[str, list[GlobalSymbol]] = {}
+        by_scoped = {
+            (symbol.project_id, symbol.qualified_name): symbol
             for symbol in ordered
         }
+        for symbol in ordered:
+            by_name.setdefault(symbol.qualified_name, []).append(symbol)
+            by_suffix.setdefault(
+                symbol.qualified_name.rsplit(".", 1)[-1],
+                [],
+            ).append(symbol)
+
+        def add_edge(
+            source: str,
+            target: str,
+            kind: str,
+            evidence: str,
+        ) -> None:
+            edges.setdefault((source, target, kind), set()).add(evidence)
+
+        def resolve(reference: str, project_id: str | None) -> GlobalSymbol | None:
+            scoped = by_scoped.get((project_id, reference))
+            if scoped is not None:
+                return scoped
+            exact = by_name.get(reference, ())
+            if len(exact) == 1:
+                return exact[0]
+            suffix = by_suffix.get(reference.rsplit(".", 1)[-1], ())
+            scoped_suffix = tuple(
+                item for item in suffix if item.project_id == project_id
+            )
+            if len(scoped_suffix) == 1:
+                return scoped_suffix[0]
+            return suffix[0] if len(suffix) == 1 else None
+
         for symbol in ordered:
             metadata = dict(symbol.metadata)
             language = metadata.get("language")
@@ -121,17 +154,46 @@ class WorkspaceContextBuilder:
                 "qualified_name": symbol.qualified_name,
             })
             if symbol.owner_id is not None:
-                edges.add((str(symbol.id), str(symbol.owner_id), "member_of"))
+                add_edge(
+                    str(symbol.id),
+                    str(symbol.owner_id),
+                    "member_of",
+                    "global_symbol.owner_id",
+                )
             for imported in filter(None, metadata.get("imports", "").split(",")):
                 normalized = imported.lstrip(".").replace("/", ".")
-                target = by_name.get(normalized) or by_suffix.get(normalized.rsplit(".", 1)[-1])
+                target = resolve(normalized, symbol.project_id)
                 if target is not None:
-                    edges.add((str(symbol.id), str(target.id), "imports"))
+                    add_edge(
+                        str(symbol.id),
+                        str(target.id),
+                        "imports",
+                        f"global_symbol.metadata:imports:{normalized}",
+                    )
+            for key, kind in (
+                ("inherits", "inheritance"),
+                ("bases", "inheritance"),
+                ("overrides", "overrides"),
+            ):
+                for reference in filter(None, metadata.get(key, "").split(",")):
+                    target = resolve(reference, symbol.project_id)
+                    if target is not None:
+                        add_edge(
+                            str(symbol.id),
+                            str(target.id),
+                            kind,
+                            f"global_symbol.metadata:{key}:{reference}",
+                        )
         return {
             "nodes": nodes,
             "edges": [
-                {"source": source, "target": target, "kind": kind}
-                for source, target, kind in sorted(edges)
+                {
+                    "source": source,
+                    "target": target,
+                    "kind": kind,
+                    "evidence": sorted(evidence),
+                }
+                for (source, target, kind), evidence in sorted(edges.items())
             ],
         }
 

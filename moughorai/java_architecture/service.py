@@ -6,10 +6,12 @@ from pathlib import Path
 
 from moughorai.java_architecture.builder import JavaArchitectureGraphBuilder
 from moughorai.java_architecture.graph import JavaArchitectureGraph
+from moughorai.java_ast.ast_nodes import CompilationUnit
 from moughorai.java_ast.parser import JavaParser
 from moughorai.java_resolution.resolver import JavaTypeResolver
 from moughorai.java_resolution.service import JavaTypeResolutionService
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
+from moughorai.java_symbols.index import JavaSymbolIndex
 
 
 class JavaArchitectureService:
@@ -27,6 +29,14 @@ class JavaArchitectureService:
         paths = tuple(sources)
         units = tuple(self._parser.parse_source(sources[path]) for path in paths)
         index = self._symbol_builder.build(units, paths)
+        return self.build(index, units)
+
+    def build(
+        self,
+        index: JavaSymbolIndex,
+        units: tuple[CompilationUnit, ...],
+    ) -> JavaArchitectureGraph:
+        """Build from an existing parse/index without duplicating frontend work."""
         resolver = JavaTypeResolver(index)
         resolution_service = JavaTypeResolutionService(resolver)
         references = tuple(

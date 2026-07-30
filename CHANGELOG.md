@@ -1,5 +1,19 @@
 # Changelog
 
+## PR129 — Unified Knowledge Graph
+
+- Consolidated PR125 semantic facts and PR127 repository metadata through the
+  existing queryable `KnowledgeGraph`.
+- Added repository, workspace, project, package, module, type, method, field,
+  dependency, framework, and build-system nodes.
+- Populated resolved imports, Java/Python inheritance, verified Java
+  overrides, dependencies, and ownership with deterministic evidence.
+- Kept composition, calls, and concrete build targets explicitly unpopulated
+  until reliable normal-pipeline evidence exists.
+- Preserved the PR27 builder API and the PR125 serialized node fields.
+- Added deterministic graph serialization, restoration, kind queries, and
+  exact-name queries without inspecting raw source.
+
 ## PR128 — Architecture Detection
 
 - Added evidence-backed detection for eight repository architecture styles.

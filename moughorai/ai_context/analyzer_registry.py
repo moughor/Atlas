@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 from threading import RLock
@@ -12,7 +12,13 @@ from moughorai.dependency_intelligence import DependencyIntelligenceService
 from moughorai.global_symbols.builder import GlobalSymbolDatabaseBuilder
 from moughorai.global_symbols.models import SymbolId
 from moughorai.java_ast import JavaParser
+from moughorai.java_architecture import (
+    ArchitectureEdgeKind,
+    JavaArchitectureGraph,
+    JavaArchitectureService,
+)
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
+from moughorai.java_symbols import JavaSymbolIndex, MethodSymbol, SymbolKind
 from moughorai.python_semantics import PythonSemanticAnalyzer
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
@@ -175,10 +181,12 @@ class JavaLanguageAnalyzer:
         parser: JavaParser | None = None,
         symbol_builder: JavaSymbolIndexBuilder | None = None,
         global_builder: GlobalSymbolDatabaseBuilder | None = None,
+        architecture: JavaArchitectureService | None = None,
     ) -> None:
         self._parser = parser or JavaParser()
         self._symbol_builder = symbol_builder or JavaSymbolIndexBuilder()
         self._global_builder = global_builder or GlobalSymbolDatabaseBuilder()
+        self._architecture = architecture or JavaArchitectureService()
 
     def analyze(self, project, paths, dependencies) -> SemanticDocument:
         units: list[object] = []
@@ -195,8 +203,15 @@ class JavaLanguageAnalyzer:
                 ))
         index = self._symbol_builder.build(tuple(units), tuple(sources), project_id=project.name)
         symbols = _scope_symbols(self._global_builder.build(index).snapshot().symbols, project.name)
+        architecture = self._architecture.build(index, tuple(units))
+        symbols = _with_java_relations(symbols, index, architecture)
         document = SemanticDocument("java", "", tuple(units))
-        return document.with_artifact("global_symbols", symbols).with_diagnostics(diagnostics)
+        return (
+            document
+            .with_artifact("global_symbols", symbols)
+            .with_artifact("java_architecture_graph", architecture)
+            .with_diagnostics(diagnostics)
+        )
 
 
 class PythonLanguageAnalyzer:
@@ -296,3 +311,63 @@ def _scope_symbols(symbols: tuple[GlobalSymbol, ...], project_id: str) -> tuple[
         )
         for symbol in symbols
     )
+
+
+def _with_java_relations(
+    symbols: tuple[GlobalSymbol, ...],
+    index: JavaSymbolIndex,
+    architecture: JavaArchitectureGraph,
+) -> tuple[GlobalSymbol, ...]:
+    """Persist only resolved Java relations that survive recovery."""
+    inheritance: dict[str, set[str]] = {}
+    parents: dict[str, set[str]] = {}
+    for edge in architecture.edges:
+        if edge.kind not in {
+            ArchitectureEdgeKind.EXTENDS,
+            ArchitectureEdgeKind.IMPLEMENTS,
+        }:
+            continue
+        inheritance.setdefault(edge.source, set()).add(edge.target)
+        parents.setdefault(edge.source, set()).add(edge.target)
+
+    methods: dict[tuple[str, str, tuple[str, ...]], MethodSymbol] = {}
+    for symbol in index.by_kind(SymbolKind.METHOD):
+        if isinstance(symbol, MethodSymbol) and symbol.owner is not None:
+            methods[(symbol.owner, symbol.name, symbol.parameter_types)] = symbol
+
+    def ancestors(owner: str) -> tuple[str, ...]:
+        seen: set[str] = set()
+        pending = list(sorted(parents.get(owner, ())))
+        while pending:
+            current = pending.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            pending.extend(sorted(parents.get(current, ())))
+        return tuple(sorted(seen))
+
+    overrides: dict[str, set[str]] = {}
+    for _, method in sorted(
+        methods.items(),
+        key=lambda item: item[1].qualified_name,
+    ):
+        if method.owner is None or "Override" not in method.annotations:
+            continue
+        for parent in ancestors(method.owner):
+            target = methods.get((parent, method.name, method.parameter_types))
+            if target is not None:
+                overrides.setdefault(method.qualified_name, set()).add(
+                    target.qualified_name
+                )
+
+    enriched = []
+    for symbol in symbols:
+        metadata = dict(symbol.metadata)
+        inherited = inheritance.get(symbol.qualified_name)
+        overridden = overrides.get(symbol.qualified_name)
+        if inherited:
+            metadata["inherits"] = ",".join(sorted(inherited))
+        if overridden:
+            metadata["overrides"] = ",".join(sorted(overridden))
+        enriched.append(replace(symbol, metadata=tuple(sorted(metadata.items()))))
+    return tuple(enriched)

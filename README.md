@@ -17,6 +17,12 @@ Python repositories now publish modules, classes, functions, globals, imports,
 decorators, annotations, and docstrings to the same context. See
 [`docs/PR122_PYTHON_SEMANTIC_ANALYZER.md`](docs/PR122_PYTHON_SEMANTIC_ANALYZER.md).
 
+Semantic snapshots publish a deterministic unified knowledge graph containing
+repository structure, cross-language symbols, dependencies, frameworks, build
+systems, and their semantic relationships. The graph remains source-free and
+can be restored through `KnowledgeGraph.from_dict()`. See
+[`docs/PR129_UNIFIED_KNOWLEDGE_GRAPH.md`](docs/PR129_UNIFIED_KNOWLEDGE_GRAPH.md).
+
 The current repository includes completed work through PR106. Recent production
 hardening added linear-time semantic table builders, thread-safe global symbol
 storage, a reproducible 23,000-file benchmark, a versioned public API boundary,
