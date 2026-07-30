@@ -77,7 +77,7 @@ class SemanticContextCollector:
                 types[project] = value.types
             raw_symbols = value.get_artifact("global_symbols")
             if raw_symbols is not None:
-                symbols.add_many(item for item in raw_symbols if isinstance(item, GlobalSymbol))
+                self._add_unique(symbols, raw_symbols)
                 return True
             return False
         raw_diagnostics = self._field(value, "diagnostics")
@@ -90,7 +90,7 @@ class SemanticContextCollector:
             types[project] = raw_types
         raw_symbols = self._field(value, "symbols")
         if raw_symbols is not None:
-            symbols.add_many(item for item in raw_symbols if isinstance(item, GlobalSymbol))
+            self._add_unique(symbols, raw_symbols)
             return True
         return False
 
@@ -109,7 +109,7 @@ class SemanticContextCollector:
             for path in self._java_files(project.path, project.include, project.exclude):
                 try:
                     index = service.index_sources({path: path.read_text(encoding="utf-8-sig")})
-                    symbols.add_many(builder.build(index).snapshot().symbols)
+                    self._add_unique(symbols, builder.build(index).snapshot().symbols)
                 except (OSError, UnicodeError, ValueError) as exc:
                     diagnostics.setdefault(project.name, []).append(
                         Diagnostic(
@@ -134,3 +134,12 @@ class SemanticContextCollector:
         if isinstance(value, Mapping):
             return value.get(name)
         return getattr(value, name, None)
+
+    @staticmethod
+    def _add_unique(database: GlobalSymbolDatabase, values: Iterable[object]) -> None:
+        for symbol in values:
+            if (
+                isinstance(symbol, GlobalSymbol)
+                and database.by_qualified_name(symbol.qualified_name) is None
+            ):
+                database.add(symbol)

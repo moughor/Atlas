@@ -13,6 +13,10 @@ analysis returns immutable semantic documents, successful runs publish
 results without reanalyzing completed projects. See
 [`docs/PR121_COMPLETE_AI_CONTEXT_PIPELINE.md`](docs/PR121_COMPLETE_AI_CONTEXT_PIPELINE.md).
 
+Python repositories now publish modules, classes, functions, globals, imports,
+decorators, annotations, and docstrings to the same context. See
+[`docs/PR122_PYTHON_SEMANTIC_ANALYZER.md`](docs/PR122_PYTHON_SEMANTIC_ANALYZER.md).
+
 The current repository includes completed work through PR106. Recent production
 hardening added linear-time semantic table builders, thread-safe global symbol
 storage, a reproducible 23,000-file benchmark, a versioned public API boundary,

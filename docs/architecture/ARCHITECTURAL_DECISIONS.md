@@ -216,7 +216,7 @@ ADR-0011
 | ADR | Title | Status |
 |------|-------|--------|
 | ADR-0006 | Analyzer Registry | Planned |
-| ADR-0007 | Python Semantic Analyzer | Planned |
+| ADR-0007 | Python Semantic Analyzer | Implemented |
 | ADR-0008 | Multi-Language Semantic Graph | Planned |
 | ADR-0009 | Knowledge Graph Architecture | Planned |
 | ADR-0010 | AI Agent Framework | Planned |

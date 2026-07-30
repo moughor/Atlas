@@ -8,6 +8,7 @@ from moughorai.global_symbols.builder import GlobalSymbolDatabaseBuilder
 from moughorai.java_ast import JavaParser
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
+from moughorai.python_semantics import PythonSemanticAnalyzer
 from moughorai.workspace import Project
 from moughorai.workspace.files import project_files
 
@@ -20,10 +21,12 @@ class SemanticProjectAnalyzer:
         parser: JavaParser | None = None,
         symbol_builder: JavaSymbolIndexBuilder | None = None,
         global_builder: GlobalSymbolDatabaseBuilder | None = None,
+        python_analyzer: PythonSemanticAnalyzer | None = None,
     ) -> None:
         self._parser = parser or JavaParser()
         self._symbol_builder = symbol_builder or JavaSymbolIndexBuilder()
         self._global_builder = global_builder or GlobalSymbolDatabaseBuilder()
+        self._python_analyzer = python_analyzer or PythonSemanticAnalyzer()
 
     def __call__(
         self,
@@ -53,10 +56,21 @@ class SemanticProjectAnalyzer:
 
         index = self._symbol_builder.build(tuple(units), tuple(java_paths))
         symbols = self._global_builder.build(index).snapshot().symbols
+        python = self._python_analyzer.analyze(
+            project.path,
+            tuple(path for path in files if path.suffix.lower() == ".py"),
+        )
+        symbols = tuple(symbols) + python.symbols
+        diagnostics.extend(python.diagnostics)
+        languages = tuple(
+            language
+            for language, present in (("java", bool(java_paths)), ("python", bool(python.modules)))
+            if present
+        )
         document = SemanticDocument(
-            language="java" if java_paths else "workspace",
+            language=languages[0] if len(languages) == 1 else ("mixed" if languages else "workspace"),
             source="",
-            syntax_tree=tuple(units),
+            syntax_tree=tuple(units) + python.modules,
             metadata={
                 "project": project.name,
                 "files": len(files),
@@ -65,6 +79,9 @@ class SemanticProjectAnalyzer:
             },
         )
         document = document.with_artifact("global_symbols", symbols)
+        document = document.with_artifact("python_modules", python.modules)
+        if len(python.types):
+            document = document.with_artifact("types", python.types)
         return document.with_diagnostics(diagnostics)
 
     @staticmethod

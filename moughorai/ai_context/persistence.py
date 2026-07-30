@@ -7,6 +7,7 @@ from typing import Any
 from moughorai.global_symbols import GlobalSymbol, GlobalSymbolKind
 from moughorai.global_symbols.models import SymbolId
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
+from moughorai.semantic.types import TypeTable, type_from_dict, type_to_dict
 
 
 _DOCUMENT_MARKER = "atlas.semantic-document.v1"
@@ -32,6 +33,11 @@ def encode_analysis_result(value: Any) -> Any:
             for item in value.diagnostics
         ],
         "global_symbols": [_encode_symbol(item) for item in value.get_artifact("global_symbols", ())],
+        "types": [
+            {"key": key, "type": type_to_dict(item)}
+            for key, item in sorted(value.types.entries.items(), key=lambda pair: str(pair[0]))
+            if isinstance(key, (str, int, float, bool)) or key is None
+        ],
     }
 
 
@@ -48,6 +54,13 @@ def decode_analysis_result(value: Any) -> Any:
     document = document.with_artifact(
         "global_symbols",
         tuple(_decode_symbol(item) for item in value.get("global_symbols", ())),
+    )
+    document = document.with_artifact(
+        "types",
+        TypeTable({
+            item["key"]: type_from_dict(item["type"])
+            for item in value.get("types", ())
+        }),
     )
     return document.with_diagnostics(
         Diagnostic(

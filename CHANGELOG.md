@@ -1,5 +1,11 @@
 # Changelog
 
+## PR122 — Python Semantic Analyzer
+
+- Added AST-backed Python modules, classes, functions, decorators, async declarations, imports, globals, dataclasses, enums, annotations, and docstrings.
+- Published Python symbols and type annotations through semantic snapshots and AI context.
+- Preserved Python type tables across workspace recovery and mixed Java/Python analysis.
+
 ## PR121 — Complete AI Context Pipeline Integration
 
 - Replaced the default file-count analyzer with project-level semantic documents.
