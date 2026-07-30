@@ -1,5 +1,13 @@
 # Changelog
 
+## PR128 — Architecture Detection
+
+- Added evidence-backed detection for eight repository architecture styles.
+- Reported dependency directions, cycles, bounded contexts, ports/adapters,
+  and infrastructure layers.
+- Consumed existing source-free repository summaries and semantic graphs.
+- Preserved and optionally reused the existing Java architecture graph.
+
 ## PR127 — Repository Summary Engine
 
 - Composed existing inventory, workspace, framework, and dependency services

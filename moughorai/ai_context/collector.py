@@ -14,6 +14,7 @@ from moughorai.workspace import WorkspaceRunReport, WorkspaceService
 from moughorai.workspace.files import project_files
 from moughorai.dependency_intelligence import DeclaredDependency
 from moughorai.repository_summary import RepositorySummaryService
+from moughorai.architecture_detection import ArchitectureDetectionService
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -57,14 +58,21 @@ class SemanticContextCollector:
                 projects_with_symbols.add(run.project)
         self._collect_java_sources(diagnostics, symbols, skip=projects_with_symbols)
         snapshot = symbols.snapshot()
+        repository_summary = RepositorySummaryService(self.service).build()
         context = WorkspaceContextBuilder().build(
             self.service.workspace,
             diagnostics=diagnostics,
             symbols=snapshot.symbols,
             types=types,
             declared_dependencies=declared_dependencies,
-            repository_summary=RepositorySummaryService(self.service).build(),
+            repository_summary=repository_summary,
         )
+        context_data = context.to_dict()
+        context_data["architecture"] = ArchitectureDetectionService().detect(
+            context_data["repository_summary"],
+            context_data["semantic_graph"],
+        ).to_dict()
+        context = WorkspaceSemanticContext(context_data)
         collection = SemanticCollectionReport(
             tuple(run.project for run in report.runs),
             sum(len(items) for items in diagnostics.values()),
