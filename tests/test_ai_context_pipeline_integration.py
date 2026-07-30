@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from typer.testing import CliRunner
 
@@ -86,6 +87,17 @@ def test_project_analyzer_reports_invalid_java_without_raw_source(tmp_path: Path
     assert source not in repr(document.metadata)
 
 
+def test_project_analyzer_ignores_hidden_tool_trees(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    hidden = root / "app" / ".pytest_runtime"
+    hidden.mkdir()
+    (hidden / "Broken.java").write_text("public class", encoding="utf-8")
+    service = WorkspaceService(root)
+    document = SemanticProjectAnalyzer()(service.project("app"), {})
+    assert len(document.diagnostics) == 0
+    assert document.metadata["files"] == 1
+
+
 def test_semantic_document_persistence_round_trip_preserves_context(tmp_path: Path) -> None:
     root = _workspace(tmp_path)
     service = WorkspaceService(root)
@@ -113,6 +125,22 @@ def test_analyze_publishes_latest_ass_consumable_by_ai_context(tmp_path: Path) -
     context = runner.invoke(app, ["ai", "context", str(root)])
     assert context.exit_code == 0
     assert "demo.App" in context.stdout
+
+
+def test_analyze_json_uses_stable_semantic_summary(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    result = runner.invoke(
+        app,
+        ["analyze", str(root), "--no-recover", "--format", "json"],
+    )
+    assert result.exit_code == 0
+    value = json.loads(result.stdout)["runs"][0]["value"]
+    assert value == {
+        "dependencies": [],
+        "files": 1,
+        "project": "app",
+        "semantic_pipeline": "atlas",
+    }
 
 
 def test_recovery_restores_semantic_results_and_republishes_context(tmp_path: Path) -> None:

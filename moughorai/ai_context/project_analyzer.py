@@ -9,6 +9,7 @@ from moughorai.java_ast import JavaParser
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.workspace import Project
+from moughorai.workspace.files import project_files
 
 
 class SemanticProjectAnalyzer:
@@ -68,16 +69,4 @@ class SemanticProjectAnalyzer:
 
     @staticmethod
     def _files(project: Project) -> tuple[Path, ...]:
-        included = {
-            path.resolve()
-            for pattern in project.include
-            for path in project.path.glob(pattern)
-            if path.is_file()
-        }
-        excluded = {
-            path.resolve()
-            for pattern in project.exclude
-            for path in project.path.glob(pattern)
-            if path.is_file()
-        }
-        return tuple(sorted(included.difference(excluded), key=lambda path: path.as_posix()))
+        return project_files(project.path, project.include, project.exclude)

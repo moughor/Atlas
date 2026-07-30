@@ -122,6 +122,9 @@ def _result_key(result: Mapping[str, Any]) -> tuple[str, str, int, int, str]:
 
 
 def _normalize(value: Any) -> Any:
+    report_value = getattr(value, "to_report_value", None)
+    if callable(report_value):
+        return _normalize(report_value())
     if isinstance(value, Mapping):
         return {str(key): _normalize(value[key]) for key in sorted(value, key=str)}
     if isinstance(value, (list, tuple)):

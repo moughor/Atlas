@@ -6,6 +6,8 @@
 - Connected parsed Java ASTs, diagnostics, and global symbols directly to ASS publication.
 - Added source-free, backward-compatible persistence for semantic recovery results.
 - Preserved deterministic workspace reports and legacy/custom analyzer behavior.
+- Hardened runtime discovery against hidden, generated, and inaccessible tool trees.
+- Normalized semantic documents to stable structured values in JSON reports.
 
 ## PR107 — LLM Provider Abstraction
 

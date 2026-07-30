@@ -36,3 +36,11 @@ Project parse diagnostics do not turn an otherwise completed workspace run into
 an infrastructure failure. A failed or blocked project run still prevents
 snapshot publication. Existing snapshots therefore remain untouched when the
 workspace execution itself is unsuccessful.
+
+## Runtime discovery hardening
+
+Automatic workspace discovery and project file enumeration skip hidden tool
+trees and standard generated directories. Inaccessible directories are ignored
+locally instead of failing the entire workspace. Discovery, fingerprinting,
+watch mode, fallback collection, and semantic analysis share the same
+deterministic file-selection rules.

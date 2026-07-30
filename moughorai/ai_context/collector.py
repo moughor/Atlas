@@ -11,6 +11,7 @@ from moughorai.java_symbols import JavaSymbolService
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
 from moughorai.workspace import WorkspaceRunReport, WorkspaceService
+from moughorai.workspace.files import project_files
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -126,19 +127,7 @@ class SemanticContextCollector:
         include: tuple[str, ...],
         exclude: tuple[str, ...],
     ) -> tuple[Path, ...]:
-        included = {
-            path.resolve()
-            for pattern in include
-            for path in root.glob(pattern)
-            if path.is_file() and path.suffix.lower() == ".java"
-        }
-        excluded = {
-            path.resolve()
-            for pattern in exclude
-            for path in root.glob(pattern)
-            if path.is_file()
-        }
-        return tuple(sorted(included.difference(excluded), key=lambda path: path.as_posix()))
+        return tuple(path for path in project_files(root, include, exclude) if path.suffix.lower() == ".java")
 
     @staticmethod
     def _field(value: object, name: str) -> Any:

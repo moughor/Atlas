@@ -182,6 +182,12 @@ def test_discovery_ignores_node_modules(tmp_path: Path) -> None:
     assert WorkspaceDiscovery().discover(tmp_path).projects == ()
 
 
+def test_discovery_ignores_hidden_tool_directories(tmp_path: Path) -> None:
+    write(tmp_path / ".pytest_run" / "nested" / "pyproject.toml")
+    write(tmp_path / ".replay" / "package.json")
+    assert WorkspaceDiscovery().discover(tmp_path).projects == ()
+
+
 def test_discovery_rejects_missing_root(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         WorkspaceDiscovery().discover(tmp_path / "missing")

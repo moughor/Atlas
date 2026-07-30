@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 
 from .models import Project, Workspace
+from .files import project_files
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,10 +37,4 @@ class WorkspaceCache:
         return digest.hexdigest()
 
     def _files(self, project: Project) -> tuple[Path, ...]:
-        included: set[Path] = set()
-        for pattern in project.include:
-            included.update(path for path in project.path.glob(pattern) if path.is_file())
-        excluded: set[Path] = set()
-        for pattern in project.exclude:
-            excluded.update(path for path in project.path.glob(pattern) if path.is_file())
-        return tuple(sorted(included.difference(excluded), key=lambda path: path.as_posix()))
+        return project_files(project.path, project.include, project.exclude)

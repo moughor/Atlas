@@ -5,11 +5,12 @@ from pathlib import Path
 from moughorai.project_locator import DEFAULT_PROJECT_MARKERS
 
 from .loader import WorkspaceLoader
+from .files import DEFAULT_IGNORED_DIRECTORIES
 from .models import Project, Workspace
 
 
 class WorkspaceDiscovery:
-    DEFAULT_IGNORED = frozenset({".git", ".hg", ".svn", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"})
+    DEFAULT_IGNORED = DEFAULT_IGNORED_DIRECTORIES
 
     def __init__(self, *, markers: tuple[str, ...] = DEFAULT_PROJECT_MARKERS, ignored: frozenset[str] = DEFAULT_IGNORED) -> None:
         self.markers = markers
@@ -38,7 +39,19 @@ class WorkspaceDiscovery:
             yield directory
             if depth >= max_depth:
                 continue
-            children = sorted((item for item in directory.iterdir() if item.is_dir() and item.name not in self.ignored), key=lambda item: item.name)
+            try:
+                children = sorted(
+                    (
+                        item
+                        for item in directory.iterdir()
+                        if item.is_dir()
+                        and not item.name.startswith(".")
+                        and item.name not in self.ignored
+                    ),
+                    key=lambda item: item.name,
+                )
+            except OSError:
+                children = ()
             pending.extend((child, depth + 1) for child in children)
 
     def _is_project(self, directory: Path) -> bool:
