@@ -23,6 +23,8 @@ class JavaSymbolIndexBuilder:
         self,
         units: tuple[CompilationUnit, ...],
         sources: tuple[Path | None, ...] | None = None,
+        *,
+        project_id: str | None = None,
     ) -> JavaSymbolIndex:
         if sources is not None and len(sources) != len(units):
             raise ValueError("sources must have the same length as units")
@@ -39,7 +41,7 @@ class JavaSymbolIndexBuilder:
                     source=source,
                     symbols=symbols,
                 )
-        return JavaSymbolIndex(symbols)
+        return JavaSymbolIndex(symbols, project_id=project_id)
 
     def _collect_type(
         self,

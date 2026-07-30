@@ -12,15 +12,22 @@ from moughorai.java_symbols.models import JavaSymbol, SymbolKind, TypeSymbol
 @dataclass(frozen=True)
 class DuplicateTypeError(ValueError):
     qualified_name: str
+    project_id: str | None = None
+    first_source: object | None = None
+    second_source: object | None = None
 
     def __str__(self) -> str:
-        return f"Duplicate Java type: {self.qualified_name}"
+        scope = self.project_id or "<unspecified>"
+        return (
+            f"Duplicate Java type {self.qualified_name!r} in project {scope!r}: "
+            f"{self.first_source} and {self.second_source}"
+        )
 
 
 class JavaSymbolIndex:
     """Immutable lookup structure for semantic Java symbols."""
 
-    def __init__(self, symbols: Iterable[JavaSymbol] = ()) -> None:
+    def __init__(self, symbols: Iterable[JavaSymbol] = (), *, project_id: str | None = None) -> None:
         ordered = tuple(symbols)
         by_qualified: dict[str, list[JavaSymbol]] = {}
         types: dict[str, TypeSymbol] = {}
@@ -31,7 +38,12 @@ class JavaSymbolIndex:
             by_simple.setdefault(symbol.name, []).append(symbol)
             if isinstance(symbol, TypeSymbol):
                 if symbol.qualified_name in types:
-                    raise DuplicateTypeError(symbol.qualified_name)
+                    raise DuplicateTypeError(
+                        symbol.qualified_name,
+                        project_id,
+                        types[symbol.qualified_name].source,
+                        symbol.source,
+                    )
                 types[symbol.qualified_name] = symbol
 
         self._symbols = ordered

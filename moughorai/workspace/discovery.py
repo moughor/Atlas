@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from moughorai.project_locator import DEFAULT_PROJECT_MARKERS
 
@@ -30,7 +31,60 @@ class WorkspaceDiscovery:
                 relative = directory.relative_to(workspace_root)
                 name = workspace_root.name if relative == Path(".") else "-".join(relative.parts)
                 projects.append(Project(name=name, path=directory))
+        projects.extend(self._gradle_projects(workspace_root, projects))
+        projects = self._exclude_nested_projects(projects)
         return Workspace(root=workspace_root, projects=tuple(sorted(projects, key=lambda item: item.name)))
+
+    @staticmethod
+    def _gradle_projects(root: Path, existing: list[Project]) -> list[Project]:
+        """Discover modules declared by Gradle settings without executing Gradle."""
+        known_paths = {project.path.resolve() for project in existing}
+        discovered: list[Project] = []
+        for filename in ("settings.gradle", "settings.gradle.kts"):
+            settings = root / filename
+            if not settings.is_file():
+                continue
+            try:
+                source = settings.read_text(encoding="utf-8-sig")
+            except (OSError, UnicodeError):
+                continue
+            for match in re.finditer(r"""(?m)^\s*include\s*\(([^)]*)\)""", source):
+                for token in re.findall(r"""["']([^"']+)["']""", match.group(1)):
+                    parts = tuple(part for part in token.lstrip(":").split(":") if part)
+                    if not parts:
+                        continue
+                    path = root.joinpath(*parts).resolve()
+                    if not path.is_dir() or path in known_paths:
+                        continue
+                    known_paths.add(path)
+                    discovered.append(Project("-".join(parts), path))
+        return discovered
+
+    @staticmethod
+    def _exclude_nested_projects(projects: list[Project]) -> list[Project]:
+        """Assign nested source trees to their most specific discovered project."""
+        result: list[Project] = []
+        for project in projects:
+            nested: list[str] = []
+            for candidate in projects:
+                if candidate is project:
+                    continue
+                try:
+                    relative = candidate.path.resolve().relative_to(project.path.resolve())
+                except ValueError:
+                    continue
+                nested.append(f"{relative.as_posix()}/**/*")
+            result.append(
+                Project(
+                    project.name,
+                    project.path,
+                    project.dependencies,
+                    project.include,
+                    tuple(sorted(set(project.exclude).union(nested))),
+                    project.options,
+                )
+            )
+        return result
 
     def _directories(self, root: Path, *, max_depth: int):
         pending = [(root, 0)]

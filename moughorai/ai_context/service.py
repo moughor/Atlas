@@ -66,7 +66,12 @@ class WorkspaceContextBuilder:
             ),
             "symbols": sorted(
                 (self._symbol(symbol, workspace.root) for symbol in symbols),
-                key=lambda item: (item["qualified_name"], item["kind"], item["id"]),
+                key=lambda item: (
+                    item["qualified_name"],
+                    item.get("project_id") or "",
+                    item["kind"],
+                    item["id"],
+                ),
             ),
             "types": self._types(types),
             "metrics": sorted(
@@ -136,7 +141,7 @@ class WorkspaceContextBuilder:
                 source = source.resolve().relative_to(root)
             except ValueError:
                 pass
-        return {
+        result = {
             "id": str(symbol.id),
             "kind": symbol.kind.value,
             "name": symbol.name,
@@ -145,6 +150,9 @@ class WorkspaceContextBuilder:
             "source": None if source is None else source.as_posix(),
             "metadata": dict(symbol.metadata),
         }
+        if symbol.project_id is not None:
+            result["project_id"] = symbol.project_id
+        return result
 
     def _types(self, values: Mapping[str, TypeTable] | TypeTable | None) -> dict[str, Any]:
         if values is None:

@@ -50,8 +50,11 @@ def project_files(
 
 
 def _matches(path: Path, patterns: tuple[str, ...]) -> bool:
+    path_text = path.as_posix()
     for pattern in patterns:
         normalized = pattern.replace("\\", "/")
+        if normalized.endswith("/**/*") and path_text.startswith(normalized[:-4]):
+            return True
         if path.match(normalized):
             return True
         if normalized.startswith("**/") and path.match(normalized[3:]):

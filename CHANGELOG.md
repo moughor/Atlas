@@ -1,5 +1,12 @@
 # Changelog
 
+## PR123 — Project-Scoped Java Type Identity
+
+- Scoped global symbol identity and lookup by workspace project.
+- Allowed duplicate Java qualified names across independent projects.
+- Preserved duplicate rejection within a project with source-aware diagnostics.
+- Kept legacy unscoped symbol IDs, persistence, and lookup compatibility.
+
 ## PR122 — Python Semantic Analyzer
 
 - Added AST-backed Python modules, classes, functions, decorators, async declarations, imports, globals, dataclasses, enums, annotations, and docstrings.

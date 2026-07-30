@@ -208,6 +208,7 @@ ADR-0011
 | ADR-0003 | Workspace Model | Implemented |
 | ADR-0004 | AI Explain Pipeline | Implemented |
 | ADR-0005 | Ollama Provider Abstraction | Implemented |
+| ADR-0011 | Project-Scoped Symbol Identity | Implemented |
 
 ---
 

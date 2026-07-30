@@ -18,7 +18,7 @@ class JavaSymbolService:
         self._parser = parser or JavaParser()
         self._builder = builder or JavaSymbolIndexBuilder()
 
-    def index_sources(self, sources: dict[Path, str]) -> JavaSymbolIndex:
+    def index_sources(self, sources: dict[Path, str], *, project_id: str | None = None) -> JavaSymbolIndex:
         paths = tuple(sources)
         units = tuple(self._parser.parse_source(sources[path]) for path in paths)
-        return self._builder.build(units, paths)
+        return self._builder.build(units, paths, project_id=project_id)
