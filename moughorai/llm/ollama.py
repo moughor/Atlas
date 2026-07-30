@@ -15,7 +15,7 @@ from .provider import LlmProviderError
 @dataclass(frozen=True, slots=True)
 class OllamaProviderConfig:
     endpoint: str = "http://localhost:11434"
-    model: str = "qwen3:32b"
+    model: str = "my-coder:latest"
 
     def __post_init__(self) -> None:
         endpoint = self.endpoint.strip().rstrip("/")

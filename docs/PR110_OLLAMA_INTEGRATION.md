@@ -10,7 +10,7 @@ PR71 layered configuration is supported:
 llm:
   provider: ollama
   endpoint: http://localhost:11434
-  model: qwen3:32b
+  model: my-coder:latest
 ```
 
 Request-level model overrides take precedence over the configured model.

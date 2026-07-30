@@ -5,3 +5,23 @@ __pycache__/
 venv/
 dist/
 build/
+
+# Local Atlas state
+.atlas/
+
+# Pytest temporary working directories
+.pytest_*/
+
+# PR replay and build directories
+.pr*_dist/
+.pr*_replay*/
+
+# Python generated files
+*.egg-info/
+
+# Virtual environments
+
+# Local delivery artifacts
+PR*.patch
+PR*_Delivery.zip
+*_Delivery.zip

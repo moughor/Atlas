@@ -32,27 +32,27 @@ def test_configuration_integrates_with_pr71_layers() -> None:
                 "llm": {
                     "provider": "ollama",
                     "endpoint": "http://localhost:11434/",
-                    "model": "qwen3:32b",
+                    "model": "my-coder:latest",
                 }
             },
         )
     )
     config = OllamaProviderConfig.from_configuration(resolved)
     assert config.endpoint == "http://localhost:11434"
-    assert config.model == "qwen3:32b"
+    assert config.model == "my-coder:latest"
 
 
 def test_complete_uses_chat_api_and_normalizes_usage() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         assert request.url.path == "/api/chat"
-        assert payload["model"] == "qwen3:32b"
+        assert payload["model"] == "my-coder:latest"
         assert payload["stream"] is False
         assert payload["options"] == {"temperature": 0.1, "num_predict": 32}
         return httpx.Response(
             200,
             json={
-                "model": "qwen3:32b",
+                "model": "my-coder:latest",
                 "message": {"role": "assistant", "content": "grounded"},
                 "done": True,
                 "prompt_eval_count": 7,
@@ -72,9 +72,9 @@ def test_complete_uses_chat_api_and_normalizes_usage() -> None:
 
 def test_stream_yields_ordered_chunks() -> None:
     lines = [
-        {"model": "qwen3:32b", "message": {"content": "one"}, "done": False},
+        {"model": "my-coder:latest", "message": {"content": "one"}, "done": False},
         {
-            "model": "qwen3:32b",
+            "model": "my-coder:latest",
             "message": {"content": " two"},
             "done": True,
             "done_reason": "stop",
