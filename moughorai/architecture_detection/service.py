@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import re
 from typing import Any, Protocol
 
 from moughorai.java_architecture import JavaArchitectureGraph
@@ -19,7 +20,7 @@ class _ArchitectureFacts:
     @property
     def searchable(self) -> tuple[tuple[str, str], ...]:
         values = [
-            (str(node.get("id", "")), str(node.get("qualified_name", "")).casefold())
+            (str(node.get("id", "")), str(node.get("qualified_name", "")))
             for node in self.nodes
         ]
         values.extend(
@@ -30,7 +31,7 @@ class _ArchitectureFacts:
                     str(project.get("path", "")),
                     " ".join(project.get("frameworks", ())),
                     " ".join(project.get("entry_points", ())),
-                )).casefold(),
+                )),
             )
             for project in self.summary.get("projects", ())
         )
@@ -65,7 +66,7 @@ class _TokenDetector:
                 ArchitectureEvidence("semantic-name", reference, token)
                 for reference, value in facts.searchable
                 for token in group
-                if token in value
+                if token.casefold() in _terms(value)
             ]
             if group_matches:
                 matched_groups += 1
@@ -261,5 +262,14 @@ class ArchitectureDetectionService:
     ) -> tuple[str, ...]:
         return tuple(sorted(
             name for _, name in names
-            if any(token in name.casefold() for token in tokens)
+            if any(token.casefold() in _terms(name) for token in tokens)
         ))
+
+
+def _terms(value: str) -> frozenset[str]:
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    return frozenset(
+        token.casefold()
+        for token in re.split(r"[^A-Za-z0-9]+", separated)
+        if token
+    )

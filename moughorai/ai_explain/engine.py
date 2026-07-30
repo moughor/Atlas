@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 
+from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.ai_memory import ConversationMemoryStore, ConversationRole
 from moughorai.llm import LlmClient
 from moughorai.prompts import SemanticPromptBuilder
@@ -41,9 +43,20 @@ class ExplainEngine:
         question = selected.question.strip()
         if not subject or not question:
             raise ValueError("explanation subject and question are required")
+        repository_default = self._is_repository_default(selected)
+        context = (
+            self._repository_context(snapshot)
+            if repository_default and snapshot.semantic_context.get("repository_summary")
+            else snapshot.to_context()
+        )
         prompt = self.prompts.build(
             question,
-            snapshot.to_context(),
+            context,
+            template=(
+                "atlas-repository-explanation-v1"
+                if repository_default and snapshot.semantic_context.get("repository_summary")
+                else "atlas-grounded-v1"
+            ),
             variables={"subject": subject},
             model="",
         )
@@ -77,3 +90,57 @@ class ExplainEngine:
             prompt.estimated_input_tokens,
             conversation_id,
         )
+
+    @staticmethod
+    def _is_repository_default(request: ExplainRequest) -> bool:
+        return (
+            request.subject.strip().casefold() in {"workspace", "repository"}
+            and request.question.strip() == ExplainRequest().question
+        )
+
+    @staticmethod
+    def _repository_context(snapshot: AtlasSemanticSnapshot) -> WorkspaceSemanticContext:
+        source = snapshot.semantic_context
+        summary = source.get("repository_summary")
+        architecture = source.get("architecture", {})
+        graph = source.get("semantic_graph", {})
+        projects = summary.get("projects", ()) if isinstance(summary, Mapping) else ()
+        findings = architecture.get("findings", ()) if isinstance(architecture, Mapping) else ()
+        limitations = [
+            "Context is source-free; no raw source code is included.",
+            f"Detailed symbols omitted from this repository overview: {len(source.get('symbols', ()))} available.",
+            f"Semantic graph summarized: {len(graph.get('nodes', ()))} nodes and {len(graph.get('edges', ()))} edges.",
+        ]
+        if not findings:
+            limitations.append("No high-confidence architecture finding is available.")
+        return WorkspaceSemanticContext({
+            "schema_version": source.get("schema_version"),
+            "workspace": {
+                "root": source.get("workspace", {}).get("root"),
+                "project_count": len(projects),
+            },
+            "repository_summary": summary,
+            "architecture": ExplainEngine._compact_architecture(architecture),
+            "limitations": limitations,
+        })
+
+    @staticmethod
+    def _compact_architecture(value: object) -> object:
+        if not isinstance(value, Mapping):
+            return {}
+        ports = tuple(value.get("ports", ()))
+        adapters = tuple(value.get("adapters", ()))
+        infrastructure = tuple(value.get("infrastructure_layers", ()))
+        return {
+            "schema_version": value.get("schema_version"),
+            "findings": value.get("findings", ()),
+            "dependency_directions": value.get("dependency_directions", ()),
+            "dependency_cycles": value.get("dependency_cycles", ()),
+            "bounded_contexts": value.get("bounded_contexts", ()),
+            "ports": ports[:25],
+            "port_count": len(ports),
+            "adapters": adapters[:25],
+            "adapter_count": len(adapters),
+            "infrastructure_layers": infrastructure[:25],
+            "infrastructure_layer_count": len(infrastructure),
+        }

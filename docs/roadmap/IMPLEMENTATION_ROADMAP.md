@@ -43,8 +43,7 @@ engineering intent.
 - AI Explain
 - Ollama Integration
 - 3400+ automated tests
-- JUnit workspace validated successfully: **41 discovered projects, including
-  the root `junit-team` aggregator**
+- JUnit workspace validated successfully: **41 discovered projects, including the root `junit-team` aggregator**.
 
 ## Legacy Roadmap Capability Migration
 

@@ -55,6 +55,25 @@ class SemanticPromptBuilder:
         ),
         user="Request:\n{request}\n\nAtlas context (JSON):\n{context}",
     )
+    REPOSITORY_EXPLANATION_TEMPLATE = PromptTemplate(
+        name="atlas-repository-explanation-v1",
+        system=(
+            "You are an Atlas repository architect. Treat the supplied source-free "
+            "Atlas metadata as authoritative. Prioritize repository_summary, then "
+            "architecture and dependency metadata. Give a direct repository overview "
+            "instead of asking what to inspect. Cover, when available: repository or "
+            "workspace name, discovered project count, module hierarchy, primary "
+            "languages, build systems, frameworks, major repository areas, entry "
+            "points, dependency overview, and high-level architecture. End with "
+            "important limitations or uncertainty. Never invent missing facts and "
+            "never request or reproduce raw source code."
+        ),
+        user=(
+            "Repository explanation request:\n{request}\n\n"
+            "Subject: {subject}\n\n"
+            "Prioritized Atlas repository context (JSON):\n{context}"
+        ),
+    )
 
     def __init__(
         self,
@@ -62,7 +81,10 @@ class SemanticPromptBuilder:
         *,
         estimator: TokenEstimator | None = None,
     ) -> None:
-        values = {self.DEFAULT_TEMPLATE.name: self.DEFAULT_TEMPLATE}
+        values = {
+            self.DEFAULT_TEMPLATE.name: self.DEFAULT_TEMPLATE,
+            self.REPOSITORY_EXPLANATION_TEMPLATE.name: self.REPOSITORY_EXPLANATION_TEMPLATE,
+        }
         for name, template in sorted((templates or {}).items()):
             if name != template.name:
                 raise PromptTemplateError("template registry key must match template name")

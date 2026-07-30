@@ -4,12 +4,13 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from moughorai import atlas_cli
-from moughorai.ai_context import WorkspaceContextBuilder
+from moughorai.ai_context import WorkspaceContextBuilder, WorkspaceSemanticContext
 from moughorai.ai_explain import ExplainEngine, ExplainRequest
 from moughorai.ai_memory import ConversationMemoryStore
 from moughorai.atlas_cli import app
 from moughorai.llm import LlmClient, LlmResponse, ScriptedLlmProvider
 from moughorai.semantic_snapshot import SemanticSnapshotStore
+from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 from moughorai.workspace import Project, Workspace
 
 
@@ -74,3 +75,75 @@ def test_empty_explanation_is_rejected(tmp_path: Path) -> None:
         assert "empty output" in str(exc)
     else:
         raise AssertionError("empty explanation accepted")
+
+
+def test_default_repository_explanation_prioritizes_compact_summary() -> None:
+    context = WorkspaceSemanticContext({
+        "schema_version": 1,
+        "workspace": {"root": "C:/demo", "projects": [{"name": "api"}]},
+        "repository_summary": {
+            "root": "C:/demo",
+            "projects": [{"name": "api"}, {"name": "core"}],
+            "module_hierarchy": [{"project": "api", "parent": "core"}],
+            "languages": {"Java": 120, "Python": 30},
+            "build_systems": ["Gradle"],
+            "frameworks": ["Spring"],
+            "entry_points": ["api:Main.java"],
+            "dependencies_by_ecosystem": {"gradle": 12},
+        },
+        "architecture": {
+            "findings": [{
+                "architecture": "layered",
+                "confidence": 0.84,
+                "evidence": [{"kind": "semantic-name", "reference": "api", "detail": "api"}],
+            }],
+        },
+        "dependencies": [{"name": "org.example:core", "ecosystem": "gradle"}],
+        "semantic_graph": {
+            "nodes": [{"id": str(index), "qualified_name": f"OMITTED_MARKER_{index}"} for index in range(500)],
+            "edges": [],
+        },
+        "symbols": [{"qualified_name": f"OMITTED_MARKER_{index}"} for index in range(500)],
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="workspace",
+        analyzer_version="test",
+    )
+    provider = ScriptedLlmProvider(["Repository overview"])
+
+    result = ExplainEngine(LlmClient(provider)).explain(snapshot)
+
+    request = provider.calls[0][0]
+    system, user = (message.content for message in request.messages)
+    assert request.metadata["prompt_template"] == "atlas-repository-explanation-v1"
+    assert "Prioritize repository_summary" in system
+    assert '"repository_summary"' in user
+    assert '"project_count":2' in user
+    assert '"Gradle"' in user and '"Spring"' in user
+    assert '"layered"' in user
+    assert "OMITTED_MARKER" not in user
+    assert "source-free" in user
+    assert result.estimated_input_tokens < 2_000
+
+
+def test_specific_subject_preserves_detailed_context_path() -> None:
+    context = WorkspaceSemanticContext({
+        "repository_summary": {"projects": [{"name": "api"}]},
+        "symbols": [{"qualified_name": "DETAIL_MARKER"}],
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="workspace",
+        analyzer_version="test",
+    )
+    provider = ScriptedLlmProvider(["Detail"])
+
+    ExplainEngine(LlmClient(provider)).explain(
+        snapshot,
+        ExplainRequest(subject="demo.Service"),
+    )
+
+    request = provider.calls[0][0]
+    assert request.metadata["prompt_template"] == "atlas-grounded-v1"
+    assert "DETAIL_MARKER" in request.messages[1].content

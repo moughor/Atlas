@@ -7,6 +7,7 @@
   and infrastructure layers.
 - Consumed existing source-free repository summaries and semantic graphs.
 - Preserved and optionally reused the existing Java architecture graph.
+- Prevented substring false positives such as treating `Support` as a port.
 
 ## PR127 — Repository Summary Engine
 
@@ -16,6 +17,8 @@
   generated-source, and dependency summaries.
 - Prevented nested workspace projects from being double-counted.
 - Published source-free repository metadata in semantic snapshots for AI use.
+- Prioritized a compact repository summary in default `atlas ai explain`
+  prompts while preserving detailed subject explanations.
 
 ## PR126 — Dependency Intelligence
 

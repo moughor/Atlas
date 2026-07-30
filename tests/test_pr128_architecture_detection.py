@@ -125,6 +125,28 @@ def test_report_is_deterministic() -> None:
     ).to_dict()
 
 
+def test_port_detection_does_not_treat_support_as_a_port() -> None:
+    report = ArchitectureDetectionService().detect(
+        {"projects": (), "module_hierarchy": ()},
+        {
+            "nodes": [
+                {
+                    "id": "support",
+                    "qualified_name": "demo.SupportUtility",
+                    "project_id": "demo",
+                },
+                {
+                    "id": "port",
+                    "qualified_name": "demo.PaymentPort",
+                    "project_id": "demo",
+                },
+            ],
+            "edges": (),
+        },
+    )
+    assert report.ports == ("demo.PaymentPort",)
+
+
 def test_architecture_is_published_in_semantic_snapshot(tmp_path: Path) -> None:
     (tmp_path / "atlas.yaml").write_text(
         "projects:\n"
