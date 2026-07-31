@@ -57,7 +57,11 @@ class Workspace:
         by_name: dict[str, Project] = {}
         for project in self.projects:
             if project.name in by_name:
-                raise ValueError(f"duplicate project name: {project.name}")
+                previous = by_name[project.name]
+                raise ValueError(
+                    f"duplicate project name {project.name!r}: "
+                    f"{previous.path} and {project.path}"
+                )
             by_name[project.name] = project
         object.__setattr__(self, "_by_name", by_name)
 

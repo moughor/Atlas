@@ -56,8 +56,12 @@ def test_project_serialization_relative_path(tmp_path: Path) -> None:
 
 
 def test_workspace_rejects_duplicate_names(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="duplicate"):
-        Workspace(tmp_path, (Project("x", tmp_path / "a"), Project("x", tmp_path / "b")))
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    with pytest.raises(ValueError, match="duplicate") as raised:
+        Workspace(tmp_path, (Project("x", first), Project("x", second)))
+    assert str(first) in str(raised.value)
+    assert str(second) in str(raised.value)
 
 
 def test_workspace_get_and_names(tmp_path: Path) -> None:
