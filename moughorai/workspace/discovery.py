@@ -108,13 +108,14 @@ class WorkspaceDiscovery:
     def _exclude_nested_projects(projects: list[Project]) -> list[Project]:
         """Assign nested source trees to their most specific discovered project."""
         result: list[Project] = []
-        for project in projects:
+        resolved = tuple((project, project.path.resolve()) for project in projects)
+        for project, project_path in resolved:
             nested: list[str] = []
-            for candidate in projects:
+            for candidate, candidate_path in resolved:
                 if candidate is project:
                     continue
                 try:
-                    relative = candidate.path.resolve().relative_to(project.path.resolve())
+                    relative = candidate_path.relative_to(project_path)
                 except ValueError:
                     continue
                 nested.append(f"{relative.as_posix()}/**/*")

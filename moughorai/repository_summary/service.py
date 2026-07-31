@@ -154,17 +154,20 @@ class RepositorySummaryService:
         return summary, dependencies
 
     def _paths(self, project: Project) -> tuple[Path, ...]:
-        nested_roots = tuple(
-            candidate.path.resolve()
-            for candidate in self.service.workspace.projects
-            if candidate is not project
-            and self._contains(project.path.resolve(), candidate.path.resolve())
-        )
-        return tuple(
-            path
-            for path in project_files(project.path, project.include, project.exclude)
-            if not any(self._contains(root, path.resolve()) for root in nested_roots)
-        )
+        project_root = project.path.resolve()
+        nested_roots: list[Path] = []
+        for candidate in self.service.workspace.projects:
+            if candidate is project:
+                continue
+            candidate_root = candidate.path.resolve()
+            if self._contains(project_root, candidate_root):
+                nested_roots.append(candidate_root)
+        paths: list[Path] = []
+        for path in project_files(project.path, project.include, project.exclude):
+            resolved_path = path.resolve()
+            if not any(self._contains(root, resolved_path) for root in nested_roots):
+                paths.append(path)
+        return tuple(paths)
 
     def _frameworks(self, project, paths, dependencies):
         values: set[str] = set()
@@ -245,16 +248,17 @@ class RepositorySummaryService:
 
     def _hierarchy(self) -> tuple[tuple[str, str | None], ...]:
         projects = self.service.workspace.projects
+        resolved = tuple((project, project.path.resolve()) for project in projects)
         result = []
-        for project in projects:
+        for project, project_path in resolved:
             parents = [
-                candidate
-                for candidate in projects
+                (candidate, candidate_path)
+                for candidate, candidate_path in resolved
                 if candidate is not project
-                and self._contains(candidate.path.resolve(), project.path.resolve())
+                and self._contains(candidate_path, project_path)
             ]
-            parent = max(parents, key=lambda item: len(item.path.resolve().parts), default=None)
-            result.append((project.name, None if parent is None else parent.name))
+            parent = max(parents, key=lambda item: len(item[1].parts), default=None)
+            result.append((project.name, None if parent is None else parent[0].name))
         return tuple(sorted(result))
 
     @staticmethod

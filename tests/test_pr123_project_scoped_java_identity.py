@@ -27,6 +27,68 @@ from moughorai.workspace.files import project_files
 runner = CliRunner()
 
 
+def test_project_files_prunes_literal_excluded_subtrees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def walk(*_args, **_kwargs):
+        directories = ["included", "module"]
+        yield str(tmp_path), directories, ["pom.xml"]
+        assert directories == ["included"]
+        yield str(tmp_path / "included"), [], ["Included.java"]
+
+    monkeypatch.setattr("moughorai.workspace.files.os.walk", walk)
+
+    assert project_files(tmp_path, ("**/*",), ("module/**/*",)) == (
+        tmp_path / "pom.xml",
+        tmp_path / "included" / "Included.java",
+    )
+
+
+@pytest.mark.parametrize("exclude", ("module/**/*", r"module\**\*"))
+def test_project_files_keeps_similarly_prefixed_sibling_tree(
+    tmp_path: Path,
+    exclude: str,
+) -> None:
+    included = tmp_path / "module-other" / "Included.java"
+    included.parent.mkdir()
+    included.write_text("class Included {}", encoding="utf-8")
+    excluded = tmp_path / "module" / "Excluded.java"
+    excluded.parent.mkdir()
+    excluded.write_text("class Excluded {}", encoding="utf-8")
+
+    assert project_files(tmp_path, ("**/*",), (exclude,)) == (included,)
+
+
+def test_project_files_preserves_wildcard_exclusion_semantics(tmp_path: Path) -> None:
+    keep = tmp_path / "Keep.java"
+    test_file = tmp_path / "KeepTest.java"
+    generated = tmp_path / "component" / "generated" / "Generated.java"
+    module = tmp_path / "module-one" / "src" / "Module.java"
+    for path in (keep, test_file, generated, module):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("class Example {}", encoding="utf-8")
+
+    assert project_files(
+        tmp_path,
+        ("**/*",),
+        ("module-*/src/**", "**/generated/**", "**/*Test.java"),
+    ) == (keep,)
+
+
+def test_project_files_continues_after_inaccessible_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def walk(_root, *, onerror, **_kwargs):
+        onerror(PermissionError("denied"))
+        yield str(tmp_path), [], ["pom.xml"]
+
+    monkeypatch.setattr("moughorai.workspace.files.os.walk", walk)
+
+    assert project_files(tmp_path, ("**/*",), ()) == (tmp_path / "pom.xml",)
+
+
 def _java_project(root: Path, name: str, source: str) -> None:
     project = root / name
     project.mkdir()
