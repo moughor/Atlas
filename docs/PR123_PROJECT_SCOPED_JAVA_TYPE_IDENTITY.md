@@ -26,3 +26,16 @@ error. `DuplicateTypeError` identifies the project and both source paths.
 
 Persistence, recovery, source removal, immutable snapshots, and concurrent
 database operations retain the project scope.
+
+## Maven source roots
+
+For Maven projects, Java analysis uses the module's recognized Java source roots.
+Standard main and test sources remain eligible, while Java-looking fixture files
+under resource roots are excluded because Maven copies resources rather than
+compiling them. Reactor modules are discovered as independent Atlas projects, so a
+qualified type may legitimately occur in two artifacts without weakening duplicate
+detection inside either artifact.
+
+Custom source roots require structured build metadata. Atlas does not infer a
+compile root merely because a resource directory contains a nested `src/main/java`
+path.

@@ -16,3 +16,8 @@ into semantic snapshots.
 Consumers no longer need ecosystem-specific parsing. Declared constraints are
 reported verbatim; PR126 does not resolve lockfiles, contact registries, or
 claim which version is installed.
+
+Optional versions remain `None` when they are unspecified or inherited. Production
+consumers use `DeclaredDependency.deterministic_sort_key()` for ordering, which
+normalizes the optional value only inside the comparison key and never changes the
+stored semantic value.
