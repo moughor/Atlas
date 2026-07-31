@@ -137,11 +137,76 @@ def test_default_repository_explanation_prioritizes_compact_summary() -> None:
     assert '"bounded_contexts"' not in user
     assert "'Modules' or 'Architectural Areas'" in system
     assert '"layered"' in user
+    assert '"design_patterns":{"findings":[],"limitations":[' in user
+    assert '"status":"unavailable"' in user
+    assert "structured pattern analysis is unavailable" in system
     assert '"total_declared_dependency_records":12' in user
     assert '"dependencies_by_ecosystem"' not in user
     assert "OMITTED_MARKER" not in user
     assert "source-free" in user
     assert result.estimated_input_tokens < 2_000
+
+
+def test_default_repository_explanation_compacts_pr130_patterns() -> None:
+    context = WorkspaceSemanticContext({
+        "schema_version": 1,
+        "workspace": {"root": "C:/demo", "projects": [{"name": "demo"}]},
+        "repository_summary": {
+            "root": "C:/demo",
+            "projects": [{"name": "demo"}],
+        },
+        "design_patterns": {
+            "schema_version": 1,
+            "producer_version": "atlas-pr130/1",
+            "findings": [{
+                "pattern": "builder",
+                "confidence": 0.72,
+                "confidence_tier": "medium",
+                "participants": [
+                    {
+                        "role": "builder",
+                        "symbol_id": "SECRET_SYMBOL_ID",
+                        "qualified_name": "demo.SourceMustStayOmitted",
+                    },
+                    {
+                        "role": "product",
+                        "symbol_id": "SECRET_PRODUCT_ID",
+                        "qualified_name": "demo.ProductMustStayOmitted",
+                    },
+                ],
+                "evidence_ids": ["evidence:one", "evidence:two"],
+                "limitations": ["Behavioral construction is not proven."],
+            }],
+            "evidence_index": {
+                "schema_version": 1,
+                "records": [{"detail": "MUST_NOT_ENTER_DEFAULT_PROMPT"}],
+            },
+        },
+        "semantic_graph": {"nodes": [], "edges": []},
+        "symbols": [],
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="workspace",
+        analyzer_version="test",
+    )
+    provider = ScriptedLlmProvider(["Repository overview"])
+
+    ExplainEngine(LlmClient(provider)).explain(snapshot)
+
+    request = provider.calls[0][0]
+    system, user = (message.content for message in request.messages)
+    assert "design_patterns as structured findings" in system
+    assert '"pattern":"builder"' in user
+    assert '"status":"medium"' in user
+    assert '"confidence":0.72' in user
+    assert '"participating_symbols_count":2' in user
+    assert '"evidence_count":2' in user
+    assert '"limitations":["Behavioral construction is not proven."]' in user
+    assert "SECRET_SYMBOL_ID" not in user
+    assert "SourceMustStayOmitted" not in user
+    assert "evidence:one" not in user
+    assert "MUST_NOT_ENTER_DEFAULT_PROMPT" not in user
 
 
 def test_specific_subject_preserves_detailed_context_path() -> None:

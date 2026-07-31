@@ -9,6 +9,13 @@ from moughorai.global_symbols.models import SymbolId
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable, type_from_dict, type_to_dict
 from moughorai.dependency_intelligence import DeclaredDependency
+from moughorai.java_architecture import (
+    ArchitectureEdge,
+    ArchitectureEdgeKind,
+    ArchitectureNode,
+    JavaArchitectureGraph,
+    UnresolvedArchitectureReference,
+)
 
 
 _DOCUMENT_MARKER = "atlas.semantic-document.v1"
@@ -44,6 +51,9 @@ def encode_analysis_result(value: Any) -> Any:
             for item in value.get_artifact("declared_dependencies", ())
             if isinstance(item, DeclaredDependency)
         ],
+        "java_architecture_graph": _encode_java_architecture(
+            value.get_artifact("java_architecture_graph")
+        ),
     }
 
 
@@ -80,6 +90,12 @@ def decode_analysis_result(value: Any) -> Any:
             for item in value.get("declared_dependencies", ())
         ),
     )
+    raw_architecture = value.get("java_architecture_graph")
+    if isinstance(raw_architecture, Mapping):
+        document = document.with_artifact(
+            "java_architecture_graph",
+            _decode_java_architecture(raw_architecture),
+        )
     return document.with_diagnostics(
         Diagnostic(
             code=str(item["code"]),
@@ -126,4 +142,95 @@ def _decode_symbol(value: Mapping[str, Any]) -> GlobalSymbol:
         symbol.source,
         symbol.metadata,
         symbol.project_id,
+    )
+
+
+def _encode_java_architecture(value: object) -> dict[str, object] | None:
+    if not isinstance(value, JavaArchitectureGraph):
+        return None
+    return {
+        "nodes": [
+            {
+                "qualified_name": item.qualified_name,
+                "simple_name": item.simple_name,
+                "type_kind": item.type_kind,
+                "package_name": item.package_name,
+                "source": str(item.source) if item.source is not None else None,
+            }
+            for item in sorted(value.nodes, key=lambda item: item.qualified_name)
+        ],
+        "edges": [
+            {
+                "source": item.source,
+                "target": item.target,
+                "kind": item.kind.value,
+                "role": item.role,
+                "requested_name": item.requested_name,
+            }
+            for item in sorted(
+                value.edges,
+                key=lambda item: (
+                    item.source, item.target, item.kind.value, item.role,
+                ),
+            )
+        ],
+        "unresolved": [
+            {
+                "owner": item.owner,
+                "role": item.role,
+                "requested_name": item.requested_name,
+                "status": item.status,
+                "candidates": list(item.candidates),
+            }
+            for item in sorted(
+                value.unresolved,
+                key=lambda item: (
+                    item.owner, item.role, item.requested_name,
+                ),
+            )
+        ],
+    }
+
+
+def _decode_java_architecture(
+    value: Mapping[str, object],
+) -> JavaArchitectureGraph:
+    return JavaArchitectureGraph(
+        (
+            ArchitectureNode(
+                str(item["qualified_name"]),
+                str(item["simple_name"]),
+                str(item["type_kind"]),
+                str(item["package_name"]),
+                (
+                    Path(str(item["source"]))
+                    if item.get("source") is not None
+                    else None
+                ),
+            )
+            for item in value.get("nodes", ())
+            if isinstance(item, Mapping)
+        ),
+        (
+            ArchitectureEdge(
+                str(item["source"]),
+                str(item["target"]),
+                ArchitectureEdgeKind(str(item["kind"])),
+                str(item["role"]),
+                str(item["requested_name"]),
+            )
+            for item in value.get("edges", ())
+            if isinstance(item, Mapping)
+        ),
+        (
+            UnresolvedArchitectureReference(
+                str(item["owner"]),
+                str(item["role"]),
+                str(item["requested_name"]),
+                str(item["status"]),
+                tuple(map(str, item.get("candidates", ()))),
+            )
+            for item in value.get("unresolved", ())
+            if isinstance(item, Mapping)
+        ),
     )

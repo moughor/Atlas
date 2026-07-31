@@ -103,6 +103,7 @@ class ExplainEngine:
         source = snapshot.semantic_context
         summary = source.get("repository_summary")
         architecture = source.get("architecture", {})
+        design_patterns = source.get("design_patterns")
         graph = source.get("semantic_graph", {})
         projects = summary.get("projects", ()) if isinstance(summary, Mapping) else ()
         findings = architecture.get("findings", ()) if isinstance(architecture, Mapping) else ()
@@ -125,6 +126,7 @@ class ExplainEngine:
             },
             "repository_summary": ExplainEngine._compact_summary(summary),
             "architecture": ExplainEngine._compact_architecture(architecture),
+            "design_patterns": ExplainEngine._compact_design_patterns(design_patterns),
             "limitations": limitations,
         })
 
@@ -186,6 +188,66 @@ class ExplainEngine:
                 "evidence_edge_count": 0,
             }),
             "classification_conflicts": value.get("classification_conflicts", ()),
+        }
+
+    @staticmethod
+    def _compact_design_patterns(value: object) -> object:
+        if not isinstance(value, Mapping):
+            return {
+                "status": "unavailable",
+                "findings": [],
+                "limitations": [
+                    "Structured design-pattern analysis is unavailable in this snapshot."
+                ],
+            }
+        raw_findings = value.get("findings", ())
+        findings = []
+        if isinstance(raw_findings, (list, tuple)):
+            for item in raw_findings:
+                if not isinstance(item, Mapping):
+                    continue
+                participants = item.get("participants", ())
+                evidence_ids = item.get("evidence_ids", ())
+                findings.append({
+                    "pattern": item.get("pattern"),
+                    "status": item.get("confidence_tier", "unknown"),
+                    "confidence": item.get("confidence"),
+                    "participating_symbols_count": (
+                        len(participants)
+                        if isinstance(participants, (list, tuple))
+                        else 0
+                    ),
+                    "evidence_count": (
+                        len(evidence_ids)
+                        if isinstance(evidence_ids, (list, tuple))
+                        else 0
+                    ),
+                    "limitations": (
+                        list(item.get("limitations", ()))
+                        if isinstance(item.get("limitations", ()), (list, tuple))
+                        else []
+                    ),
+                })
+        findings.sort(key=lambda item: (
+            str(item["pattern"]),
+            str(item["status"]),
+            float(item["confidence"] or 0.0),
+            item["participating_symbols_count"],
+            item["evidence_count"],
+            tuple(map(str, item["limitations"])),
+        ))
+        limitations = []
+        if not findings:
+            limitations.append(
+                "No evidence-backed design-pattern finding matched; this does not "
+                "prove that the repository contains no design patterns."
+            )
+        return {
+            "schema_version": value.get("schema_version"),
+            "producer_version": value.get("producer_version"),
+            "status": "available",
+            "findings": findings,
+            "limitations": limitations,
         }
 
     @staticmethod
