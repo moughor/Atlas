@@ -34,6 +34,29 @@ class JavaWorkspaceScanner:
     def __init__(self, *, ignored_directories: frozenset[str] = _IGNORED) -> None:
         self._ignored = ignored_directories
 
+    def scan_module(self, root: Path) -> WorkspaceModule:
+        """Describe one build module without descending into nested fixtures."""
+
+        module_root = root.expanduser().resolve()
+        if not module_root.exists():
+            raise FileNotFoundError(module_root)
+        if not module_root.is_dir():
+            raise NotADirectoryError(module_root)
+
+        if (module_root / "pom.xml").is_file():
+            descriptor = module_root / "pom.xml"
+            system = BuildSystem.MAVEN
+        elif (module_root / "build.gradle.kts").is_file():
+            descriptor = module_root / "build.gradle.kts"
+            system = BuildSystem.GRADLE
+        elif (module_root / "build.gradle").is_file():
+            descriptor = module_root / "build.gradle"
+            system = BuildSystem.GRADLE
+        else:
+            descriptor = module_root
+            system = BuildSystem.UNKNOWN
+        return self._module(module_root, descriptor, system)
+
     def scan(self, root: Path) -> WorkspaceCatalog:
         workspace_root = root.expanduser().resolve()
         if not workspace_root.exists():

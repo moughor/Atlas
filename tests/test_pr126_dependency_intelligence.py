@@ -2,7 +2,12 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from moughorai.ai_context import AnalyzerRegistry, decode_analysis_result, encode_analysis_result
+from moughorai.ai_context import (
+    AnalyzerRegistry,
+    WorkspaceContextBuilder,
+    decode_analysis_result,
+    encode_analysis_result,
+)
 from moughorai.atlas_cli import app
 from moughorai.dependency_intelligence import DependencyIntelligenceService
 from moughorai.semantic_snapshot import SemanticSnapshotStore
@@ -87,3 +92,41 @@ def test_invalid_manifests_do_not_abort_semantic_analysis(tmp_path: Path) -> Non
     (tmp_path / "package.json").write_text("{invalid", encoding="utf-8")
     document = AnalyzerRegistry()(Project("demo", tmp_path), {})
     assert document.get_artifact("declared_dependencies") == ()
+
+
+def test_missing_maven_version_is_preserved_and_ordered_deterministically(
+    tmp_path: Path,
+) -> None:
+    pom = tmp_path / "pom.xml"
+    pom.write_text(
+        "<project><dependencies>"
+        "<dependency><groupId>org.demo</groupId><artifactId>managed</artifactId>"
+        "<version>1.0</version></dependency>"
+        "<dependency><groupId>org.demo</groupId><artifactId>managed</artifactId>"
+        "</dependency>"
+        "</dependencies></project>",
+        encoding="utf-8",
+    )
+
+    service = DependencyIntelligenceService()
+    dependencies = service.analyze(tmp_path, (pom,))
+
+    assert [dependency.version for dependency in dependencies] == ["1.0", None]
+    assert service.analyze(tmp_path, (pom,)) == dependencies
+
+    workspace = WorkspaceService(tmp_path).workspace
+    builder = WorkspaceContextBuilder()
+    forward = builder.build(
+        workspace,
+        declared_dependencies=dependencies,
+    )
+    reversed_input = builder.build(
+        workspace,
+        declared_dependencies=reversed(dependencies),
+    )
+
+    assert forward.to_json() == reversed_input.to_json()
+    assert [
+        dependency["version"]
+        for dependency in forward.to_dict()["dependencies"]
+    ] == ["1.0", None]

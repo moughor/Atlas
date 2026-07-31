@@ -13,6 +13,19 @@ class DeclaredDependency:
     source: Path
     optional: bool = False
 
+    def deterministic_sort_key(self) -> tuple[str, str, bool, str, str, str, bool]:
+        """Order dependencies without changing an unspecified version's meaning."""
+
+        return (
+            self.ecosystem,
+            self.name,
+            self.version is None,
+            self.version or "",
+            self.scope,
+            self.source.as_posix(),
+            self.optional,
+        )
+
     def to_dict(self, *, root: Path | None = None) -> dict[str, object]:
         source = self.source
         if root is not None:

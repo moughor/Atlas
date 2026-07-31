@@ -37,7 +37,7 @@ class DependencyIntelligenceService:
                     dependencies.update(self._cargo(path))
             except (OSError, UnicodeError, ValueError, ET.ParseError, json.JSONDecodeError, tomllib.TOMLDecodeError):
                 continue
-        return tuple(sorted(dependencies))
+        return tuple(sorted(dependencies, key=DeclaredDependency.deterministic_sort_key))
 
     @staticmethod
     def _maven(path: Path):

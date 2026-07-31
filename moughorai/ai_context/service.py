@@ -86,7 +86,10 @@ class WorkspaceContextBuilder:
             "semantic_graph": self._semantic_graph(semantic_symbols),
             "dependencies": [
                 item.to_dict(root=workspace.root)
-                for item in sorted(set(declared_dependencies))
+                for item in sorted(
+                    set(declared_dependencies),
+                    key=DeclaredDependency.deterministic_sort_key,
+                )
             ],
             "repository_summary": (
                 {}

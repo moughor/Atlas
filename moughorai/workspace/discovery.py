@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from moughorai.project_inventory.maven_parser import MavenParseError, MavenParser
 from moughorai.project_locator import DEFAULT_PROJECT_MARKERS
 
 from .loader import WorkspaceLoader
@@ -17,6 +18,7 @@ class WorkspaceDiscovery:
         self.markers = markers
         self.ignored = ignored
         self.loader = WorkspaceLoader()
+        self.maven_parser = MavenParser()
 
     def discover(self, root: Path | str, *, max_depth: int = 4) -> Workspace:
         workspace_root = Path(root).expanduser().resolve()
@@ -32,8 +34,50 @@ class WorkspaceDiscovery:
                 name = workspace_root.name if relative == Path(".") else "-".join(relative.parts)
                 projects.append(Project(name=name, path=directory))
         projects.extend(self._gradle_projects(workspace_root, projects))
+        projects.extend(self._maven_projects(workspace_root, projects))
         projects = self._exclude_nested_projects(projects)
         return Workspace(root=workspace_root, projects=tuple(sorted(projects, key=lambda item: item.name)))
+
+    def _maven_projects(self, root: Path, existing: list[Project]) -> list[Project]:
+        """Discover explicit Maven reactor modules beyond the generic depth limit."""
+
+        workspace_root = root.resolve()
+        known_paths = {project.path.resolve() for project in existing}
+        pending = sorted(
+            (path for path in known_paths if (path / "pom.xml").is_file()),
+            key=lambda path: path.as_posix().casefold(),
+        )
+        parsed_paths: set[Path] = set()
+        discovered: list[Project] = []
+
+        while pending:
+            project_path = pending.pop(0)
+            if project_path in parsed_paths:
+                continue
+            parsed_paths.add(project_path)
+            try:
+                model = self.maven_parser.parse(project_path / "pom.xml")
+            except MavenParseError:
+                continue
+
+            for module in sorted(model.modules, key=lambda item: item.path.casefold()):
+                declared = project_path / module.path
+                pom = declared if declared.name == "pom.xml" else declared / "pom.xml"
+                if not pom.is_file():
+                    continue
+                module_path = pom.parent.resolve()
+                try:
+                    relative = module_path.relative_to(workspace_root)
+                except ValueError:
+                    continue
+                if module_path not in known_paths:
+                    known_paths.add(module_path)
+                    discovered.append(Project("-".join(relative.parts), module_path))
+                if module_path not in parsed_paths:
+                    pending.append(module_path)
+            pending.sort(key=lambda path: path.as_posix().casefold())
+
+        return discovered
 
     @staticmethod
     def _gradle_projects(root: Path, existing: list[Project]) -> list[Project]:

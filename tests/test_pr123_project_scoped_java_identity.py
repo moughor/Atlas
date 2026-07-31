@@ -152,6 +152,101 @@ def test_gradle_settings_modules_are_independent_projects(tmp_path: Path) -> Non
     )
 
 
+def test_declared_maven_modules_beyond_depth_are_independent_projects(
+    tmp_path: Path,
+) -> None:
+    aggregator = tmp_path / "one" / "two" / "three" / "aggregator"
+    aggregator.mkdir(parents=True)
+    (aggregator / "pom.xml").write_text(
+        "<project><modelVersion>4.0.0</modelVersion><packaging>pom</packaging>"
+        "<modules><module>dep-a</module><module>dep-b</module></modules></project>",
+        encoding="utf-8",
+    )
+    for module in ("dep-a", "dep-b"):
+        module_root = aggregator / module
+        source_root = module_root / "src" / "main" / "java" / "demo"
+        source_root.mkdir(parents=True)
+        (module_root / "pom.xml").write_text(
+            "<project><modelVersion>4.0.0</modelVersion>"
+            f"<artifactId>{module}</artifactId></project>",
+            encoding="utf-8",
+        )
+        (source_root / "Shared.java").write_text(
+            "package demo; class Shared {}",
+            encoding="utf-8",
+        )
+
+    workspace = WorkspaceDiscovery().discover(tmp_path)
+    aggregator_name = "one-two-three-aggregator"
+    module_names = (
+        f"{aggregator_name}-dep-a",
+        f"{aggregator_name}-dep-b",
+    )
+
+    assert workspace.names() == (aggregator_name, *module_names)
+    assert workspace.to_dict() == WorkspaceDiscovery().discover(tmp_path).to_dict()
+    assert workspace.get(aggregator_name).exclude == (
+        "dep-a/**/*",
+        "dep-b/**/*",
+    )
+    assert project_files(
+        workspace.get(aggregator_name).path,
+        workspace.get(aggregator_name).include,
+        workspace.get(aggregator_name).exclude,
+    ) == (aggregator / "pom.xml",)
+
+    for module_name in module_names:
+        document = SemanticProjectAnalyzer()(workspace.get(module_name), {})
+        matches = tuple(
+            symbol
+            for symbol in document.get_artifact("global_symbols", ())
+            if symbol.qualified_name == "demo.Shared"
+        )
+        assert len(matches) == 1
+        assert matches[0].project_id == module_name
+
+
+def test_maven_test_resource_fixtures_are_not_java_compile_sources(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
+    compiled = tmp_path / "src" / "main" / "java" / "demo" / "Shared.java"
+    fixture = (
+        tmp_path
+        / "src"
+        / "test"
+        / "resources"
+        / "fixture"
+        / "src"
+        / "main"
+        / "java"
+        / "demo"
+        / "Shared.java"
+    )
+    compiled.parent.mkdir(parents=True)
+    fixture.parent.mkdir(parents=True)
+    compiled.write_text("package demo; class Shared {}", encoding="utf-8")
+    fixture.write_text("package demo; class Shared {}", encoding="utf-8")
+    project = Project("maven-module", tmp_path)
+
+    first = SemanticProjectAnalyzer()(project, {})
+    second = SemanticProjectAnalyzer()(project, {})
+    matches = tuple(
+        symbol
+        for symbol in first.get_artifact("global_symbols", ())
+        if symbol.qualified_name == "demo.Shared"
+    )
+
+    assert len(matches) == 1
+    assert first.get_artifact("global_symbols") == second.get_artifact("global_symbols")
+
+    duplicate = tmp_path / "src" / "main" / "java" / "other" / "Duplicate.java"
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_text("package demo; class Shared {}", encoding="utf-8")
+    with pytest.raises(DuplicateTypeError):
+        SemanticProjectAnalyzer()(project, {})
+
+
 def test_duplicate_member_emissions_from_one_ast_are_normalized(tmp_path: Path) -> None:
     source = tmp_path / "Repeated.java"
     source.write_text(

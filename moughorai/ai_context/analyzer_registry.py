@@ -19,6 +19,7 @@ from moughorai.java_architecture import (
 )
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
 from moughorai.java_symbols import JavaSymbolIndex, MethodSymbol, SymbolKind
+from moughorai.java_workspace import JavaWorkspaceScanner, SourceRootKind
 from moughorai.python_semantics import PythonSemanticAnalyzer
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
@@ -182,13 +183,27 @@ class JavaLanguageAnalyzer:
         symbol_builder: JavaSymbolIndexBuilder | None = None,
         global_builder: GlobalSymbolDatabaseBuilder | None = None,
         architecture: JavaArchitectureService | None = None,
+        workspace_scanner: JavaWorkspaceScanner | None = None,
     ) -> None:
         self._parser = parser or JavaParser()
         self._symbol_builder = symbol_builder or JavaSymbolIndexBuilder()
         self._global_builder = global_builder or GlobalSymbolDatabaseBuilder()
         self._architecture = architecture or JavaArchitectureService()
+        self._workspace_scanner = workspace_scanner or JavaWorkspaceScanner()
 
     def analyze(self, project, paths, dependencies) -> SemanticDocument:
+        if (project.path / "pom.xml").is_file():
+            module = self._workspace_scanner.scan_module(project.path)
+            source_roots = tuple(
+                root.path.resolve()
+                for root in module.source_roots
+                if root.language == "java" and root.kind is not SourceRootKind.RESOURCE
+            )
+            paths = tuple(
+                path
+                for path in paths
+                if any(path.resolve().is_relative_to(root) for root in source_roots)
+            )
         units: list[object] = []
         sources: list[Path] = []
         diagnostics: list[Diagnostic] = []

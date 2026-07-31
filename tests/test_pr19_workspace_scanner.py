@@ -110,6 +110,21 @@ def test_scan_is_deterministic(tmp_path: Path):
     assert first == second
 
 
+def test_scan_module_does_not_descend_into_test_resource_fixtures(tmp_path: Path):
+    touch(tmp_path / "pom.xml")
+    touch(tmp_path / "src/main/java/demo/Real.java")
+    touch(tmp_path / "src/test/resources/fixture/pom.xml")
+    touch(tmp_path / "src/test/resources/fixture/src/main/java/demo/Fixture.java")
+
+    module = JavaWorkspaceScanner().scan_module(tmp_path)
+
+    assert [root.path for root in module.source_roots] == [
+        tmp_path / "src/main/java",
+        tmp_path / "src/test/resources",
+    ]
+    assert module.root == tmp_path.resolve()
+
+
 def test_rejects_missing_root(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         JavaWorkspaceScanner().scan(tmp_path / "missing")
