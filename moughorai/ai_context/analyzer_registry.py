@@ -319,6 +319,10 @@ def _with_java_relations(
     architecture: JavaArchitectureGraph,
 ) -> tuple[GlobalSymbol, ...]:
     """Persist only resolved Java relations that survive recovery."""
+    java_symbols = {
+        symbol.qualified_name: symbol
+        for symbol in index.symbols
+    }
     inheritance: dict[str, set[str]] = {}
     parents: dict[str, set[str]] = {}
     for edge in architecture.edges:
@@ -363,6 +367,27 @@ def _with_java_relations(
     enriched = []
     for symbol in symbols:
         metadata = dict(symbol.metadata)
+        java_symbol = java_symbols.get(symbol.qualified_name)
+        if java_symbol is not None:
+            modifiers = tuple(sorted(set(getattr(java_symbol, "modifiers", ()))))
+            annotations = tuple(sorted(set(getattr(java_symbol, "annotations", ()))))
+            if annotations:
+                metadata["annotations"] = ",".join(annotations)
+            metadata["visibility"] = next(
+                (
+                    value
+                    for value in ("public", "protected", "private")
+                    if value in modifiers
+                ),
+                "package",
+            )
+            if (
+                isinstance(java_symbol, MethodSymbol)
+                and java_symbol.name == "main"
+                and java_symbol.return_type == "void"
+                and {"public", "static"}.issubset(modifiers)
+            ):
+                metadata["entry_point"] = "java-main"
         inherited = inheritance.get(symbol.qualified_name)
         overridden = overrides.get(symbol.qualified_name)
         if inherited:

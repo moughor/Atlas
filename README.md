@@ -23,6 +23,12 @@ systems, and their semantic relationships. The graph remains source-free and
 can be restored through `KnowledgeGraph.from_dict()`. See
 [`docs/PR129_UNIFIED_KNOWLEDGE_GRAPH.md`](docs/PR129_UNIFIED_KNOWLEDGE_GRAPH.md).
 
+Reachability analysis consumes that graph conservatively, separates production and
+test reachability, protects structured external/framework/reflection/Service
+Loader/generated contracts, and reports incomplete call coverage instead of
+inventing dead-code certainty. See
+[`docs/PR131_DEAD_CODE_REACHABILITY.md`](docs/PR131_DEAD_CODE_REACHABILITY.md).
+
 The current repository includes completed work through PR106. Recent production
 hardening added linear-time semantic table builders, thread-safe global symbol
 storage, a reproducible 23,000-file benchmark, a versioned public API boundary,

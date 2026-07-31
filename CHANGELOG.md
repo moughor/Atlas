@@ -1,5 +1,28 @@
 # Changelog
 
+## PR131 — Dead Code and Reachability Analysis
+
+- Added deterministic production/test reachability over the PR129 graph and
+  optional authoritative specialized call graphs.
+- Added structured roots, bounded paths, conservative states, project coverage,
+  capability availability, confidence, evidence, lineage, and exact round trips.
+- Required complete call/root coverage and an explicit closed-world scope before
+  producing a `likely_dead` candidate.
+- Protected public/protected, framework-managed, reflection-discovered, Service
+  Loader, generated, annotation-managed, test-only, and external API subjects.
+- Published additive source-free `semantic_context.reachability` data and a compact
+  repository-explanation projection.
+- Preserved PR129, PR130, specialized CFG/call APIs, older snapshots, and failed-run
+  snapshot publication behavior.
+
+## PR130 — Design Pattern Detection
+
+- Added deterministic Strategy and Builder detection through the normal Java
+  pipeline and optional call-evidence support for five additional patterns.
+- Added shared source-free evidence records, deterministic confidence, lineage,
+  bounded caching, and compact repository-explanation integration.
+- Preserved canonical and specialized graph contracts.
+
 ## PR129 — Unified Knowledge Graph
 
 - Consolidated PR125 semantic facts and PR127 repository metadata through the

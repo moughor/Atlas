@@ -16,8 +16,10 @@ from moughorai.dependency_intelligence import DeclaredDependency
 from moughorai.repository_summary import RepositorySummaryService
 from moughorai.architecture_detection import ArchitectureDetectionService
 from moughorai.design_patterns import PatternDetectionService
+from moughorai.call_graph import CallGraph
 from moughorai.java_architecture import JavaArchitectureGraph
 from moughorai.knowledge_graph import KnowledgeGraph
+from moughorai.reachability import ReachabilityAnalysisService
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -52,6 +54,7 @@ class SemanticContextCollector:
         projects_with_symbols: set[str] = set()
         declared_dependencies: list[DeclaredDependency] = []
         java_architecture_graphs: dict[str, JavaArchitectureGraph] = {}
+        call_graphs: dict[str, CallGraph] = {}
         for run in report.runs:
             if isinstance(run.value, SemanticDocument):
                 declared_dependencies.extend(
@@ -65,6 +68,7 @@ class SemanticContextCollector:
                 types,
                 symbols,
                 java_architecture_graphs,
+                call_graphs,
             ):
                 projects_with_symbols.add(run.project)
         self._collect_java_sources(diagnostics, symbols, skip=projects_with_symbols)
@@ -86,7 +90,14 @@ class SemanticContextCollector:
         context_data["design_patterns"] = PatternDetectionService().detect(
             KnowledgeGraph.from_dict(context_data["semantic_graph"]),
             java_architecture_graphs=java_architecture_graphs,
+            call_graphs=call_graphs,
         ).to_dict()
+        context_data["reachability"] = ReachabilityAnalysisService().analyze(
+            KnowledgeGraph.from_dict(context_data["semantic_graph"]),
+            symbol_metadata=context_data["symbols"],
+            repository_summary=context_data["repository_summary"],
+            call_graphs=call_graphs,
+        ).to_dict(grouped=True)
         context = WorkspaceSemanticContext(context_data)
         collection = SemanticCollectionReport(
             tuple(run.project for run in report.runs),
@@ -104,6 +115,7 @@ class SemanticContextCollector:
         types: dict[str, TypeTable],
         symbols: GlobalSymbolDatabase,
         java_architecture_graphs: dict[str, JavaArchitectureGraph],
+        call_graphs: dict[str, CallGraph],
     ) -> bool:
         if isinstance(value, SemanticDocument):
             diagnostics.setdefault(project, []).extend(value.diagnostics)
@@ -112,6 +124,9 @@ class SemanticContextCollector:
             architecture = value.get_artifact("java_architecture_graph")
             if isinstance(architecture, JavaArchitectureGraph):
                 java_architecture_graphs[project] = architecture
+            call_graph = value.get_artifact("call_graph")
+            if isinstance(call_graph, CallGraph):
+                call_graphs[project] = call_graph
             raw_symbols = value.get_artifact("global_symbols")
             if raw_symbols is not None:
                 self._add_unique(symbols, raw_symbols)

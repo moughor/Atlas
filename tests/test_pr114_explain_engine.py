@@ -140,6 +140,8 @@ def test_default_repository_explanation_prioritizes_compact_summary() -> None:
     assert '"design_patterns":{"findings":[],"limitations":[' in user
     assert '"status":"unavailable"' in user
     assert "structured pattern analysis is unavailable" in system
+    assert '"reachability":{"limitations":[' in user
+    assert "structured reachability analysis is unavailable" in system
     assert '"total_declared_dependency_records":12' in user
     assert '"dependencies_by_ecosystem"' not in user
     assert "OMITTED_MARKER" not in user
@@ -207,6 +209,89 @@ def test_default_repository_explanation_compacts_pr130_patterns() -> None:
     assert "SourceMustStayOmitted" not in user
     assert "evidence:one" not in user
     assert "MUST_NOT_ENTER_DEFAULT_PROMPT" not in user
+
+
+def test_default_repository_explanation_compacts_pr131_reachability() -> None:
+    context = WorkspaceSemanticContext({
+        "schema_version": 1,
+        "workspace": {"root": "C:/demo", "projects": [{"name": "demo"}]},
+        "repository_summary": {
+            "root": "C:/demo",
+            "projects": [{"name": "demo"}],
+        },
+        "reachability": {
+            "schema_version": 1,
+            "producer_version": "atlas-pr131/1",
+            "statistics": {
+                "analyzed_symbols": 100,
+                "states": {
+                    "reachable": 20,
+                    "reachable_test_only": 3,
+                    "unused": 70,
+                    "likely_dead": 1,
+                },
+            },
+            "coverage": {
+                "status": "partial",
+                "projects": [{
+                    "project": "demo",
+                    "status": "partial",
+                    "calls": "unavailable",
+                    "closed_world": False,
+                    "evidence_ids": ["coverage:evidence"],
+                }],
+                "limitations": ["Reliable call evidence is unavailable."],
+            },
+            "findings": [
+                {
+                    "subject_id": "method:representative",
+                    "state": "likely_dead",
+                    "confidence": 0.81,
+                    "confidence_tier": "high",
+                    "project": "demo",
+                    "limitations": ["Closed test fixture only."],
+                    "evidence_ids": ["finding:evidence"],
+                },
+                *(
+                    {
+                        "subject_id": f"method:omitted:{index}",
+                        "state": "unused",
+                        "confidence": 0.5,
+                        "confidence_tier": "low",
+                        "project": "demo",
+                        "limitations": [],
+                        "evidence_ids": [f"evidence:{index}"],
+                    }
+                    for index in range(50)
+                ),
+            ],
+            "evidence_index": {
+                "records": [{"detail": "MUST_NOT_ENTER_DEFAULT_PROMPT"}],
+            },
+        },
+        "semantic_graph": {"nodes": [], "edges": []},
+        "symbols": [],
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="workspace",
+        analyzer_version="test",
+    )
+    provider = ScriptedLlmProvider(["Repository overview"])
+
+    ExplainEngine(LlmClient(provider)).explain(snapshot)
+
+    request = provider.calls[0][0]
+    system, user = (message.content for message in request.messages)
+    assert "reachability as conservative structured analysis" in system
+    assert '"status":"partial"' in user
+    assert '"analyzed_symbols":100' in user
+    assert '"likely_dead":1' in user
+    assert '"subject_id":"method:representative"' in user
+    assert "method:omitted:1" not in user
+    assert "finding:evidence" not in user
+    assert "MUST_NOT_ENTER_DEFAULT_PROMPT" not in user
+    assert "safe to delete" in system
 
 
 def test_specific_subject_preserves_detailed_context_path() -> None:

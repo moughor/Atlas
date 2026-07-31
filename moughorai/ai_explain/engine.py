@@ -104,6 +104,7 @@ class ExplainEngine:
         summary = source.get("repository_summary")
         architecture = source.get("architecture", {})
         design_patterns = source.get("design_patterns")
+        reachability = source.get("reachability")
         graph = source.get("semantic_graph", {})
         projects = summary.get("projects", ()) if isinstance(summary, Mapping) else ()
         findings = architecture.get("findings", ()) if isinstance(architecture, Mapping) else ()
@@ -127,6 +128,7 @@ class ExplainEngine:
             "repository_summary": ExplainEngine._compact_summary(summary),
             "architecture": ExplainEngine._compact_architecture(architecture),
             "design_patterns": ExplainEngine._compact_design_patterns(design_patterns),
+            "reachability": ExplainEngine._compact_reachability(reachability),
             "limitations": limitations,
         })
 
@@ -247,6 +249,117 @@ class ExplainEngine:
             "producer_version": value.get("producer_version"),
             "status": "available",
             "findings": findings,
+            "limitations": limitations,
+        }
+
+    @staticmethod
+    def _compact_reachability(value: object) -> object:
+        if not isinstance(value, Mapping):
+            return {
+                "status": "unavailable",
+                "statistics": {},
+                "representative_findings": [],
+                "limitations": [
+                    "Structured reachability analysis is unavailable in this snapshot."
+                ],
+            }
+        raw_coverage = value.get("coverage", {})
+        coverage = raw_coverage if isinstance(raw_coverage, Mapping) else {}
+        raw_statistics = value.get("statistics", {})
+        statistics = raw_statistics if isinstance(raw_statistics, Mapping) else {}
+        raw_findings = value.get("findings", ())
+        grouped_findings = value.get("finding_groups", ())
+        if not raw_findings and isinstance(grouped_findings, (list, tuple)):
+            expanded = []
+            for group in grouped_findings:
+                if not isinstance(group, Mapping):
+                    continue
+                subject_ids = group.get("subject_ids", ())
+                if not isinstance(subject_ids, (list, tuple)):
+                    continue
+                expanded.extend(
+                    {
+                        **{
+                            key: item
+                            for key, item in group.items()
+                            if key not in {"subject_ids", "subject_id_prefix"}
+                        },
+                        "subject_id": (
+                            f"{group.get('subject_id_prefix', '')}{subject_id}"
+                        ),
+                    }
+                    for subject_id in subject_ids[:8]
+                )
+                if len(expanded) >= 24:
+                    break
+            raw_findings = expanded
+        candidates = []
+        if isinstance(raw_findings, (list, tuple)):
+            selected = sorted(
+                (
+                    item for item in raw_findings
+                    if isinstance(item, Mapping)
+                    and item.get("state") in {
+                        "likely_dead", "unreachable", "reachable_test_only",
+                    }
+                ),
+                key=lambda item: (
+                    str(item.get("state", "")),
+                    -float(item.get("confidence", 0.0)),
+                    str(item.get("subject_id", "")),
+                ),
+            )[:8]
+            candidates = [
+                {
+                    "subject_id": item.get("subject_id"),
+                    "state": item.get("state"),
+                    "confidence": item.get("confidence"),
+                    "confidence_tier": item.get("confidence_tier"),
+                    "project": item.get("project"),
+                    "limitations": list(item.get("limitations", ()))[:3]
+                    if isinstance(item.get("limitations", ()), (list, tuple))
+                    else [],
+                }
+                for item in selected
+            ]
+        limitations = (
+            list(coverage.get("limitations", ()))[:10]
+            if isinstance(coverage.get("limitations", ()), (list, tuple))
+            else []
+        )
+        return {
+            "schema_version": value.get("schema_version"),
+            "producer_version": value.get("producer_version"),
+            "status": coverage.get("status", "unknown"),
+            "statistics": {
+                "analyzed_symbols": statistics.get("analyzed_symbols", 0),
+                "reachable": statistics.get("states", {}).get("reachable", 0)
+                if isinstance(statistics.get("states", {}), Mapping) else 0,
+                "reachable_test_only": statistics.get("states", {}).get(
+                    "reachable_test_only", 0
+                ) if isinstance(statistics.get("states", {}), Mapping) else 0,
+                "externally_or_framework_reachable": sum(
+                    int(statistics.get("states", {}).get(state, 0))
+                    for state in ("externally_reachable", "framework_managed")
+                ) if isinstance(statistics.get("states", {}), Mapping) else 0,
+                "unused": statistics.get("states", {}).get("unused", 0)
+                if isinstance(statistics.get("states", {}), Mapping) else 0,
+                "likely_dead": statistics.get("states", {}).get("likely_dead", 0)
+                if isinstance(statistics.get("states", {}), Mapping) else 0,
+                "unreachable": statistics.get("states", {}).get("unreachable", 0)
+                if isinstance(statistics.get("states", {}), Mapping) else 0,
+            },
+            "project_coverage": [
+                {
+                    "project": item.get("project"),
+                    "status": item.get("status"),
+                    "calls": item.get("calls"),
+                    "closed_world": item.get("closed_world"),
+                }
+                for item in coverage.get("projects", ())
+                if isinstance(item, Mapping)
+            ],
+            "representative_findings": candidates,
             "limitations": limitations,
         }
 
