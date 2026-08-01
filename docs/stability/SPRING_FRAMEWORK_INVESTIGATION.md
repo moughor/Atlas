@@ -228,12 +228,20 @@ Result: `3748 passed, 1 skipped in 22.31s`, with no test warnings. The exact ski
 was `tests/test_production_review_remediations.py:107: file symlinks are unavailable
 on this platform`.
 
-The Apache Maven checkout was analyzed again in 24.152 seconds: 92 projects, 92
-successes, and no failures. Its workspace order, semantic payload, portable semantic
-payload, repository report, default explanation, risk analysis, and knowledge graph
-hashes exactly match the accepted M1.1 golden. The accepted Quarkus replay snapshot
-was reprojected with the current code: 1,442 projects, 337,100,718 bytes, and the same
-seven accepted hashes. No golden was changed.
+The Apache Maven checkout was first analyzed again in 24.152 seconds: 92 projects,
+92 successes, and no failures. After the implementation commit, the canonical
+three-run capture was baseline-eligible with durations of 24,460, 23,514, and 23,518
+ms. Every artifact field is byte-for-byte identical to the accepted M1.1 golden,
+including raw ASS identity, semantic and portable payloads, reports, explanation,
+risk, graph, workspace/analysis order, and deterministic-order hashes.
+
+The accepted Quarkus snapshot was then replayed canonically three times in 99,622,
+120,991, and 133,422 ms. The replay is baseline-eligible, reports 1,442 successes and
+zero failures, and links to accepted fresh-manifest SHA-256
+`a57b592a14c746d1f35aea5c032d3764febbf0b404bc6d52b07bc7045f6f351a`.
+All ten replay artifact gates match the accepted M1.1 source exactly.
+As designed, replay omits fresh analysis-order/report fields and hashes an explicit
+analysis-order-unavailable state. No accepted golden was changed.
 
 ## Limitations and baseline status
 
