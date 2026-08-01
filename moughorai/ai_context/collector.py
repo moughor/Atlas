@@ -22,6 +22,7 @@ from moughorai.java_architecture import JavaArchitectureGraph
 from moughorai.knowledge_graph import KnowledgeGraph
 from moughorai.reachability import ReachabilityAnalysisService
 from moughorai.risk_analysis import RiskAnalysisService
+from moughorai.repository_report import RepositoryReportService
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -117,6 +118,11 @@ class SemanticContextCollector:
             symbol_metadata=context_data["symbols"],
             repository_summary=context_data["repository_summary"],
             git_history=git_history,
+        ).to_dict()
+        context_data["repository_report"] = RepositoryReportService().build(
+            context_data,
+            graph_digest=knowledge_graph.stable_digest(),
+            knowledge_graph=knowledge_graph,
         ).to_dict()
         context = WorkspaceSemanticContext(context_data)
         collection = SemanticCollectionReport(

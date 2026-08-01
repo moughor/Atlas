@@ -8,6 +8,11 @@ from typing import Any
 
 from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.project_inventory.classifier import GENERATED_DIRECTORY_NAMES
+from moughorai.repository_report import (
+    RepositoryReport,
+    RepositoryReportContextSelector,
+)
+from moughorai.repository_report.safety import contains_absolute_path_text
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 
 
@@ -102,12 +107,41 @@ class RepositoryExplanationProjector:
                 "Repository summary data is unavailable in this snapshot; inventory facts are unknown."
             )
 
-        return WorkspaceSemanticContext({
+        raw_report = source.get("repository_report")
+        if isinstance(raw_report, Mapping):
+            try:
+                repository_report: dict[str, object] = (
+                    RepositoryReportContextSelector().select(
+                        RepositoryReport.from_dict(raw_report),
+                        token_budget=RepositoryReportContextSelector.DEFAULT_TOKEN_BUDGET,
+                    ).to_dict()
+                )
+                repository_report["status"] = "available"
+            except (KeyError, TypeError, ValueError, OverflowError):
+                repository_report = {
+                    "status": "unavailable",
+                    "limitations": [
+                        "The persisted PR133 repository report is incompatible or invalid; compatible legacy facts are shown instead."
+                    ],
+                }
+        else:
+            repository_report = {
+                "status": "unavailable",
+                "limitations": [
+                    "This snapshot predates PR133; compatible PR127-PR132 repository facts are shown instead."
+                ],
+            }
+
+        projected = {
             "report_schema_version": 2,
             "snapshot_schema_version": source.get("schema_version"),
             "workspace": {
                 "repository_name": self._repository_name(root),
-                "root": root or None,
+                "root": (
+                    root
+                    if root and not contains_absolute_path_text(root)
+                    else None
+                ),
                 "discovered_project_count": project_count,
                 "evidence_basis": project_count_basis,
             },
@@ -116,8 +150,10 @@ class RepositoryExplanationProjector:
             "design_patterns": self.compact_design_patterns(source.get("design_patterns")),
             "reachability": self.compact_reachability(source.get("reachability")),
             "risk_analysis": self.compact_risk_analysis(source.get("risk_analysis")),
+            "repository_report": repository_report,
             "limitations": limitations,
-        })
+        }
+        return WorkspaceSemanticContext(self._source_free_projection(projected))
 
     def compact_summary(self, value: object) -> dict[str, object]:
         if not isinstance(value, Mapping) or not value:
@@ -1057,6 +1093,20 @@ class RepositoryExplanationProjector:
     def _repository_name(root: str) -> str | None:
         normalized = root.replace("\\", "/").rstrip("/")
         return normalized.rsplit("/", 1)[-1] if normalized else None
+
+    @classmethod
+    def _source_free_projection(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            return {
+                str(key): cls._source_free_projection(item)
+                for key, item in value.items()
+                if not contains_absolute_path_text(str(key))
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._source_free_projection(item) for item in value]
+        if isinstance(value, str) and contains_absolute_path_text(value):
+            return "machine-specific absolute path omitted"
+        return value
 
     @staticmethod
     def _sequence(value: object) -> tuple[Any, ...]:

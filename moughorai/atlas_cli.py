@@ -450,15 +450,22 @@ def ai_explain_command(
     snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
     subject: Annotated[str, typer.Option("--subject", help="Workspace semantic subject.")] = "workspace",
 ) -> None:
-    """Explain verified semantic knowledge from an ASS artifact."""
+    """Render a repository report or explain a targeted semantic subject."""
     def operation() -> None:
         loaded = _load_ai_snapshot(root, snapshot)
+        request = ExplainRequest(subject=subject)
+        if ExplainEngine._is_repository_default(request):
+            result = ExplainEngine(
+                memory=ConversationMemoryStore(root),
+            ).explain(loaded, request)
+            typer.echo(result.markdown)
+            return
         provider = (_ai_provider_factory or OllamaProvider)()
         try:
             result = ExplainEngine(
                 LlmClient(provider),
                 memory=ConversationMemoryStore(root),
-            ).explain(loaded, ExplainRequest(subject=subject))
+            ).explain(loaded, request)
             typer.echo(result.markdown)
         finally:
             close = getattr(provider, "close", None)

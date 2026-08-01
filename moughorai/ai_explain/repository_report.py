@@ -53,6 +53,7 @@ class RepositoryReportRenderer:
             "repository_name",
             "name",
         )
+        repository_report = self._as_mapping(context.get("repository_report"))
 
         lines = [
             f"# Repository explanation: {self._display(repository_name)}",
@@ -62,6 +63,13 @@ class RepositoryReportRenderer:
                 "Atlas semantic metadata. An LLM did not create or alter its "
                 "values or conclusions."
             ),
+        ]
+
+        if repository_report.get("status") == "available":
+            self._render_pr133_report(lines, repository_report)
+            return "\n".join(lines).rstrip() + "\n"
+
+        lines.extend([
             "",
             "## Repository",
             "",
@@ -80,7 +88,7 @@ class RepositoryReportRenderer:
                     "project_count",
                 ),
             ),
-        ]
+        ])
 
         self._render_inventory(lines, summary)
         self._render_languages(lines, summary)
@@ -136,10 +144,145 @@ class RepositoryReportRenderer:
         )
         self._render_structured_section(
             lines,
+            "AI repository report",
+            repository_report,
+        )
+        self._render_structured_section(
+            lines,
             "Limitations",
             context.get("limitations"),
         )
         return "\n".join(lines).rstrip() + "\n"
+
+    def _render_pr133_report(
+        self,
+        lines: list[str],
+        report: Mapping[str, object],
+    ) -> None:
+        lines.extend(["", "## AI repository report", ""])
+        selection = self._as_mapping(report.get("selection"))
+        lines.extend([
+            "| Field | Value |",
+            "| --- | --- |",
+            self._table_row("Producer", report.get("producer_version")),
+            self._table_row("Schema", report.get("schema_version")),
+            self._table_row("Context token budget", selection.get("token_budget")),
+            self._table_row("Estimated context tokens", selection.get("estimated_tokens")),
+            self._table_row("Included report items", selection.get("included_item_count")),
+            self._table_row("Omitted report items", selection.get("omitted_item_count")),
+        ])
+        items = {
+            str(item.get("item_id")): item
+            for item in self._mapping_sequence(report.get("items"))
+            if item.get("item_id")
+        }
+        titles = {
+            "executive_summary": "Executive summary",
+            "architecture": "Architecture overview",
+            "repository_health": "Repository health",
+            "strengths": "Strengths",
+            "weaknesses": "Weaknesses",
+            "risks": "Risks",
+            "technical_debt": "Technical debt",
+            "quality": "Quality",
+            "recommendations": "Recommendations",
+        }
+        rendered_item_ids: set[str] = set()
+        for section in self._mapping_sequence(report.get("sections")):
+            kind = str(section.get("kind", "unknown"))
+            lines.extend(["", f"### {titles.get(kind, self._label(kind))}", ""])
+            lines.append(
+                "- **Capability:** "
+                f"{self._display(section.get('capability_state'))}; "
+                f"observation: {self._display(section.get('observation_state'))}."
+            )
+            producers = self._sequence(section.get("producer_ids"))
+            if producers:
+                lines.append(
+                    "- **Authoritative/expected producers:** "
+                    + ", ".join(self._display(item) for item in producers)
+                    + "."
+                )
+            for item_id in self._sequence(section.get("item_ids")):
+                item = items.get(str(item_id))
+                if item is not None:
+                    if str(item_id) in rendered_item_ids:
+                        lines.append(
+                            "- **Related report item:** "
+                            f"{self._display(item.get('title'))} "
+                            f"({self._display(item_id)}; rendered above)."
+                        )
+                    else:
+                        self._render_pr133_item(lines, item)
+                        rendered_item_ids.add(str(item_id))
+            omitted = section.get("omitted_item_count")
+            if isinstance(omitted, int) and omitted:
+                lines.append(f"- **Omitted items:** {omitted:,}.")
+            limitations = self._sequence(section.get("limitations"))
+            if limitations:
+                lines.append("- **Section limitations:**")
+                lines.extend(f"  - {self._display(item)}" for item in limitations)
+        limitations = self._sequence(report.get("limitations"))
+        if limitations:
+            lines.extend(["", "### Report limitations", ""])
+            lines.extend(f"- {self._display(item)}" for item in limitations)
+
+    def _render_pr133_item(
+        self,
+        lines: list[str],
+        item: Mapping[str, object],
+    ) -> None:
+        lines.append(
+            f"- **{self._display(item.get('title'))}:** "
+            f"{self._display(item.get('statement'))}"
+        )
+        lines.append(
+            "  - State: "
+            f"{self._display(item.get('observation_state'))}; "
+            f"capability: {self._display(item.get('capability_state'))}; "
+            f"scope: {self._display(item.get('scope'))}."
+        )
+        confidence = self._as_mapping(item.get("confidence"))
+        if confidence:
+            lines.append(
+                "  - Confidence: "
+                f"{self._display(confidence.get('tier'))} "
+                f"({self._display(confidence.get('score'))}); "
+                f"coverage {self._display(confidence.get('coverage'))}; "
+                f"basis {self._display(item.get('confidence_basis'))}."
+            )
+        else:
+            lines.append(
+                "  - Confidence: " + self._display(item.get("confidence_basis")) + "."
+            )
+        attributes = self._mapping_sequence(item.get("attributes"))
+        if attributes:
+            rendered_attributes = []
+            for attribute in attributes:
+                value = self._display(attribute.get("value"))
+                unit = self._display(attribute.get("unit")) if attribute.get("unit") else ""
+                rendered_attributes.append(
+                    f"{self._display(attribute.get('key'))}={value}"
+                    + (f" {unit}" if unit else "")
+                )
+            lines.append("  - Attributes: " + "; ".join(rendered_attributes) + ".")
+        producers = self._sequence(item.get("producer_ids"))
+        evidence = self._sequence(item.get("evidence_ids"))
+        lines.append(
+            "  - Trace: producers "
+            + (", ".join(self._display(value) for value in producers) or "Unavailable")
+            + "; evidence "
+            + (", ".join(self._display(value) for value in evidence) or "Unavailable")
+            + "."
+        )
+        prerequisites = self._sequence(item.get("prerequisites"))
+        if prerequisites:
+            lines.append("  - Prerequisites:")
+            lines.extend(f"    - {self._display(value)}" for value in prerequisites)
+        limitations = self._sequence(item.get("limitations"))
+        if limitations:
+            lines.append("  - Limitations:")
+            lines.extend(f"    - {self._display(value)}" for value in limitations)
 
     def _render_inventory(
         self,
@@ -473,6 +616,18 @@ class RepositoryReportRenderer:
     @staticmethod
     def _as_mapping(value: object) -> Mapping[str, object]:
         return value if isinstance(value, Mapping) else {}
+
+    @classmethod
+    def _mapping_sequence(cls, value: object) -> tuple[Mapping[str, object], ...]:
+        if not cls._is_sequence(value):
+            return ()
+        return tuple(item for item in value if isinstance(item, Mapping))
+
+    @classmethod
+    def _sequence(cls, value: object) -> tuple[object, ...]:
+        if not cls._is_sequence(value):
+            return ()
+        return tuple(value)
 
     @staticmethod
     def _first_present(mapping: Mapping[Any, object], *keys: str) -> object:

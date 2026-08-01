@@ -32,7 +32,7 @@ class ExplainEngine:
 
     def __init__(
         self,
-        client: LlmClient,
+        client: LlmClient | None = None,
         *,
         prompt_builder: SemanticPromptBuilder | None = None,
         memory: ConversationMemoryStore | None = None,
@@ -51,6 +51,10 @@ class ExplainEngine:
         question = selected.question.strip()
         if not subject or not question:
             raise ValueError("explanation subject and question are required")
+        repository_default = self._is_repository_default(selected)
+        client = self.client
+        if not repository_default and client is None:
+            raise ValueError("targeted explanations require an LLM client")
 
         conversation_id = selected.conversation_id
         if self.memory is not None:
@@ -66,7 +70,7 @@ class ExplainEngine:
                 references={"snapshot": snapshot.snapshot_id, "subject": subject},
             )
 
-        if self._is_repository_default(selected):
+        if repository_default:
             context = self._repository_context(snapshot)
             markdown = RepositoryReportRenderer().render(context.to_dict())
             # No provider input is sent for the deterministic default report.
@@ -79,7 +83,7 @@ class ExplainEngine:
                 variables={"subject": subject},
                 model="",
             )
-            response = self.client.complete(prompt.request)
+            response = client.complete(prompt.request)
             markdown = response.text.strip()
             if not markdown:
                 raise ValueError("explanation provider returned empty output")
