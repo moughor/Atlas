@@ -63,14 +63,19 @@ def test_explain_cli_is_active_while_later_engines_remain_reserved(tmp_path: Pat
     finally:
         atlas_cli._ai_provider_factory = previous
     assert result.exit_code == 0
-    assert result.stdout == "Explanation\n"
+    assert "# Repository explanation:" in result.stdout
+    assert "An LLM did not create or alter" in result.stdout
+    assert provider.calls == []
 
 
 def test_empty_explanation_is_rejected(tmp_path: Path) -> None:
     snapshot = _snapshot(tmp_path)
     provider = ScriptedLlmProvider([LlmResponse(" ", "test", "model")], name="test")
     try:
-        ExplainEngine(LlmClient(provider)).explain(snapshot)
+        ExplainEngine(LlmClient(provider)).explain(
+            snapshot,
+            ExplainRequest(subject="app"),
+        )
     except ValueError as exc:
         assert "empty output" in str(exc)
     else:
@@ -121,32 +126,23 @@ def test_default_repository_explanation_prioritizes_compact_summary() -> None:
 
     result = ExplainEngine(LlmClient(provider)).explain(snapshot)
 
-    request = provider.calls[0][0]
-    system, user = (message.content for message in request.messages)
-    assert request.metadata["prompt_template"] == "atlas-repository-explanation-v1"
-    assert "Prioritize repository_summary" in system
-    assert "Present findings below 0.75 as possibilities" in system
-    assert "Do not claim that cycles" in system
-    assert '"repository_summary"' in user
-    assert '"project_count":2' in user
-    assert '"Gradle"' in user and '"Spring Framework"' in user
-    assert '"display_name":"Spring-related documentation tooling"' in user
-    assert "does not establish repository-wide Spring Framework adoption" in user
-    assert '"scope":"test-or-sample"' in user
-    assert '"architectural_areas":["api","core"]' in user
-    assert '"bounded_contexts"' not in user
-    assert "'Modules' or 'Architectural Areas'" in system
-    assert '"layered"' in user
-    assert '"design_patterns":{"findings":[],"limitations":[' in user
-    assert '"status":"unavailable"' in user
-    assert "structured pattern analysis is unavailable" in system
-    assert '"reachability":{"limitations":[' in user
-    assert "structured reachability analysis is unavailable" in system
-    assert '"total_declared_dependency_records":12' in user
-    assert '"dependencies_by_ecosystem"' not in user
-    assert "OMITTED_MARKER" not in user
-    assert "source-free" in user
-    assert result.estimated_input_tokens < 2_000
+    projected = ExplainEngine._repository_context(snapshot).to_dict()
+    summary = projected["repository_summary"]
+    assert provider.calls == []
+    assert result.estimated_input_tokens == 0
+    assert projected["workspace"]["discovered_project_count"] == 2
+    assert summary["language_distribution"]["total_classified_language_files"] == 150
+    assert summary["language_distribution"]["percentage_total_basis_points"] == 10_000
+    assert summary["build_systems"]["items"][0]["name"] == "Gradle"
+    framework = summary["frameworks_and_related_technologies"]["items"][0]
+    assert framework["name"] == "Spring Framework"
+    assert framework["classification"] == "test-or-sample-evidence"
+    assert framework["adoption_status"] == "insufficient"
+    assert projected["architecture"]["findings"][0]["status"] == "insufficient"
+    assert projected["design_patterns"]["status"] == "unavailable"
+    assert projected["reachability"]["status"] == "unavailable"
+    assert "OMITTED_MARKER" not in result.markdown
+    assert "source-free" in result.markdown
 
 
 def test_default_repository_explanation_compacts_pr130_patterns() -> None:
@@ -194,21 +190,21 @@ def test_default_repository_explanation_compacts_pr130_patterns() -> None:
     )
     provider = ScriptedLlmProvider(["Repository overview"])
 
-    ExplainEngine(LlmClient(provider)).explain(snapshot)
+    result = ExplainEngine(LlmClient(provider)).explain(snapshot)
 
-    request = provider.calls[0][0]
-    system, user = (message.content for message in request.messages)
-    assert "design_patterns as structured findings" in system
-    assert '"pattern":"builder"' in user
-    assert '"status":"medium"' in user
-    assert '"confidence":0.72' in user
-    assert '"participating_symbols_count":2' in user
-    assert '"evidence_count":2' in user
-    assert '"limitations":["Behavioral construction is not proven."]' in user
-    assert "SECRET_SYMBOL_ID" not in user
-    assert "SourceMustStayOmitted" not in user
-    assert "evidence:one" not in user
-    assert "MUST_NOT_ENTER_DEFAULT_PROMPT" not in user
+    patterns = ExplainEngine._repository_context(snapshot).to_dict()["design_patterns"]
+    builder = patterns["pattern_types"][0]
+    assert provider.calls == []
+    assert builder["pattern"] == "builder"
+    assert builder["status_counts"] == {"medium": 1}
+    assert builder["minimum_confidence"] == 0.72
+    assert builder["participating_symbols_count"] == 2
+    assert builder["evidence_count"] == 2
+    assert builder["limitations"] == ["Behavioral construction is not proven."]
+    assert "SECRET_SYMBOL_ID" not in result.markdown
+    assert "SourceMustStayOmitted" not in result.markdown
+    assert "evidence:one" in result.markdown
+    assert "MUST_NOT_ENTER_DEFAULT_PROMPT" not in result.markdown
 
 
 def test_default_repository_explanation_compacts_pr131_reachability() -> None:
@@ -279,19 +275,17 @@ def test_default_repository_explanation_compacts_pr131_reachability() -> None:
     )
     provider = ScriptedLlmProvider(["Repository overview"])
 
-    ExplainEngine(LlmClient(provider)).explain(snapshot)
+    result = ExplainEngine(LlmClient(provider)).explain(snapshot)
 
-    request = provider.calls[0][0]
-    system, user = (message.content for message in request.messages)
-    assert "reachability as conservative structured analysis" in system
-    assert '"status":"partial"' in user
-    assert '"analyzed_symbols":100' in user
-    assert '"likely_dead":1' in user
-    assert '"subject_id":"method:representative"' in user
-    assert "method:omitted:1" not in user
-    assert "finding:evidence" not in user
-    assert "MUST_NOT_ENTER_DEFAULT_PROMPT" not in user
-    assert "safe to delete" in system
+    reachability = ExplainEngine._repository_context(snapshot).to_dict()["reachability"]
+    assert provider.calls == []
+    assert reachability["status"] == "partial"
+    assert reachability["statistics"]["analyzed_symbols"] == 100
+    assert reachability["statistics"]["states"]["likely_dead"] == 1
+    assert reachability["representative_findings"][0]["subject_id"] == "method:representative"
+    assert "method:omitted:1" not in result.markdown
+    assert "finding:evidence" in result.markdown
+    assert "MUST_NOT_ENTER_DEFAULT_PROMPT" not in result.markdown
 
 
 def test_specific_subject_preserves_detailed_context_path() -> None:

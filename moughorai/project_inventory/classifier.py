@@ -108,7 +108,7 @@ _BUILD_FILE_NAMES = {
     "settings.gradle.kts",
 }
 
-_GENERATED_DIRECTORY_NAMES = {
+GENERATED_DIRECTORY_NAMES = frozenset({
     "generated",
     "generated-sources",
     "generated-test-sources",
@@ -116,7 +116,55 @@ _GENERATED_DIRECTORY_NAMES = {
     "build",
     "dist",
     "out",
-}
+})
+
+# Internal compatibility alias for the existing classifier implementation.
+_GENERATED_DIRECTORY_NAMES = GENERATED_DIRECTORY_NAMES
+
+TEST_SOURCE_ROOT_NAMES = frozenset({
+    "test",
+    "tests",
+    "testing",
+    "testfixture",
+    "testfixtures",
+    "integration-test",
+    "integration-tests",
+    "integrationtest",
+    "integrationtests",
+    "it",
+    "tck",
+    "spec",
+    "specs",
+})
+
+TEST_TREE_DIRECTORY_NAMES = frozenset({
+    *TEST_SOURCE_ROOT_NAMES,
+    "__tests__",
+    "example",
+    "examples",
+    "sample",
+    "samples",
+    "fixture",
+    "fixtures",
+})
+
+
+def is_test_source_path(path: Path) -> bool:
+    """Classify conventional test source paths without matching package names."""
+
+    parts = tuple(part.casefold() for part in path.parts[:-1])
+    try:
+        source_root_index = parts.index("src")
+    except ValueError:
+        return bool(set(parts) & TEST_TREE_DIRECTORY_NAMES)
+    source_kind = (
+        parts[source_root_index + 1]
+        if source_root_index + 1 < len(parts)
+        else ""
+    )
+    if source_kind in TEST_SOURCE_ROOT_NAMES:
+        return True
+    return bool(set(parts[:source_root_index]) & TEST_TREE_DIRECTORY_NAMES)
 
 
 class ProjectClassifier:

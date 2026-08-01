@@ -30,6 +30,15 @@ uncertainty.
 
 Specific-symbol explanations preserve the previous detailed context path.
 
+## Accuracy hardening
+
+Large-repository validation later showed that a compact prompt alone could not
+prevent a provider from substituting or inventing facts. The default repository
+overview now uses a bounded deterministic projection and renderer and does not
+call an LLM. Targeted subject explanations still use the detailed provider path.
+The current field contract is documented in
+`docs/ATLAS_AI_EXPLAIN_ACCURACY_REVIEW.md`.
+
 ## JUnit verification
 
 JUnit workspace validated successfully: 41 discovered projects, including the

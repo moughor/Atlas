@@ -1,6 +1,10 @@
 """Deterministic project inventory and technology detection."""
 
-from moughorai.project_inventory.classifier import ProjectClassifier
+from moughorai.project_inventory.classifier import (
+    ProjectClassifier,
+    TEST_TREE_DIRECTORY_NAMES,
+    is_test_source_path,
+)
 from moughorai.project_inventory.detector import ProjectTechnologyDetector
 from moughorai.project_inventory.detection_models import (
     DetectedTechnology,
@@ -35,4 +39,6 @@ __all__ = [
     "ScanResult",
     "ScannedFile",
     "TechnologyCategory",
+    "TEST_TREE_DIRECTORY_NAMES",
+    "is_test_source_path",
 ]
