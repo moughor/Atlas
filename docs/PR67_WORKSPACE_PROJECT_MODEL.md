@@ -48,3 +48,33 @@ by their discovered descendants.
 This keeps independent Maven artifacts separate without treating arbitrary POMs in
 test resources as workspace projects. Invalid or undeclared fixture trees remain
 outside reactor discovery.
+
+## Gradle settings discovery
+
+Automatic discovery statically recognizes top-level literal Gradle declarations in
+both parenthesized and Groovy command form, including multiple literal arguments and
+colon-separated nested project paths:
+
+```groovy
+include(":core", ":services:api")
+include "framework-docs"
+```
+
+Atlas does not execute settings scripts. Variables, interpolation, conditionals,
+collections and loops, `projectDir` remapping, `includeBuild`, and nested settings
+evaluation remain unsupported. A declared directory must exist, resolve inside the
+workspace, and use a conservative project-path grammar. Settings evidence is merged
+with a project already found through another marker instead of creating a duplicate.
+Ancestor file ownership is then pruned exactly as for Maven reactor modules.
+Colon-separated paths also create each existing intermediate Gradle project, matching
+Gradle's project hierarchy semantics.
+
+Resolved-path aliases and flattened project names must be unambiguous. If two Gradle
+paths resolve to the same physical branch, or two physical paths would receive the
+same established Atlas name, Atlas omits the affected declared branch and its
+descendants rather than publishing an unstable identity.
+
+Gradle membership proves the build system but does not prove the name or dependency
+contents of a custom child build file. Atlas does not classify arbitrary `*.gradle`
+scripts as project descriptors. If both settings filenames exist, Atlas treats their
+authority as ambiguous and does not combine their declarations.

@@ -112,6 +112,8 @@ baseline. Raw ASS hashes prove artifact integrity. Schema-2 manifests also recor
 versioned portable semantic projection for cross-root regression comparison.
 The accepted Maven and Quarkus M1.1 baseline evidence is recorded in
 [`docs/stability/M1_1_VALIDATION_REPORT.md`](docs/stability/M1_1_VALIDATION_REPORT.md).
+The benchmark-driven Spring Framework Gradle discovery investigation is recorded in
+[`docs/stability/SPRING_FRAMEWORK_INVESTIGATION.md`](docs/stability/SPRING_FRAMEWORK_INVESTIGATION.md).
 
 Run the reproducible large-workspace benchmark:
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## M1 hardening — Spring Framework Gradle discovery
+
+- Added bounded static parsing for top-level literal Gradle `include(...)` and
+  Groovy command-style `include "module"` declarations without executing Gradle.
+- Preserved explicitly declared Gradle children beyond generic marker discovery,
+  merged settings evidence into projects already found through another marker, and
+  retained deterministic project ownership and ordering.
+- Made ambiguous resolved aliases, flattened project-name collisions, conditional
+  control flow, and expression continuations fail closed instead of fabricating
+  workspace membership.
+- Separated a version-specific Gradle Java file only when its exact baseline path is
+  also analyzed, emitting an explicit warning while retaining additive custom source
+  sets such as test fixtures and benchmarks.
+- Kept variables, conditional declarations, included builds, directory remapping,
+  custom build-file dependency extraction, and alternative source-set modeling
+  explicitly unsupported instead of guessing.
+- Validated the pinned Spring Framework checkout twice with 29 discovered projects,
+  29 successes, stable semantic/report/explanation hashes, and no weakening of
+  duplicate Java type detection.
+
 ## PR134 — Explain Anything
 
 - Added the first canonical subject resolver over PR129 identities with exact-ID,

@@ -23,7 +23,7 @@ from moughorai.java_workspace import JavaWorkspaceScanner, SourceRootKind
 from moughorai.python_semantics import PythonSemanticAnalyzer
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
-from moughorai.workspace import Project
+from moughorai.workspace import GRADLE_SETTINGS_MEMBERSHIP_OPTION, Project
 from moughorai.workspace.files import project_files
 
 
@@ -192,21 +192,50 @@ class JavaLanguageAnalyzer:
         self._workspace_scanner = workspace_scanner or JavaWorkspaceScanner()
 
     def analyze(self, project, paths, dependencies) -> SemanticDocument:
-        if (project.path / "pom.xml").is_file():
+        maven_project = (project.path / "pom.xml").is_file()
+        gradle_project = any(
+            (project.path / filename).is_file()
+            for filename in (
+                "build.gradle",
+                "build.gradle.kts",
+                "settings.gradle",
+                "settings.gradle.kts",
+            )
+        ) or bool(project.option_map.get(GRADLE_SETTINGS_MEMBERSHIP_OPTION))
+        diagnostics: list[Diagnostic] = []
+        if maven_project:
             module = self._workspace_scanner.scan_module(project.path)
             source_roots = tuple(
                 root.path.resolve()
                 for root in module.source_roots
                 if root.language == "java" and root.kind is not SourceRootKind.RESOURCE
             )
-            paths = tuple(
-                path
-                for path in paths
-                if any(path.resolve().is_relative_to(root) for root in source_roots)
+            selected_paths: list[Path] = []
+            for path in paths:
+                resolved_path = path.resolve()
+                if any(resolved_path.is_relative_to(root) for root in source_roots):
+                    selected_paths.append(path)
+            paths = tuple(selected_paths)
+        elif gradle_project:
+            paths, shadowed_variants = _without_shadowed_gradle_variants(
+                project.path,
+                paths,
             )
+            if shadowed_variants:
+                location = shadowed_variants[0].resolve().relative_to(
+                    project.path.resolve()
+                )
+                diagnostics.append(Diagnostic(
+                    "ATLAS-JAVA-SOURCE-VARIANT",
+                    f"{len(shadowed_variants)} version-specific Gradle Java "
+                    "source file(s) shadow matching baseline paths; source-set "
+                    "variant semantics are not modeled",
+                    DiagnosticSeverity.WARNING,
+                    location=location,
+                    pass_name="java-language-analyzer",
+                ))
         units: list[object] = []
         sources: list[Path] = []
-        diagnostics: list[Diagnostic] = []
         for path in paths:
             try:
                 units.append(self._parser.parse_source(path.read_text(encoding="utf-8-sig")))
@@ -227,6 +256,39 @@ class JavaLanguageAnalyzer:
             .with_artifact("java_architecture_graph", architecture)
             .with_diagnostics(diagnostics)
         )
+
+
+_VERSIONED_GRADLE_JAVA_PATH = re.compile(
+    r"^src/(main|test)/java[1-9][0-9]*/(.+)$"
+)
+
+
+def _without_shadowed_gradle_variants(
+    root: Path,
+    paths: tuple[Path, ...],
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Keep additive source sets while separating versioned path overlays."""
+    project_root = root.resolve()
+    eligible = {path.resolve() for path in paths}
+    selected: list[Path] = []
+    shadowed: list[Path] = []
+    for path in paths:
+        resolved = path.resolve()
+        try:
+            relative = resolved.relative_to(project_root).as_posix()
+        except ValueError:
+            selected.append(path)
+            continue
+        match = _VERSIONED_GRADLE_JAVA_PATH.fullmatch(relative)
+        if match is None:
+            selected.append(path)
+            continue
+        baseline = project_root / "src" / match.group(1) / "java" / match.group(2)
+        if baseline.resolve() not in eligible:
+            selected.append(path)
+            continue
+        shadowed.append(path)
+    return tuple(selected), tuple(shadowed)
 
 
 class PythonLanguageAnalyzer:

@@ -14,6 +14,7 @@ from moughorai.repository_report import (
 )
 from moughorai.repository_report.safety import contains_absolute_path_text
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
+from moughorai.workspace import GRADLE_SETTINGS_MEMBERSHIP_OPTION
 
 
 class RepositoryExplanationProjector:
@@ -145,7 +146,12 @@ class RepositoryExplanationProjector:
                 "discovered_project_count": project_count,
                 "evidence_basis": project_count_basis,
             },
-            "repository_summary": self.compact_summary(summary),
+            "repository_summary": self.compact_summary(
+                summary,
+                has_gradle_settings_membership=self._has_gradle_settings_membership(
+                    workspace_projects_value
+                ),
+            ),
             "architecture": self.compact_architecture(source.get("architecture")),
             "design_patterns": self.compact_design_patterns(source.get("design_patterns")),
             "reachability": self.compact_reachability(source.get("reachability")),
@@ -155,7 +161,12 @@ class RepositoryExplanationProjector:
         }
         return WorkspaceSemanticContext(self._source_free_projection(projected))
 
-    def compact_summary(self, value: object) -> dict[str, object]:
+    def compact_summary(
+        self,
+        value: object,
+        *,
+        has_gradle_settings_membership: bool = False,
+    ) -> dict[str, object]:
         if not isinstance(value, Mapping) or not value:
             return {
                 "status": "unavailable",
@@ -180,7 +191,11 @@ class RepositoryExplanationProjector:
             "schema_version": value.get("schema_version", 1),
             "inventory": inventory,
             "language_distribution": self._language_distribution(language_counts),
-            "build_systems": self._build_systems(value, projects),
+            "build_systems": self._build_systems(
+                value,
+                projects,
+                has_gradle_settings_membership=has_gradle_settings_membership,
+            ),
             "frameworks_and_related_technologies": self._frameworks(value),
             "entry_point_candidates": self._entry_points(value),
             "filesystem_project_hierarchy": self._hierarchy(value),
@@ -726,6 +741,8 @@ class RepositoryExplanationProjector:
         self,
         value: Mapping[str, Any],
         projects: tuple[Mapping[str, Any], ...],
+        *,
+        has_gradle_settings_membership: bool = False,
     ) -> dict[str, object]:
         names = set(self._strings(value.get("build_systems")))
         by_name: dict[str, set[str]] = defaultdict(set)
@@ -758,17 +775,38 @@ class RepositoryExplanationProjector:
                     "reason": "Repository summaries do not persist detector confidence or descriptor role.",
                 },
             })
+        evidence_basis = "build descriptor filenames in project inventories"
+        limitations = [
+            "Build-system membership can overlap; percentages would be misleading.",
+            "Embedded fixture descriptors may be counted because descriptor role is not persisted.",
+            "Detection in the root project's inventory does not prove that the descriptor is at the repository root and is not automatically called primary.",
+        ]
+        if has_gradle_settings_membership:
+            evidence_basis += (
+                " or statically parsed literal Gradle settings membership"
+            )
+            limitations.extend((
+                "Settings-declared Gradle membership does not establish dependency coverage when a project uses a custom build-file name.",
+                "Dynamic Gradle settings expressions are not evaluated and remain unavailable.",
+            ))
         return {
             "status": "available" if items else "unavailable",
             "items": items,
             "percentages_reported": False,
-            "evidence_basis": "build descriptor filenames in project inventories",
-            "limitations": [
-                "Build-system membership can overlap; percentages would be misleading.",
-                "Embedded fixture descriptors may be counted because descriptor role is not persisted.",
-                "Detection in the root project's inventory does not prove that the descriptor is at the repository root and is not automatically called primary.",
-            ],
+            "evidence_basis": evidence_basis,
+            "limitations": limitations,
         }
+
+    @classmethod
+    def _has_gradle_settings_membership(cls, projects: object) -> bool:
+        for project in cls._mapping_records(projects):
+            options = project.get("options")
+            if (
+                isinstance(options, Mapping)
+                and options.get(GRADLE_SETTINGS_MEMBERSHIP_OPTION)
+            ):
+                return True
+        return False
 
     def _frameworks(self, value: Mapping[str, Any]) -> dict[str, object]:
         evidence = self._mapping_records(value.get("framework_evidence"))

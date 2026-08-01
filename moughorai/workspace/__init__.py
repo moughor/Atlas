@@ -19,10 +19,10 @@ from .cache import WorkspaceCache, WorkspaceSnapshot
 from .discovery import WorkspaceDiscovery
 from .graph import DependencyGraph, WorkspaceDependencyError
 from .loader import WorkspaceConfigError, WorkspaceLoader
-from .models import Project, Workspace
+from .models import GRADLE_SETTINGS_MEMBERSHIP_OPTION, Project, Workspace
 from .service import WorkspaceService
 
 __all__ = [
     "EventDeliveryFailure", "EventDeliveryReport", "WorkspaceEvent", "WorkspaceEventBus", "WorkspaceEventKind", "ConfigurationLayer", "ResolvedConfiguration", "WorkspaceConfigurationError", "WorkspaceConfigurationResolver", "STATE_SCHEMA_VERSION", "WorkspacePersistentState", "WorkspaceRestoreReport", "WorkspaceStateError", "WorkspaceStateStore", "RECOVERY_SCHEMA_VERSION", "RecoveryProject", "RecoveryProjectStatus", "WorkspaceRecoveryError", "WorkspaceRecoveryJournal", "WorkspaceRecoveryManager", "WorkspaceRecoveryReport", "DependencyGraph", "ProjectRun", "ProjectRunStatus", "WorkspaceAnalysisOrchestrator", "WorkspaceRunReport", "FileEvent", "FileEventKind", "FileState", "IncrementalPlan", "IncrementalWorkspacePlanner", "Project", "Workspace", "WorkspaceCache", "WorkspaceConfigError",
-    "WatchRun", "WatchSnapshot", "WorkspaceDependencyError", "WorkspaceDiscovery", "WorkspaceLoader", "WorkspaceService", "WorkspaceSnapshot", "WorkspaceWatcher", "WorkspaceWatchManager",
+    "GRADLE_SETTINGS_MEMBERSHIP_OPTION", "WatchRun", "WatchSnapshot", "WorkspaceDependencyError", "WorkspaceDiscovery", "WorkspaceLoader", "WorkspaceService", "WorkspaceSnapshot", "WorkspaceWatcher", "WorkspaceWatchManager",
 ]

@@ -27,15 +27,26 @@ error. `DuplicateTypeError` identifies the project and both source paths.
 Persistence, recovery, source removal, immutable snapshots, and concurrent
 database operations retain the project scope.
 
-## Maven source roots
+## Build-managed source roots
 
-For Maven projects, Java analysis uses the module's recognized Java source roots.
-Standard main and test sources remain eligible, while Java-looking fixture files
-under resource roots are excluded because Maven copies resources rather than
-compiling them. Reactor modules are discovered as independent Atlas projects, so a
-qualified type may legitimately occur in two artifacts without weakening duplicate
-detection inside either artifact.
+For Maven projects, Java analysis reuses the module scanner's recognized Java source
+roots. Standard main and test sources remain eligible, while Java-looking fixture
+files under Maven resource roots are excluded because Maven copies resources rather
+than compiling them. Maven reactor and statically declared Gradle modules are
+discovered as independent Atlas projects, so a qualified type may legitimately occur
+in two artifacts without weakening duplicate detection inside either artifact.
 
-Custom source roots require structured build metadata. Atlas does not infer a
-compile root merely because a resource directory contains a nested `src/main/java`
-path.
+Gradle version-specific source sets such as `src/main/java21` may deliberately
+override a qualified type from `src/main/java`. Atlas does not yet model source-set
+variants. When both exact relative paths are eligible, Atlas keeps the baseline and
+omits only its version-specific overlay with an explicit warning. Additive files in
+version-specific roots and custom roots such as `testFixtures` or JMH retain the
+legacy scan for backward compatibility.
+
+For Maven, custom source roots require structured build metadata. Atlas does not
+infer a Maven compile root merely because a resource directory contains a nested
+`src/main/java` path. Gradle retains the legacy project-bounded Java scan because
+Atlas does not evaluate source-set configuration; Java-looking files in custom or
+resource roots can therefore be analyzed unless workspace enumeration excludes
+them. They remain in one unversioned semantic scope and are not proof that Gradle
+compiles those files.

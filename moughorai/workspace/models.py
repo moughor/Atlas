@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
+GRADLE_SETTINGS_MEMBERSHIP_OPTION = "atlas.discovery.gradle.settings"
+
+
 @dataclass(frozen=True, slots=True)
 class Project:
     name: str

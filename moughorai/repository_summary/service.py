@@ -19,7 +19,11 @@ from moughorai.project_inventory.detection_models import TechnologyCategory
 from moughorai.project_inventory.framework_service import MavenFrameworkService
 from moughorai.project_inventory.framework_rules import FRAMEWORK_RULES
 from moughorai.project_inventory.maven_parser import MavenParseError
-from moughorai.workspace import Project, WorkspaceService
+from moughorai.workspace import (
+    GRADLE_SETTINGS_MEMBERSHIP_OPTION,
+    Project,
+    WorkspaceService,
+)
 from moughorai.workspace.files import project_files
 
 from .models import ProjectSummary, RepositorySummary
@@ -120,10 +124,16 @@ class RepositorySummaryService:
             total_directories=len(directories),
         )
         detection = self.detector.detect(inventory)
-        builds = tuple(sorted(
+        build_values = {
             item.name for item in detection.technologies
             if item.category is TechnologyCategory.BUILD
-        ))
+        }
+        if (
+            self.service.workspace.config_path is None
+            and project.option_map.get(GRADLE_SETTINGS_MEMBERSHIP_OPTION)
+        ):
+            build_values.add("Gradle")
+        builds = tuple(sorted(build_values))
         dependencies = self.dependencies.analyze(project.path, paths)
         frameworks, framework_evidence = self._frameworks(project, paths, dependencies)
         entries = self._entry_points(project, classified)
