@@ -1,5 +1,10 @@
 # M1 Platform Stabilization Report
 
+> **Historical M1 record.** This report describes the provisional commit-scoped
+> evidence available before canonical M1.1 capture. Its `STABILIZATION REQUIRED`
+> recommendation is superseded by `M1_1_VALIDATION_REPORT.md`, which records the
+> accepted Maven and Quarkus baselines and the current `READY FOR PR135` decision.
+
 Date: 2026-08-01  
 Roadmap baseline: PR134, commit `b788efea901dffc980ab0bfa9d5afe1e57512a1a`  
 Validated M1 implementation: `7d26b83943db808e7283712f3f3f3d6950f7ed58`

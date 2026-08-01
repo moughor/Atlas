@@ -17,7 +17,8 @@ The tracked sources of truth are:
 - compact reviewed JSON records under `benchmarks/baselines/`.
 
 The repository audit is in `M1_1_REPOSITORY_AUDIT.md`. Replay and CI policy is in
-`M1_1_REPLAY_AND_CI.md`.
+`M1_1_REPLAY_AND_CI.md`. The accepted Maven and Quarkus execution evidence and
+release assessment are in `M1_1_VALIDATION_REPORT.md`.
 
 ## Canonical repositories
 
@@ -126,21 +127,32 @@ must be reachable from that branch, and a declared tag must resolve exactly to t
 pinned commit.
 
 ```text
-python -m benchmarks.canonical_baseline prepare apache-maven C:\benchmarks\apache-maven
-python -m benchmarks.canonical_baseline verify apache-maven C:\benchmarks\apache-maven --require-initial-state
+python -m benchmarks.canonical_baseline prepare apache-maven C:\benchmarks\maven-source
+python -m benchmarks.canonical_baseline verify apache-maven C:\benchmarks\maven-source --require-initial-state
 ```
 
 After committing the Atlas benchmark implementation, record the exact clean Atlas
 commit and capture three repetitions:
 
 ```text
-python -m benchmarks.canonical_baseline capture apache-maven C:\benchmarks\apache-maven --atlas-commit <atlas-sha> --repeats 3 --output benchmarks\results\apache-maven-fresh.json --golden-output benchmarks\results\apache-maven-golden
-python -m benchmarks.canonical_baseline verify-golden benchmarks\results\apache-maven-golden --snapshot C:\benchmarks\apache-maven\.atlas\ass\latest.ass --require-snapshot
+python -m benchmarks.canonical_baseline capture apache-maven C:\benchmarks\maven-source --atlas-commit <atlas-sha> --repeats 3 --output benchmarks\results\apache-maven-fresh.json --golden-output benchmarks\results\apache-maven-golden
+python -m benchmarks.canonical_baseline verify-golden benchmarks\results\apache-maven-golden --snapshot C:\benchmarks\maven-source\.atlas\ass\latest.ass --require-snapshot
 ```
 
-Repeat those commands for repository ID `quarkus`, root `C:\benchmarks\quarkus`,
-and `quarkus-fresh.json` / `quarkus-golden` outputs. A release baseline requires
-independent Maven and Quarkus evidence; one corpus never stands in for the other.
+Repeat those commands for repository ID `quarkus`, using a short root such as
+`C:\b\q`, and `quarkus-fresh.json` / `quarkus-golden` outputs. A release baseline
+requires independent Maven and Quarkus evidence; one corpus never stands in for the
+other.
+
+The physical checkout basename is operational input. It must not equal a discovered
+root or module name, because project identities must remain unique. On Windows, use
+a short checkout root for very deeply nested repositories even when Git long-path
+support is enabled; Atlas and Python must still be able to open every tracked file.
+The logical checkout identity in `repositories.json`, not the machine-local path,
+is the portable provenance field. Project discovery still uses the physical basename
+for the root project, so exact comparison with the accepted manifests currently
+requires basenames `maven-source` and `q`. This limitation is explicit rather than
+hidden by rewriting project identities during benchmarking.
 
 Every repetition removes only the validated `ROOT/.atlas` directory. This makes each
 sample a clean-state analysis and requires exact raw ASS reproduction as well as the

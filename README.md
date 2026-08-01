@@ -110,6 +110,8 @@ See [`benchmarks/README.md`](benchmarks/README.md) and the
 [`docs/stability/`](docs/stability/) strategies before accepting or updating a
 baseline. Raw ASS hashes prove artifact integrity. Schema-2 manifests also record a
 versioned portable semantic projection for cross-root regression comparison.
+The accepted Maven and Quarkus M1.1 baseline evidence is recorded in
+[`docs/stability/M1_1_VALIDATION_REPORT.md`](docs/stability/M1_1_VALIDATION_REPORT.md).
 
 Run the reproducible large-workspace benchmark:
 

@@ -12,22 +12,24 @@ new detached checkout, and verify its complete Git-tree provenance with:
 
 ```text
 python -m benchmarks.canonical_baseline list
-python -m benchmarks.canonical_baseline prepare apache-maven C:\benchmarks\apache-maven
-python -m benchmarks.canonical_baseline verify apache-maven C:\benchmarks\apache-maven --require-initial-state
+python -m benchmarks.canonical_baseline prepare apache-maven C:\benchmarks\maven-source
+python -m benchmarks.canonical_baseline verify apache-maven C:\benchmarks\maven-source --require-initial-state
 ```
 
 After the benchmark implementation is committed and Atlas is clean, capture a
 schema-2 manifest and source-free golden bundle:
 
 ```text
-python -m benchmarks.canonical_baseline capture apache-maven C:\benchmarks\apache-maven --atlas-commit <full-atlas-object-id> --repeats 3 --output benchmarks\results\apache-maven-fresh.json --golden-output benchmarks\results\apache-maven-golden
-python -m benchmarks.canonical_baseline verify-golden benchmarks\results\apache-maven-golden --snapshot C:\benchmarks\apache-maven\.atlas\ass\latest.ass --require-snapshot
+python -m benchmarks.canonical_baseline capture apache-maven C:\benchmarks\maven-source --atlas-commit <full-atlas-object-id> --repeats 3 --output benchmarks\results\apache-maven-fresh.json --golden-output benchmarks\results\apache-maven-golden
+python -m benchmarks.canonical_baseline verify-golden benchmarks\results\apache-maven-golden --snapshot C:\benchmarks\maven-source\.atlas\ass\latest.ass --require-snapshot
 ```
 
 Run the same `prepare`, `verify`, `capture`, and `verify-golden` sequence with
-repository ID `quarkus`, checkout root `C:\benchmarks\quarkus`, and Quarkus output
+repository ID `quarkus`, a short checkout root such as `C:\b\q`, and Quarkus output
 names. Both repository definitions are release-baseline inputs; Maven is not a
-substitute for the Quarkus run.
+substitute for the Quarkus run. A checkout basename must not collide with a
+discovered project name, and deeply nested Windows corpora require a root short
+enough for every tracked file to remain accessible.
 
 The canonical command verifies the expected project count, origin URL, pinned
 commit, detached/clean checkout, tracked content size, submodules, LFS declaration,
@@ -35,7 +37,8 @@ Atlas commit, and exact repeated output. Each sample starts without `ROOT/.atlas
 It reuses `repository_benchmark` for analysis; it is not a second benchmark engine.
 
 The complete schema, hash, golden, replay, and promotion contracts are in
-`docs/stability/M1_1_CANONICAL_BASELINE.md`.
+`docs/stability/M1_1_CANONICAL_BASELINE.md`. Accepted M1.1 execution evidence is in
+`docs/stability/M1_1_VALIDATION_REPORT.md`.
 
 ## Direct or provisional fresh analysis
 
@@ -60,13 +63,13 @@ capture log. If an extracted source archive has no Git metadata,
 `--allow-unpinned` permits a clearly provisional record; it cannot become a golden
 baseline.
 
-## Direct snapshot replay
+## Canonical snapshot replay
 
 Replay verifies persisted snapshot integrity and deterministic derived output. It
 does not claim a new analysis:
 
 ```text
-python -m benchmarks.repository_benchmark replay C:\benchmarks\quarkus\.atlas\ass\latest.ass --repository-root C:\benchmarks\quarkus --repository-name Quarkus --repository-commit <full-git-object-id> --checkout-identity quarkus-windows-stable-v1 --project-count 1442 --success-count 1442 --repeats 3 --source-manifest benchmarks/baselines/quarkus-fresh.json --output benchmarks/results/quarkus-replay.json
+python -m benchmarks.canonical_baseline replay quarkus C:\b\q C:\b\q\.atlas\ass\latest.ass --atlas-commit <full-atlas-object-id> --source-manifest benchmarks/baselines/quarkus-fresh.json --repeats 3 --output benchmarks/results/quarkus-replay.json
 ```
 
 Project-success counts remain `declared-historical` unless `--source-manifest`
@@ -77,7 +80,7 @@ success evidence.
 ## Comparison
 
 ```text
-python -m benchmarks.repository_benchmark compare benchmarks/baselines/apache-maven.json benchmarks/results/apache-maven.json
+python -m benchmarks.repository_benchmark compare benchmarks/baselines/apache-maven-fresh.json benchmarks/results/apache-maven-fresh-candidate.json
 ```
 
 The command exits `0` for `match`, `warning`, and an advisory

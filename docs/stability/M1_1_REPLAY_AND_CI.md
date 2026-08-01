@@ -219,7 +219,7 @@ and correctness history but does not by itself establish a performance distribut
 Use the existing comparator only for eligible, compatible manifests:
 
 ```text
-python -m benchmarks.repository_benchmark compare benchmarks/baselines/<repository>.json benchmarks/results/<repository>-candidate.json --output benchmarks/results/<repository>-comparison.json
+python -m benchmarks.repository_benchmark compare benchmarks/baselines/<repository>-fresh.json benchmarks/results/<repository>-fresh-candidate.json --output benchmarks/results/<repository>-comparison.json
 ```
 
 Interpret the result semantically, not only by process exit code:

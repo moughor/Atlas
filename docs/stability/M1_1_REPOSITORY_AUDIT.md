@@ -24,13 +24,13 @@ and are never canonical repository identities.
 | Upstream URL | `https://github.com/apache/maven.git` |
 | Commit | `3e01a12e9eacd2b336f4db786d54e35647ce268c` |
 | Source branch | `master` |
-| Checkout state | clean, detached HEAD |
+| Checkout state | clean, detached HEAD before capture; generated `.atlas` retained afterward |
 | Git history | complete, non-shallow/non-partial; 16,236 commits reachable from HEAD |
 | Exact tag | none |
 | Tracked-blob inventory | 10,122 blobs; 28,136,721 bytes |
 | Submodules | none |
 | Git LFS content | none |
-| Operational checkout | `C:\AITest\atlas-m1.1\apache-maven` |
+| Operational checkout | `C:\AITest\atlas-m1.1\maven-source` |
 
 The local checkout path is a controlled operational location, not part of Maven's
 canonical identity. The full commit, rather than `master`, must be used for benchmark
@@ -43,21 +43,24 @@ provenance and comparison.
 | Upstream URL | `https://github.com/quarkusio/quarkus.git` |
 | Commit | `bbc0853aef94c567bac2cc4a98d51c90fb423648` |
 | Source branch | `main` |
-| Checkout state | clean, detached HEAD |
+| Checkout state | clean, detached HEAD before capture; generated `.atlas` retained afterward |
 | Git history | complete, non-shallow/non-partial; 61,098 commits reachable from HEAD |
 | Exact tag | none |
 | Tracked-blob inventory | 31,433 blobs; 128,026,844 bytes |
 | Submodules | none |
 | Git LFS content | none |
-| Operational checkout | `C:\AITest\atlas-m1.1\quarkus` |
+| Operational checkout | `C:\AITest\q` |
 
 The local checkout path is a controlled operational location, not part of Quarkus's
 canonical identity. The full commit, rather than `main`, must be used for benchmark
 provenance and comparison.
 
-These checkouts establish suitable pinned inputs for future benchmark captures. They
-do not retroactively add provenance to earlier archive-based results, and their
-presence alone is not evidence that an Atlas analysis or benchmark run succeeded.
+These checkouts established the pinned inputs used by the accepted M1.1 captures.
+The checkout basename `apache-maven` was replaced by `maven-source` because it
+collided with a discovered Maven project identity. Quarkus was placed at the short
+root `C:\AITest\q` so its deepest tracked Java path remained accessible on Windows.
+These operational paths do not retroactively add provenance to earlier archive-based
+results.
 
 ## Legacy source archives
 
@@ -117,8 +120,9 @@ canonical baselines:
 The two M1 manifests correctly retain `repository.commit` as `null` and
 `repository.revision_verified` as `false`; the archive URLs and checksums cannot be
 substituted for a Git commit. The Quarkus replay has no linked eligible fresh-analysis
-manifest, so its source-manifest hash remains `null`. No `benchmarks/baselines/`
-directory or accepted external baseline currently exists.
+manifest, so its source-manifest hash remains `null`. They remain distinct from the
+accepted schema-2 records now tracked in `benchmarks/baselines/`; the accepted run
+evidence is recorded in `M1_1_VALIDATION_REPORT.md`.
 
 The older Maven archive under `benchmarks/Maven/` contains an unresolved-path run,
 two records with blank Git commit and branch fields, and a failed partial 73-project
