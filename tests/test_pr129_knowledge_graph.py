@@ -9,9 +9,11 @@ from moughorai.ai_context.persistence import (
 from moughorai.dependency_intelligence import DeclaredDependency
 from moughorai.global_symbols import GlobalSymbol, GlobalSymbolKind
 from moughorai.knowledge_graph import (
+    KnowledgeEdge,
     KnowledgeGraph,
     KnowledgeGraphBuilder,
     KnowledgeKind,
+    KnowledgeNode,
     KnowledgeRelation,
 )
 from moughorai.repository_summary.models import ProjectSummary, RepositorySummary
@@ -327,3 +329,95 @@ def test_dependency_identity_preserves_version_and_scope() -> None:
         (dict(node.metadata)["version"], dict(node.metadata)["scope"])
         for node in dependencies
     } == {("1.0", "compile"), ("2.0", "runtime")}
+
+
+def test_bounded_graph_queries_are_deterministic_and_report_exact_counts() -> None:
+    center = KnowledgeNode("type:center", KnowledgeKind.TYPE, "demo.Center")
+    outgoing_nodes = tuple(
+        KnowledgeNode(f"type:out:{index:04d}", KnowledgeKind.TYPE, f"demo.Out{index}")
+        for index in range(200)
+    )
+    incoming_nodes = tuple(
+        KnowledgeNode(f"type:in:{index:04d}", KnowledgeKind.TYPE, f"demo.In{index}")
+        for index in range(75)
+    )
+    edges = tuple(
+        KnowledgeEdge(
+            center.id,
+            node.id,
+            KnowledgeRelation.IMPORTS,
+            (f"import:{index:04d}",),
+        )
+        for index, node in enumerate(outgoing_nodes)
+    ) + tuple(
+        KnowledgeEdge(
+            node.id,
+            center.id,
+            KnowledgeRelation.CALLS,
+            (f"call:{index:04d}",),
+        )
+        for index, node in enumerate(incoming_nodes)
+    )
+    nodes = (center, *outgoing_nodes, *incoming_nodes)
+    forward = KnowledgeGraph(nodes, edges)
+    reversed_graph = KnowledgeGraph(reversed(nodes), reversed(edges))
+
+    expected_outgoing = forward.outgoing(center.id)[:11]
+    selected_outgoing, outgoing_count = forward.bounded_outgoing(
+        center.id,
+        limit=11,
+    )
+    reversed_outgoing, reversed_outgoing_count = reversed_graph.bounded_outgoing(
+        center.id,
+        limit=11,
+    )
+    assert selected_outgoing == expected_outgoing == reversed_outgoing
+    assert outgoing_count == reversed_outgoing_count == 200
+
+    calls, call_count = forward.bounded_incoming(
+        center.id,
+        limit=9,
+        relation=KnowledgeRelation.CALLS,
+    )
+    assert calls == forward.incoming(center.id, KnowledgeRelation.CALLS)[:9]
+    assert call_count == 75
+
+    incident, incident_count = forward.bounded_incident(center.id, limit=17)
+    reversed_incident, reversed_incident_count = reversed_graph.bounded_incident(
+        center.id,
+        limit=17,
+    )
+    assert incident == reversed_incident
+    assert incident_count == reversed_incident_count == 275
+    assert all(direction == "incoming" for direction, _ in incident)
+
+
+def test_bounded_graph_query_can_filter_one_explicit_endpoint() -> None:
+    graph = KnowledgeGraph(
+        (
+            KnowledgeNode("method:source", KnowledgeKind.METHOD, "demo.Source#run()"),
+            KnowledgeNode("method:target", KnowledgeKind.METHOD, "demo.Target#run()"),
+        ),
+        tuple(
+            KnowledgeEdge(
+                "method:source",
+                "method:target",
+                KnowledgeRelation.CALLS,
+                (f"call:{index:03d}",),
+            )
+            for index in reversed(range(100))
+        ),
+    )
+
+    selected, total = graph.bounded_outgoing(
+        "method:source",
+        limit=8,
+        relation=KnowledgeRelation.CALLS,
+        target_id="method:target",
+    )
+
+    assert total == 100
+    assert selected == graph.outgoing(
+        "method:source",
+        KnowledgeRelation.CALLS,
+    )[:8]

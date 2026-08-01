@@ -1,6 +1,7 @@
 from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
+import heapq
 import hashlib
 import json
 from moughorai.global_symbols import SymbolId
@@ -32,6 +33,119 @@ class KnowledgeGraph:
         self._edges.add(edge); self._out[edge.source].add(edge); self._in[edge.target].add(edge); self._sorted_edges=None; self._stable_digest=None
     def outgoing(self,node_id,relation=None): return tuple(sorted(e for e in self._out.get(node_id,()) if relation is None or e.relation is relation))
     def incoming(self,node_id,relation=None): return tuple(sorted(e for e in self._in.get(node_id,()) if relation is None or e.relation is relation))
+    def bounded_outgoing(
+        self,
+        node_id: str,
+        *,
+        limit: int,
+        relation: KnowledgeRelation | None = None,
+        target_id: str | None = None,
+    ) -> tuple[tuple[KnowledgeEdge, ...], int]:
+        """Return the first canonical outgoing edges and the exact match count.
+
+        The query scans the selected adjacency once and retains at most
+        ``limit`` edges.  It therefore avoids materializing and sorting a
+        high-degree node's complete adjacency while preserving the ordering of
+        :meth:`outgoing` for the retained prefix.
+        """
+
+        return self._bounded_edges(
+            self._out.get(node_id, ()),
+            limit=limit,
+            relation=relation,
+            endpoint_id=target_id,
+            endpoint="target",
+        )
+
+    def bounded_incoming(
+        self,
+        node_id: str,
+        *,
+        limit: int,
+        relation: KnowledgeRelation | None = None,
+        source_id: str | None = None,
+    ) -> tuple[tuple[KnowledgeEdge, ...], int]:
+        """Return the first canonical incoming edges and the exact match count."""
+
+        return self._bounded_edges(
+            self._in.get(node_id, ()),
+            limit=limit,
+            relation=relation,
+            endpoint_id=source_id,
+            endpoint="source",
+        )
+
+    def bounded_incident(
+        self,
+        node_id: str,
+        *,
+        limit: int,
+        relation: KnowledgeRelation | None = None,
+    ) -> tuple[tuple[tuple[str, KnowledgeEdge], ...], int]:
+        """Return a bounded deterministic incident-edge prefix and exact count.
+
+        Self-loops are reported once for each direction, matching a combined
+        call to :meth:`incoming` and :meth:`outgoing`.  Ordering is by relation,
+        direction, neighbouring node identity, and evidence, which is the
+        canonical direct-relationship order used by PR134 explanations.
+        """
+
+        if limit < 1:
+            raise ValueError("bounded knowledge graph query limit must be positive")
+
+        def eligible():
+            nonlocal total
+            for direction, edges in (
+                ("incoming", self._in.get(node_id, ())),
+                ("outgoing", self._out.get(node_id, ())),
+            ):
+                for edge in edges:
+                    if relation is not None and edge.relation is not relation:
+                        continue
+                    total += 1
+                    yield direction, edge
+
+        def sort_key(item: tuple[str, KnowledgeEdge]):
+            direction, edge = item
+            neighbor_id = edge.source if direction == "incoming" else edge.target
+            return (
+                edge.relation.value,
+                direction,
+                neighbor_id,
+                edge.evidence,
+                edge.source,
+                edge.target,
+            )
+
+        total = 0
+        selected = tuple(heapq.nsmallest(limit, eligible(), key=sort_key))
+        return selected, total
+
+    @staticmethod
+    def _bounded_edges(
+        edges,
+        *,
+        limit: int,
+        relation: KnowledgeRelation | None,
+        endpoint_id: str | None,
+        endpoint: str,
+    ) -> tuple[tuple[KnowledgeEdge, ...], int]:
+        if limit < 1:
+            raise ValueError("bounded knowledge graph query limit must be positive")
+
+        def eligible():
+            nonlocal total
+            for edge in edges:
+                if relation is not None and edge.relation is not relation:
+                    continue
+                if endpoint_id is not None and getattr(edge, endpoint) != endpoint_id:
+                    continue
+                total += 1
+                yield edge
+
+        total = 0
+        selected = tuple(heapq.nsmallest(limit, eligible()))
+        return selected, total
     def by_kind(self,kind): return tuple(node for node in self.nodes if node.kind is kind)
     def find(self,name): return tuple(node for node in self.nodes if node.name==name)
     def neighborhood(self,node_id,depth=1):
