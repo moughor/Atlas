@@ -1,5 +1,10 @@
 # Atlas M1 Benchmark Strategy
 
+> M1.1 note: `M1_1_CANONICAL_BASELINE.md` is normative for new schema-2
+> repository baselines, portable hashes, pinned definitions, and clean-state
+> captures. This document retains the schema-1 M1 contract for backward
+> compatibility and historical interpretation.
+
 ## Status and scope
 
 This document defines the benchmark discipline for the M1 platform-stabilization
@@ -159,8 +164,10 @@ Hash names have one meaning only:
 - `explain_sha256` is SHA-256 over the provider-free default repository explanation
   encoded as UTF-8 after normalizing line endings to LF and retaining exactly one
   final newline.
-- `analysis_report_sha256` is SHA-256 over the compact canonical JSON representation
-  emitted by `atlas analyze --format json`; it is unavailable for replay.
+- `analysis_report_sha256` is SHA-256 over the compact canonical JSON projection
+  emitted by `atlas analyze --format json`, after repository-root normalization and
+  removal of per-project `duration_ms` observations. Durations remain manifest
+  measurements, not correctness evidence. The hash is unavailable for replay.
 - `workspace_project_order_sha256` hashes the ordered project inventory stored in
   the snapshot.
 - `analysis_order_sha256` hashes the CLI execution/report order and exists only for

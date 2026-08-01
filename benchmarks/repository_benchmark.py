@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from importlib import metadata
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,7 @@ from .stability_manifest import (
     canonical_digest,
     collect_snapshot_artifacts,
     compare_manifests,
+    portable_value,
     utc_observation_time,
 )
 
@@ -44,6 +47,13 @@ def capture_analysis(
     timeout_seconds: int = 7_200,
     observed_at_utc: str | None = None,
     allow_unpinned: bool = False,
+    repository_url: str | None = None,
+    repository_branch: str | None = None,
+    repository_tag: str | None = None,
+    expected_project_count: int | None = None,
+    expected_atlas_commit: str | None = None,
+    reset_atlas_state: bool = False,
+    benchmark_version: str = "m1.1",
 ) -> BenchmarkManifest:
     """Run the normal production analysis path and verify repeatable semantics."""
 
@@ -51,12 +61,28 @@ def capture_analysis(
     _positive(repeats, "benchmark repeats")
     _positive(workers, "benchmark workers")
     _positive(timeout_seconds, "analysis timeout")
+    if expected_project_count is not None:
+        _positive(expected_project_count, "expected project count")
+    if not isinstance(reset_atlas_state, bool):
+        raise ValueError("reset Atlas state must be a boolean")
     repository_commit, verified, git_backed, limitations = _repository_identity(
         root,
         expected_repository_commit,
         allow_unpinned=allow_unpinned,
     )
-    atlas_commit = _atlas_commit()
+    atlas_commit = _atlas_commit(expected_atlas_commit)
+    provenance = _repository_provenance(
+        root,
+        git_backed=git_backed,
+        repository_url=repository_url,
+        repository_branch=repository_branch,
+        repository_tag=repository_tag,
+    )
+    if provenance[0] is None:
+        limitations.append(
+            "Repository origin URL is unavailable or is not credential-free HTTPS; "
+            "this record cannot become a golden baseline."
+        )
     if checkout_identity is None:
         limitations.append(
             "A controlled checkout identity was not declared; path-scoped semantic "
@@ -68,6 +94,8 @@ def capture_analysis(
     success_counts: list[int] = []
     failure_counts: list[int] = []
     for _ in range(repeats):
+        if reset_atlas_state:
+            _reset_atlas_state(root)
         started = perf_counter()
         report = _run_analysis(
             root,
@@ -79,24 +107,52 @@ def capture_analysis(
             _analysis_counts(report)
         )
         snapshot_path = root / ".atlas" / "ass" / "latest.ass"
-        captured = collect_snapshot_artifacts(snapshot_path)
+        captured = collect_snapshot_artifacts(
+            snapshot_path,
+            repository_root=root,
+        )
+        portable_report = _deterministic_analysis_report(report, root)
         captured = replace(
             captured,
             analysis_order_sha256=canonical_digest(analysis_order),
-            analysis_report_sha256=canonical_digest(report),
+            analysis_order=analysis_order,
+            analysis_report_sha256=canonical_digest(portable_report),
+            deterministic_ordering_sha256=canonical_digest(
+                {
+                    "analysis_order": analysis_order,
+                    "workspace_project_order_sha256": (
+                        captured.workspace_project_order_sha256
+                    ),
+                }
+            ),
         )
         if captured.project_count != project_count:
             raise RuntimeError(
                 "analysis report and semantic snapshot project counts disagree"
             )
+        if set(captured.workspace_projects) != set(analysis_order):
+            raise RuntimeError(
+                "analysis report and semantic snapshot project identities disagree"
+            )
         artifacts.append(captured)
         project_counts.append(project_count)
         success_counts.append(success_count)
         failure_counts.append(failure_count)
+        if (
+            expected_project_count is not None
+            and project_count != expected_project_count
+        ):
+            raise RuntimeError(
+                "benchmark project count does not match the pinned definition: "
+                f"{project_count} != {expected_project_count}"
+            )
     _require_one(project_counts, "project count")
     _require_one(success_counts, "success count")
     _require_one(failure_counts, "failure count")
-    _verify_artifact_determinism(artifacts, exact_snapshot=False)
+    _verify_artifact_determinism(
+        artifacts,
+        exact_snapshot=reset_atlas_state,
+    )
     _verify_repository_unchanged(
         root,
         repository_commit,
@@ -108,6 +164,11 @@ def capture_analysis(
         limitations.append(
             "Raw snapshot hashes differ across fresh runs because run-specific "
             "history metadata participates in ASS identity; semantic gates matched."
+        )
+    if reset_atlas_state:
+        limitations.append(
+            "Each repetition started without repository-local Atlas state; raw ASS "
+            "identity was required to reproduce exactly."
         )
     return _manifest(
         benchmark_id=_benchmark_id(repository_name),
@@ -131,6 +192,15 @@ def capture_analysis(
         source_manifest_sha256=None,
         artifacts=artifacts[-1],
         limitations=tuple(limitations),
+        repository_url=provenance[0],
+        repository_branch=provenance[1],
+        repository_tag=provenance[2],
+        repository_tracked_size_bytes=provenance[3],
+        repository_tracked_file_count=provenance[4],
+        repository_submodules=provenance[5],
+        repository_lfs_required=provenance[6],
+        repository_history_complete=provenance[7],
+        benchmark_version=benchmark_version,
     )
 
 
@@ -147,6 +217,11 @@ def capture_replay(
     observed_at_utc: str | None = None,
     allow_unpinned: bool = False,
     source_manifest: BenchmarkManifest | None = None,
+    repository_url: str | None = None,
+    repository_branch: str | None = None,
+    repository_tag: str | None = None,
+    expected_atlas_commit: str | None = None,
+    benchmark_version: str = "m1.1",
 ) -> BenchmarkManifest:
     """Replay a checksum-verified ASS without claiming a fresh analysis."""
 
@@ -161,7 +236,19 @@ def capture_replay(
         expected_repository_commit,
         allow_unpinned=allow_unpinned,
     )
-    atlas_commit = _atlas_commit()
+    atlas_commit = _atlas_commit(expected_atlas_commit)
+    provenance = _repository_provenance(
+        root,
+        git_backed=git_backed,
+        repository_url=repository_url,
+        repository_branch=repository_branch,
+        repository_tag=repository_tag,
+    )
+    if provenance[0] is None:
+        limitations.append(
+            "Repository origin URL is unavailable or is not credential-free HTTPS; "
+            "this record cannot become a golden baseline."
+        )
     if checkout_identity is None:
         limitations.append(
             "A controlled checkout identity was not declared; path-scoped semantic "
@@ -171,7 +258,9 @@ def capture_replay(
     artifacts: list[SnapshotArtifacts] = []
     for _ in range(repeats):
         started = perf_counter()
-        artifacts.append(collect_snapshot_artifacts(snapshot_path))
+        artifacts.append(
+            collect_snapshot_artifacts(snapshot_path, repository_root=root)
+        )
         durations.append(max(1, round((perf_counter() - started) * 1_000)))
     _verify_artifact_determinism(artifacts, exact_snapshot=True)
     _verify_repository_unchanged(
@@ -190,6 +279,15 @@ def capture_replay(
         project_count=project_count,
         success_count=success_count,
         artifacts=artifacts[-1],
+        repository_url=provenance[0],
+        repository_branch=provenance[1],
+        repository_tag=provenance[2],
+        repository_tracked_size_bytes=provenance[3],
+        repository_tracked_file_count=provenance[4],
+        repository_submodules=provenance[5],
+        repository_lfs_required=provenance[6],
+        repository_history_complete=provenance[7],
+        benchmark_version=benchmark_version,
     )
     if success_verified:
         limitations.append(
@@ -228,6 +326,15 @@ def capture_replay(
         source_manifest_sha256=source_hash,
         artifacts=artifacts[-1],
         limitations=tuple(limitations),
+        repository_url=provenance[0],
+        repository_branch=provenance[1],
+        repository_tag=provenance[2],
+        repository_tracked_size_bytes=provenance[3],
+        repository_tracked_file_count=provenance[4],
+        repository_submodules=provenance[5],
+        repository_lfs_required=provenance[6],
+        repository_history_complete=provenance[7],
+        benchmark_version=benchmark_version,
     )
 
 
@@ -254,6 +361,15 @@ def _manifest(
     source_manifest_sha256: str | None,
     artifacts: SnapshotArtifacts,
     limitations: tuple[str, ...],
+    repository_url: str | None,
+    repository_branch: str | None,
+    repository_tag: str | None,
+    repository_tracked_size_bytes: int | None,
+    repository_tracked_file_count: int | None,
+    repository_submodules: tuple[tuple[str, str], ...],
+    repository_lfs_required: bool | None,
+    repository_history_complete: bool | None,
+    benchmark_version: str,
 ) -> BenchmarkManifest:
     return BenchmarkManifest(
         benchmark_id=benchmark_id,
@@ -283,6 +399,16 @@ def _manifest(
         source_manifest_sha256=source_manifest_sha256,
         artifacts=artifacts,
         limitations=limitations,
+        repository_url=repository_url,
+        repository_branch=repository_branch,
+        repository_tag=repository_tag,
+        repository_tracked_size_bytes=repository_tracked_size_bytes,
+        repository_tracked_file_count=repository_tracked_file_count,
+        repository_submodules=repository_submodules,
+        repository_lfs_required=repository_lfs_required,
+        repository_history_complete=repository_history_complete,
+        runtime_dependencies=_runtime_dependencies(),
+        benchmark_version=benchmark_version,
     )
 
 
@@ -371,6 +497,30 @@ def _analysis_counts(
     return len(runs), success, len(runs) - success, analysis_order
 
 
+def _deterministic_analysis_report(
+    report: Mapping[str, object],
+    repository_root: Path,
+) -> Mapping[str, object]:
+    """Project the CLI report without machine paths or timing observations."""
+
+    projected = portable_value(report, repository_root)
+    if not isinstance(projected, Mapping):
+        raise RuntimeError("portable Atlas analysis report must be an object")
+    result = dict(projected)
+    raw_runs = result.get("runs")
+    if not isinstance(raw_runs, list):
+        raise RuntimeError("portable Atlas analysis report must contain runs")
+    runs: list[dict[str, object]] = []
+    for raw_run in raw_runs:
+        if not isinstance(raw_run, Mapping):
+            raise RuntimeError("portable Atlas analysis run must be an object")
+        run = dict(raw_run)
+        run.pop("duration_ms", None)
+        runs.append(run)
+    result["runs"] = runs
+    return result
+
+
 def _verify_artifact_determinism(
     values: list[SnapshotArtifacts],
     *,
@@ -386,6 +536,12 @@ def _verify_artifact_determinism(
         "project_count",
         "workspace_project_order_sha256",
         "analysis_order_sha256",
+        "analysis_order",
+        "workspace_projects",
+        "portable_semantic_sha256",
+        "risk_sha256",
+        "knowledge_graph_sha256",
+        "deterministic_ordering_sha256",
         *(
             ("snapshot_size_bytes", "snapshot_sha256", "snapshot_id")
             if exact_snapshot
@@ -438,7 +594,143 @@ def _repository_identity(
     ]
 
 
-def _atlas_commit() -> str:
+def _repository_provenance(
+    root: Path,
+    *,
+    git_backed: bool,
+    repository_url: str | None,
+    repository_branch: str | None,
+    repository_tag: str | None,
+) -> tuple[
+    str | None,
+    str | None,
+    str | None,
+    int | None,
+    int | None,
+    tuple[tuple[str, str], ...],
+    bool | None,
+    bool | None,
+]:
+    """Collect immutable Git-tree metadata without measuring checkout noise."""
+
+    if not git_backed:
+        return (
+            repository_url,
+            repository_branch,
+            repository_tag,
+            None,
+            None,
+            (),
+            None,
+            None,
+        )
+    remotes = set(_git_required(root, "remote").splitlines())
+    actual_url = (
+        _git_required(root, "remote", "get-url", "origin")
+        if "origin" in remotes
+        else None
+    )
+    if repository_url is not None and actual_url != repository_url:
+        raise ValueError(
+            f"benchmark repository URL mismatch: {actual_url!r} != {repository_url!r}"
+        )
+    if repository_tag is not None:
+        tagged_commit = _git_required(
+            root,
+            "rev-parse",
+            f"{repository_tag}^{{commit}}",
+        )
+        if tagged_commit != _git_head(root):
+            raise ValueError("benchmark repository tag does not resolve to HEAD")
+    tracked_size = 0
+    tracked_files = 0
+    submodules: list[tuple[str, str]] = []
+    tree = _git_required(root, "ls-tree", "-r", "-l", "-z", "HEAD")
+    for entry in tree.split("\0"):
+        if not entry:
+            continue
+        metadata_text, separator, path = entry.partition("\t")
+        if not separator:
+            raise RuntimeError("benchmark Git tree entry is malformed")
+        fields = metadata_text.split()
+        if len(fields) != 4:
+            raise RuntimeError("benchmark Git tree metadata is malformed")
+        mode, kind, object_id, size = fields
+        if mode == "160000" and kind == "commit":
+            submodules.append((path, object_id))
+            continue
+        if kind != "blob" or not size.isdecimal():
+            raise RuntimeError("benchmark Git tree contains an unsupported entry")
+        tracked_files += 1
+        tracked_size += int(size)
+    if submodules:
+        status = _git_required(root, "submodule", "status", "--recursive")
+        if any(line.startswith(("-", "+", "U")) for line in status.splitlines()):
+            raise ValueError("benchmark repository submodules are not fully pinned")
+    lfs_required = False
+    names = _git_required(root, "ls-tree", "-r", "--name-only", "-z", "HEAD")
+    for path in names.split("\0"):
+        if path == ".gitattributes" or path.endswith("/.gitattributes"):
+            attributes = _git_required(root, "show", f"HEAD:{path}")
+            if re.search(r"\bfilter\s*=\s*lfs\b", attributes):
+                lfs_required = True
+                break
+    recorded_url = repository_url
+    if recorded_url is None and actual_url is not None and re.fullmatch(
+        r"https://[^/@\s]+/[^\s]+", actual_url
+    ) is not None:
+        recorded_url = actual_url
+    return (
+        recorded_url,
+        repository_branch,
+        repository_tag,
+        tracked_size,
+        tracked_files,
+        tuple(sorted(submodules)),
+        lfs_required,
+        _repository_history_complete(root),
+    )
+
+
+def _repository_history_complete(root: Path) -> bool:
+    """Return whether Git reports full history and a full-object checkout."""
+
+    value = _git_required(root, "rev-parse", "--is-shallow-repository").casefold()
+    if value == "true":
+        return False
+    if value != "false":
+        raise RuntimeError(f"benchmark Git returned an invalid shallow state: {value!r}")
+    return not _repository_is_partial_clone(root)
+
+
+def _repository_is_partial_clone(root: Path) -> bool:
+    extension = _git_config_value(root, "extensions.partialClone")
+    if extension:
+        return True
+    promisor = _git_config_value(root, "remote.origin.promisor")
+    return promisor is not None and promisor.casefold() == "true"
+
+
+def _git_config_value(root: Path, key: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "-C", str(root), "config", "--get", key],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=30,
+    )
+    if completed.returncode == 1:
+        return None
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "benchmark Git configuration query failed: "
+            + (completed.stderr.strip() or completed.stdout.strip())
+        )
+    return completed.stdout.strip()
+
+
+def _atlas_commit(expected: str | None = None) -> str:
     commit = _git_head(_ATLAS_ROOT)
     if commit is None:
         raise ValueError("Atlas benchmark runner requires a Git checkout")
@@ -447,7 +739,48 @@ def _atlas_commit() -> str:
     dirty = _working_tree_status(_ATLAS_ROOT)
     if dirty:
         raise ValueError("Atlas worktree has tracked or untracked modifications")
+    if expected is not None:
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected) is None:
+            raise ValueError("expected Atlas commit must be a full lowercase Git object ID")
+        if commit != expected:
+            raise ValueError(f"Atlas commit mismatch: {commit} != {expected}")
     return commit
+
+
+def _runtime_dependencies() -> tuple[tuple[str, str], ...]:
+    """Record the deterministic full installed-distribution inventory."""
+
+    inventory: dict[str, str] = {}
+    for distribution in metadata.distributions():
+        raw_name = distribution.metadata.get("Name")
+        version = distribution.version
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise RuntimeError("installed distribution has no canonical name")
+        if not isinstance(version, str) or not version.strip():
+            raise RuntimeError(f"installed distribution has no version: {raw_name}")
+        name = re.sub(r"[-_.]+", "-", raw_name).casefold()
+        existing = inventory.get(name)
+        if existing is not None and existing != version:
+            raise RuntimeError(
+                f"installed distribution has conflicting versions: {name}"
+            )
+        inventory[name] = version
+    return tuple(sorted(inventory.items()))
+
+
+def _reset_atlas_state(root: Path) -> None:
+    """Remove only ROOT/.atlas after resolving and validating that exact target."""
+
+    resolved_root = root.resolve()
+    unresolved = resolved_root / ".atlas"
+    if not unresolved.exists() and not unresolved.is_symlink():
+        return
+    target = unresolved.resolve()
+    if target.parent != resolved_root or target.name != ".atlas":
+        raise ValueError("benchmark Atlas state resolves outside the repository root")
+    if not target.is_dir() or target.is_symlink():
+        raise ValueError("benchmark Atlas state must be a local directory")
+    shutil.rmtree(target)
 
 
 def _git_head(root: Path) -> str | None:
@@ -540,6 +873,15 @@ def _replay_provenance(
     project_count: int,
     success_count: int,
     artifacts: SnapshotArtifacts,
+    repository_url: str | None,
+    repository_branch: str | None,
+    repository_tag: str | None,
+    repository_tracked_size_bytes: int | None,
+    repository_tracked_file_count: int | None,
+    repository_submodules: tuple[tuple[str, str], ...],
+    repository_lfs_required: bool | None,
+    repository_history_complete: bool | None,
+    benchmark_version: str,
 ) -> tuple[bool, str | None]:
     if source is None:
         return False, None
@@ -549,6 +891,31 @@ def _replay_provenance(
         ("repository name", source.repository_name, repository_name),
         ("repository commit", source.repository_commit, repository_commit),
         ("checkout identity", source.checkout_identity, checkout_identity),
+        ("repository URL", source.repository_url, repository_url),
+        ("repository branch", source.repository_branch, repository_branch),
+        ("repository tag", source.repository_tag, repository_tag),
+        (
+            "repository tracked size",
+            source.repository_tracked_size_bytes,
+            repository_tracked_size_bytes,
+        ),
+        (
+            "repository tracked file count",
+            source.repository_tracked_file_count,
+            repository_tracked_file_count,
+        ),
+        ("repository submodules", source.repository_submodules, repository_submodules),
+        (
+            "repository LFS requirement",
+            source.repository_lfs_required,
+            repository_lfs_required,
+        ),
+        (
+            "repository history completeness",
+            source.repository_history_complete,
+            repository_history_complete,
+        ),
+        ("benchmark version", source.benchmark_version, benchmark_version),
         ("project count", source.project_count, project_count),
         ("success count", source.success_count, success_count),
         (
@@ -629,7 +996,12 @@ def _emit(value: str, output: Path | None, *, overwrite: bool = False) -> None:
 def _common_capture_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repository-name", required=True)
     parser.add_argument("--repository-commit")
+    parser.add_argument("--repository-url")
+    parser.add_argument("--repository-branch")
+    parser.add_argument("--repository-tag")
     parser.add_argument("--checkout-identity")
+    parser.add_argument("--expected-atlas-commit")
+    parser.add_argument("--benchmark-version", default="m1.1")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--observed-at")
     parser.add_argument("--allow-unpinned", action="store_true")
@@ -644,6 +1016,8 @@ def main(argv: list[str] | None = None) -> int:
     analyze.add_argument("repository_root", type=Path)
     analyze.add_argument("--workers", type=int, default=1)
     analyze.add_argument("--timeout-seconds", type=int, default=7_200)
+    analyze.add_argument("--expected-project-count", type=int)
+    analyze.add_argument("--reset-atlas-state", action="store_true")
     _common_capture_options(analyze)
     replay = commands.add_parser("replay", help="Replay an existing ASS artifact.")
     replay.add_argument("snapshot", type=Path)
@@ -669,6 +1043,13 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=arguments.timeout_seconds,
             observed_at_utc=arguments.observed_at,
             allow_unpinned=arguments.allow_unpinned,
+            repository_url=arguments.repository_url,
+            repository_branch=arguments.repository_branch,
+            repository_tag=arguments.repository_tag,
+            expected_project_count=arguments.expected_project_count,
+            expected_atlas_commit=arguments.expected_atlas_commit,
+            reset_atlas_state=arguments.reset_atlas_state,
+            benchmark_version=arguments.benchmark_version,
         )
         _emit(
             result.to_json(),
@@ -688,13 +1069,16 @@ def main(argv: list[str] | None = None) -> int:
             repeats=arguments.repeats,
             observed_at_utc=arguments.observed_at,
             allow_unpinned=arguments.allow_unpinned,
+            repository_url=arguments.repository_url,
+            repository_branch=arguments.repository_branch,
+            repository_tag=arguments.repository_tag,
+            expected_atlas_commit=arguments.expected_atlas_commit,
             source_manifest=(
                 None
                 if arguments.source_manifest is None
-                else BenchmarkManifest.from_json(
-                    arguments.source_manifest.read_text(encoding="utf-8")
-                )
+                else BenchmarkManifest.from_file(arguments.source_manifest)
             ),
+            benchmark_version=arguments.benchmark_version,
         )
         _emit(
             result.to_json(),
@@ -702,8 +1086,8 @@ def main(argv: list[str] | None = None) -> int:
             overwrite=arguments.force_output,
         )
         return 0
-    baseline = BenchmarkManifest.from_json(arguments.baseline.read_text(encoding="utf-8"))
-    current = BenchmarkManifest.from_json(arguments.current.read_text(encoding="utf-8"))
+    baseline = BenchmarkManifest.from_file(arguments.baseline)
+    current = BenchmarkManifest.from_file(arguments.current)
     comparison = compare_manifests(baseline, current)
     _emit(
         comparison.to_json(),

@@ -74,9 +74,11 @@ history identity but remains path-scoped. A benchmark manifest records a
 non-sensitive logical checkout identity and treats a different identity as
 incomparable; it never persists usernames or absolute paths.
 
-Atlas must not delete arbitrary fields merely to make a hash portable. A future
-portable identity requires a versioned compatibility decision and a concrete
-consumer.
+Atlas must not delete arbitrary fields merely to make a hash portable. M1.1 adds a
+versioned portable projection for external repository baselines. It replaces only
+the verified checkout root, its encoded forms, and the path-scoped workspace
+fingerprint; the raw artifact hash remains an integrity record. The exact contract
+is documented in `M1_1_CANONICAL_BASELINE.md`.
 
 ## Backward compatibility
 

@@ -1,0 +1,58 @@
+{
+  "artifacts": {
+    "analysis_order_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "analysis_report_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "explain_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "repository_report_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "semantic_payload_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "snapshot_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "snapshot_size_bytes": 1024,
+    "workspace_project_order_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "atlas": {
+    "commit": "1111111111111111111111111111111111111111",
+    "version": "2.0.0"
+  },
+  "baseline_eligible": true,
+  "benchmark_id": "fixture",
+  "environment": {
+    "architecture": "AMD64",
+    "os": "Windows",
+    "os_release": "11",
+    "python_implementation": "CPython",
+    "python_version": "3.12.10"
+  },
+  "execution": {
+    "analysis_duration_ms": [
+      1000,
+      1100,
+      900
+    ],
+    "cache_mode": "force-no-recover",
+    "measurement_scope": "atlas-analyze-subprocess",
+    "median_duration_ms": 1000,
+    "observed_at_utc": "2026-08-01T12:00:00Z",
+    "repeat_count": 3,
+    "replay_duration_ms": [],
+    "workers": 1
+  },
+  "format": "atlas-benchmark-manifest",
+  "limitations": [],
+  "mode": "fresh-analysis",
+  "repository": {
+    "checkout_identity": "fixture-root-v1",
+    "commit": "2222222222222222222222222222222222222222",
+    "name": "Fixture Repository",
+    "revision_verified": true
+  },
+  "results": {
+    "analysis_success_verified": true,
+    "failure_count": 0,
+    "project_count": 2,
+    "source": "analysis-report",
+    "source_manifest_sha256": null,
+    "success_count": 2
+  },
+  "schema_version": 1
+}

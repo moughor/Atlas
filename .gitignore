@@ -29,3 +29,4 @@ PR*_Delivery.zip
 # Local benchmark run artifacts
 benchmarks/Maven/
 benchmarks/results/
+benchmarks/checkouts/

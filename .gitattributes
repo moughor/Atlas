@@ -2,3 +2,4 @@
 tests/fixtures/*.ass text eol=lf
 tests/fixtures/*.json text eol=lf
 benchmarks/baselines/*.json text eol=lf
+benchmarks/repositories.json text eol=lf

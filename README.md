@@ -95,18 +95,21 @@ supported surface and compatibility policy.
 
 ## Performance
 
-M1 adds a repository-neutral runner that records pinned provenance, exact project
-results, deterministic hashes, environment identity, and timing samples without
-hardcoding Maven, Quarkus, or any other repository:
+M1.1 adds pinned repository definitions and a canonical orchestration layer around
+the repository-neutral M1 runner. It records exact provenance, project results,
+portable deterministic hashes, environment identity, and timing samples without
+adding repository-specific behavior to Atlas analysis:
 
 ```text
+python -m benchmarks.canonical_baseline list
+python -m benchmarks.canonical_baseline --help
 python -m benchmarks.repository_benchmark --help
 ```
 
 See [`benchmarks/README.md`](benchmarks/README.md) and the
 [`docs/stability/`](docs/stability/) strategies before accepting or updating a
-baseline. Raw ASS hashes prove artifact integrity but are not portable semantic
-goldens because capture history and workspace roots participate in snapshot data.
+baseline. Raw ASS hashes prove artifact integrity. Schema-2 manifests also record a
+versioned portable semantic projection for cross-root regression comparison.
 
 Run the reproducible large-workspace benchmark:
 

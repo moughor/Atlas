@@ -1,0 +1,41 @@
+{
+  "benchmark_version": "m1.1",
+  "format": "atlas-benchmark-repositories",
+  "repositories": [
+    {
+      "branch": "master",
+      "checkout_identity": "apache-maven-m1-1",
+      "commit": "3e01a12e9eacd2b336f4db786d54e35647ce268c",
+      "expected_project_count": 92,
+      "history_complete": true,
+      "lfs_required": false,
+      "name": "Apache Maven",
+      "repository_id": "apache-maven",
+      "submodules": [],
+      "tag": null,
+      "timeout_seconds": 7200,
+      "tracked_file_count": 10122,
+      "tracked_size_bytes": 28136721,
+      "url": "https://github.com/apache/maven.git",
+      "workers": 1
+    },
+    {
+      "branch": "main",
+      "checkout_identity": "quarkus-m1-1",
+      "commit": "bbc0853aef94c567bac2cc4a98d51c90fb423648",
+      "expected_project_count": 1442,
+      "history_complete": true,
+      "lfs_required": false,
+      "name": "Quarkus",
+      "repository_id": "quarkus",
+      "submodules": [],
+      "tag": null,
+      "timeout_seconds": 14400,
+      "tracked_file_count": 31433,
+      "tracked_size_bytes": 128026844,
+      "url": "https://github.com/quarkusio/quarkus.git",
+      "workers": 1
+    }
+  ],
+  "schema_version": 1
+}
