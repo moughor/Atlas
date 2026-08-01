@@ -45,10 +45,9 @@ class AtlasSemanticSnapshot:
         analyzer_version: str,
         history_reference: int | str | None = None,
     ) -> AtlasSemanticSnapshot:
-        if not workspace_fingerprint.strip() or not analyzer_version.strip():
-            raise SemanticSnapshotError(
-                "workspace fingerprint and analyzer version must not be empty"
-            )
+        _validate_non_empty_string(workspace_fingerprint, "workspace fingerprint")
+        _validate_non_empty_string(analyzer_version, "analyzer version")
+        _validate_history_reference(history_reference)
         payload = {
             "schema_version": SEMANTIC_SNAPSHOT_SCHEMA_VERSION,
             "workspace_fingerprint": workspace_fingerprint,
@@ -56,7 +55,14 @@ class AtlasSemanticSnapshot:
             "history_reference": history_reference,
             "semantic_context": context.to_dict(),
         }
-        snapshot_id = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+        try:
+            snapshot_id = hashlib.sha256(
+                canonical_json(payload).encode("utf-8")
+            ).hexdigest()
+        except (TypeError, ValueError) as exc:
+            raise SemanticSnapshotError(
+                "semantic snapshot must contain deterministic JSON data"
+            ) from exc
         return cls(snapshot_id=snapshot_id, **payload)
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,20 +81,25 @@ class AtlasSemanticSnapshot:
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> AtlasSemanticSnapshot:
         try:
-            schema = int(data["schema_version"])
-            snapshot_id = str(data["snapshot_id"])
-            workspace_fingerprint = str(data["workspace_fingerprint"])
-            analyzer_version = str(data["analyzer_version"])
+            raw_schema = data["schema_version"]
+            snapshot_id = data["snapshot_id"]
+            workspace_fingerprint = data["workspace_fingerprint"]
+            analyzer_version = data["analyzer_version"]
             history_reference = data.get("history_reference")
             semantic_context = data["semantic_context"]
         except (KeyError, TypeError, ValueError) as exc:
             raise SemanticSnapshotError("semantic snapshot is missing required fields") from exc
+        if isinstance(raw_schema, bool) or not isinstance(raw_schema, int):
+            raise SemanticSnapshotError("semantic snapshot schema must be an integer")
+        _validate_non_empty_string(snapshot_id, "snapshot identifier")
+        _validate_non_empty_string(workspace_fingerprint, "workspace fingerprint")
+        _validate_non_empty_string(analyzer_version, "analyzer version")
+        schema = raw_schema
         if schema != SEMANTIC_SNAPSHOT_SCHEMA_VERSION:
             raise SemanticSnapshotError(f"unsupported semantic snapshot schema: {schema}")
         if not isinstance(semantic_context, Mapping):
             raise SemanticSnapshotError("semantic_context must be an object")
-        if history_reference is not None and not isinstance(history_reference, (int, str)):
-            raise SemanticSnapshotError("history_reference must be an integer, string, or null")
+        _validate_history_reference(history_reference)
         candidate = cls(
             schema,
             workspace_fingerprint,
@@ -99,7 +110,28 @@ class AtlasSemanticSnapshot:
         )
         deterministic = dict(candidate.to_dict())
         deterministic.pop("snapshot_id")
-        expected = hashlib.sha256(canonical_json(deterministic).encode("utf-8")).hexdigest()
+        try:
+            expected = hashlib.sha256(
+                canonical_json(deterministic).encode("utf-8")
+            ).hexdigest()
+        except (TypeError, ValueError) as exc:
+            raise SemanticSnapshotError(
+                "semantic snapshot must contain deterministic JSON data"
+            ) from exc
         if snapshot_id != expected:
             raise SemanticSnapshotError("semantic snapshot identifier mismatch")
         return candidate
+
+
+def _validate_history_reference(value: object) -> None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, (int, str))
+    ):
+        raise SemanticSnapshotError(
+            "history_reference must be an integer, string, or null"
+        )
+
+
+def _validate_non_empty_string(value: object, name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise SemanticSnapshotError(f"semantic snapshot {name} must not be empty")

@@ -1,5 +1,10 @@
 # Atlas Architecture Review Request
 
+> **Historical review input.** This request predates the current PR127-PR134
+> repository-intelligence pipeline and is not a normative architecture document.
+> Current constraints live in `docs/ARCHITECTURE.md`,
+> `docs/architecture/ENGINEERING_PRINCIPLES.md`, and the official roadmap.
+
 Audience:
 Kiro
 

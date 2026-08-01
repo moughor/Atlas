@@ -199,15 +199,15 @@ ADR-0011
 
 # ADR Index
 
-## Core Architecture
+Only ADR files present under `docs/architecture/decisions/` are normative. Earlier
+roadmap or review references without a tracked ADR file are historical labels, not
+accepted decision records.
+
+## Tracked decisions
 
 | ADR | Title | Status |
 |------|-------|--------|
-| ADR-0001 | Java-first Semantic Engine | Implemented |
-| ADR-0002 | Semantic Snapshot (.ass) Format | Implemented |
-| ADR-0003 | Workspace Model | Implemented |
-| ADR-0004 | AI Explain Pipeline | Implemented |
-| ADR-0005 | Ollama Provider Abstraction | Implemented |
+| ADR-0007 | Python Semantic Analyzer | Implemented |
 | ADR-0011 | Project-Scoped Symbol Identity | Implemented |
 | ADR-0012 | Analyzer Registry | Implemented |
 | ADR-0013 | Cross-Language Semantic Graph | Implemented |
@@ -217,15 +217,8 @@ ADR-0011
 
 ---
 
-## Planned
-
-| ADR | Title | Status |
-|------|-------|--------|
-| ADR-0006 | Analyzer Registry | Planned |
-| ADR-0007 | Python Semantic Analyzer | Implemented |
-| ADR-0008 | Multi-Language Semantic Graph | Planned |
-| ADR-0009 | Knowledge Graph Architecture | Planned |
-| ADR-0010 | AI Agent Framework | Planned |
+Future work is defined by `docs/roadmap/IMPLEMENTATION_ROADMAP.md`. It must not be
+promoted to an ADR index entry until a corresponding decision record exists.
 
 ---
 
@@ -392,10 +385,8 @@ docs/
 └── architecture/
     ├── ARCHITECTURAL_DECISIONS.md
     └── decisions/
-        ├── ADR-0001-JAVA_FIRST_SEMANTIC_ENGINE.md
-        ├── ADR-0002-SEMANTIC_SNAPSHOT_FORMAT.md
-        ├── ADR-0003-WORKSPACE_MODEL.md
-        ├── ADR-0004-AI_EXPLAIN_PIPELINE.md
+        ├── ADR-0007-PYTHON_SEMANTIC_ANALYZER.md
+        ├── ADR-0011-PROJECT_SCOPED_SYMBOL_IDENTITY.md
         └── ...
 ```
 

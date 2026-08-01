@@ -50,6 +50,7 @@ def public_api_manifest() -> dict[str, str]:
     return {
         name: str(inspect.signature(namespace[name]))
         for name in sorted(PUBLIC_API_SIGNATURES)
+        if name in namespace
     }
 
 

@@ -1,5 +1,5 @@
 """
-Atlas - Java Semantic Analysis Platform
+Atlas - deterministic multi-language static-analysis platform
 """
 
 from .version import __version__

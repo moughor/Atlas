@@ -1,0 +1,22 @@
+{
+  "public_api_version": "1.0",
+  "signatures": {
+    "AnalysisApiService": "(analyzer: 'Callable[[AnalysisRequest], Any]', *, id_factory: 'Callable[[], str] | None' = None) -> 'None'",
+    "AnalysisRequest": "(project: 'str', targets: 'tuple[str, ...]' = (), options: 'tuple[tuple[str, str], ...]' = (), request_id: 'str' = '') -> None",
+    "AnalysisResult": "(findings: 'tuple[Mapping[str, Any], ...]' = (), metrics: 'tuple[tuple[str, int | float | str], ...]' = ()) -> None",
+    "PersistentProjectIndex": "(indexer: 'ProjectFileIndexer | None' = None, store: 'ProjectIndexStore | None' = None) -> 'None'",
+    "PluginContext": "(services: 'Mapping[str, Any] | None' = None) -> 'None'",
+    "PluginManifest": "(plugin_id: 'str', version: 'str', api_version: 'str', name: 'str', extensions: 'tuple[PluginExtension, ...]', description: 'str' = '', requires: 'tuple[str, ...]' = (), permissions: 'tuple[str, ...]' = (), metadata: 'Mapping[str, Any]' = <factory>) -> None",
+    "PluginRegistry": "(*, api_version: 'str' = '1.0.0') -> 'None'",
+    "Project": "(name: 'str', path: 'Path', dependencies: 'tuple[str, ...]' = (), include: 'tuple[str, ...]' = ('**/*',), exclude: 'tuple[str, ...]' = (), options: 'tuple[tuple[str, str], ...]' = ()) -> None",
+    "ProjectFileIndexer": "(scanner: 'ProjectScanner | None' = None, *, chunk_size: 'int' = 1048576) -> 'None'",
+    "ResolvedConfiguration": "(values: 'Mapping[str, Any]', provenance: 'Mapping[str, str]', layers: 'tuple[str, ...]') -> None",
+    "RuleContext": "(path: 'Path', source: 'str', language: 'str', configuration: 'Mapping[str, Any]') -> None",
+    "RuleFinding": "(rule_id: 'str', message: 'str', severity: 'RuleSeverity', location: 'RuleLocation', data: 'tuple[tuple[str, Any], ...]' = ()) -> None",
+    "RuleRegistry": "(rules: 'Iterable[Rule]' = ()) -> 'None'",
+    "RuleRunner": "()",
+    "Workspace": "(root: 'Path', projects: 'tuple[Project, ...]', config_path: 'Path | None' = None, options: 'tuple[tuple[str, str], ...]' = ()) -> None",
+    "WorkspaceAnalysisOrchestrator": "(service: 'WorkspaceService', *, planner: 'IncrementalWorkspacePlanner | None' = None) -> 'None'",
+    "WorkspaceEventBus": "(*, history_limit: 'int' = 100, correlation_id: 'str | None' = None) -> 'None'"
+  }
+}

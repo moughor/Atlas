@@ -95,6 +95,19 @@ supported surface and compatibility policy.
 
 ## Performance
 
+M1 adds a repository-neutral runner that records pinned provenance, exact project
+results, deterministic hashes, environment identity, and timing samples without
+hardcoding Maven, Quarkus, or any other repository:
+
+```text
+python -m benchmarks.repository_benchmark --help
+```
+
+See [`benchmarks/README.md`](benchmarks/README.md) and the
+[`docs/stability/`](docs/stability/) strategies before accepting or updating a
+baseline. Raw ASS hashes prove artifact integrity but are not portable semantic
+goldens because capture history and workspace roots participate in snapshot data.
+
 Run the reproducible large-workspace benchmark:
 
 ```text
@@ -134,9 +147,9 @@ python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-The final PR133 validation completed 3,575 passing tests with one explicitly
-skipped test. Benchmark timings are machine-dependent and are deliberately not
-used as pass/fail thresholds.
+The M1 stabilization validation completed 3,681 passing tests with one explicitly
+skipped test. Benchmark timings are machine-dependent and follow the documented
+comparison thresholds rather than acting as unqualified pass/fail evidence.
 
 Atlas is distributed under the MIT License.
 # Atlas AI 1.0

@@ -1,5 +1,10 @@
 # Atlas Architecture Overview
 
+> **Historical, non-normative document.** This overview predates the completed
+> Python analyzer, canonical Knowledge Graph, repository-report, and deterministic
+> explanation pipeline. Use `docs/ARCHITECTURE.md` for the current architecture and
+> ownership boundaries. The content below is retained only as design history.
+
 > Version: 1.0
 >
 > Status: Living Document

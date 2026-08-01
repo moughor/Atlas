@@ -1,0 +1,35 @@
+{
+  "checksum": "316c21a60d237db229a4d168497131cbf7434afb967258f3ce0052dfd0478224",
+  "format": "atlas-semantic-snapshot",
+  "snapshot": {
+    "analyzer_version": "1.0.0",
+    "history_reference": 1,
+    "schema_version": 1,
+    "semantic_context": {
+      "diagnostics": [],
+      "history": [],
+      "metrics": [],
+      "repository_summary": {
+        "build_systems": [],
+        "entry_points": [],
+        "frameworks": [],
+        "language_file_counts": {},
+        "module_hierarchy": [],
+        "project_count": 0,
+        "projects": [],
+        "repository_name": "minimal-v1-fixture",
+        "root": ".",
+        "schema_version": 1
+      },
+      "schema_version": 1,
+      "symbols": [],
+      "types": {},
+      "workspace": {
+        "projects": [],
+        "root": "."
+      }
+    },
+    "snapshot_id": "f12c4697456d84a7c7b134a35eacf80a43339ea878739c47b762c42f3a571f99",
+    "workspace_fingerprint": "fixture-workspace-v1"
+  }
+}

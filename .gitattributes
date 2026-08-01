@@ -1,0 +1,4 @@
+# Byte-golden compatibility fixtures and benchmark baselines use canonical LF bytes.
+tests/fixtures/*.ass text eol=lf
+tests/fixtures/*.json text eol=lf
+benchmarks/baselines/*.json text eol=lf

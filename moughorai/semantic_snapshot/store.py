@@ -65,27 +65,48 @@ class SemanticSnapshotStore:
         historical = self.directory / f"{timestamp}.ass"
         with self._lock:
             self.directory.mkdir(parents=True, exist_ok=True)
-            if historical.exists():
-                if historical.read_text(encoding="utf-8") != text:
-                    historical = self.directory / f"{timestamp}-{snapshot.snapshot_id[:12]}.ass"
-                    if historical.exists() and historical.read_text(encoding="utf-8") != text:
-                        raise SemanticSnapshotError(
-                            f"semantic snapshot identifier collision: {historical.name}"
-                        )
-                    if not historical.exists():
-                        self._atomic_write(historical, text, replace=False)
-            else:
-                self._atomic_write(historical, text, replace=False)
+            historical = self._write_historical(
+                historical,
+                text,
+                snapshot.snapshot_id,
+            )
             self._atomic_write(self.latest_path, text, replace=True)
         return historical
+
+    def _write_historical(
+        self,
+        historical: Path,
+        text: str,
+        snapshot_id: str,
+    ) -> Path:
+        try:
+            self._atomic_write(historical, text, replace=False)
+            return historical
+        except SemanticSnapshotError:
+            if historical.read_text(encoding="utf-8") == text:
+                return historical
+        suffixed = historical.with_name(
+            f"{historical.stem}-{snapshot_id[:12]}{historical.suffix}"
+        )
+        try:
+            self._atomic_write(suffixed, text, replace=False)
+        except SemanticSnapshotError:
+            if suffixed.read_text(encoding="utf-8") != text:
+                raise SemanticSnapshotError(
+                    f"semantic snapshot identifier collision: {suffixed.name}"
+                )
+        return suffixed
 
     def load(self, path: str | Path | None = None) -> AtlasSemanticSnapshot | None:
         target = Path(path) if path is not None else self.latest_path
         if not target.exists():
             return None
         try:
-            envelope = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            envelope = json.loads(
+                target.read_text(encoding="utf-8"),
+                parse_constant=self._reject_non_finite,
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
             raise SemanticSnapshotError(f"cannot read semantic snapshot: {exc}") from exc
         if not isinstance(envelope, dict) or envelope.get("format") != SEMANTIC_SNAPSHOT_FORMAT:
             raise SemanticSnapshotError("semantic snapshot envelope is invalid")
@@ -113,13 +134,31 @@ class SemanticSnapshotStore:
 
     @staticmethod
     def _serialize(snapshot: AtlasSemanticSnapshot) -> str:
-        payload = snapshot.to_dict()
+        # The snapshot boundary is shallowly immutable for compatibility. Revalidate
+        # its complete nested payload immediately before persistence so a caller
+        # cannot save an artifact whose identifier no longer matches its content.
+        payload = AtlasSemanticSnapshot.from_dict(snapshot.to_dict()).to_dict()
         envelope = {
             "format": SEMANTIC_SNAPSHOT_FORMAT,
             "checksum": hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest(),
             "snapshot": payload,
         }
-        return json.dumps(envelope, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        try:
+            return json.dumps(
+                envelope,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            ) + "\n"
+        except (TypeError, ValueError) as exc:
+            raise SemanticSnapshotError(
+                "persisted semantic snapshots must contain finite JSON data"
+            ) from exc
+
+    @staticmethod
+    def _reject_non_finite(value: str) -> None:
+        raise ValueError(f"non-finite JSON number is not supported: {value}")
 
     @staticmethod
     def _timestamp(value: datetime) -> str:
@@ -136,9 +175,15 @@ class SemanticSnapshotStore:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
-            if not replace and path.exists():
-                raise SemanticSnapshotError(f"semantic snapshot already exists: {path.name}")
-            os.replace(temporary_path, path)
+            if replace:
+                os.replace(temporary_path, path)
+            else:
+                try:
+                    os.link(temporary_path, path)
+                except FileExistsError as exc:
+                    raise SemanticSnapshotError(
+                        f"semantic snapshot already exists: {path.name}"
+                    ) from exc
         finally:
             if temporary_path.exists():
                 temporary_path.unlink()
