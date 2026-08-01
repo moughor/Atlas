@@ -1,5 +1,34 @@
 # Changelog
 
+## PR134 — Explain Anything
+
+- Added the first canonical subject resolver over PR129 identities with exact-ID,
+  scoped qualified-name, and unique normalized-name resolution plus bounded explicit
+  ambiguity candidates.
+- Added immutable structured explanations for repository/workspace, project,
+  package/module, class/type, method, dependency, framework, build system/real build
+  target, generic symbol, and canonical relationship subjects.
+- Reused PR130 evidence, confidence, lineage, and deterministic-ID contracts; every
+  available or partial fact retains exact traceable evidence closure and limitations.
+- Bound PR131 root and relationship evidence to the persisted path for the requested
+  subject, and kept absent or malformed repository inventory counts unknown instead of
+  manufacturing zero values.
+- Bound PR130 relationship evidence to the finding's canonical participants and
+  rejected non-trivial PR131 paths without their own relationship evidence.
+- Added deterministic whole-fact context selection with a 7,000-token engine ceiling,
+  exact omission counts, stable context digests, and no partial citation records.
+- Replaced targeted full-snapshot prompts with bounded source-free structured context
+  while keeping optional provider prose separate from authoritative facts.
+- Added provider-free canonical JSON output and kind, project, language, relative-path,
+  target, and relation constraints to the existing `atlas ai explain` command.
+- Preserved the accepted default PR133 repository explanation, old snapshots, public
+  request/result field prefixes, conversation memory, and the sole PR129 graph.
+- Attached structured PR134 metadata to default API results without changing PR133
+  Markdown, and hardened deterministic candidate/count parsing plus Windows, POSIX,
+  and repeatedly encoded absolute-path rejection.
+- Added deterministic synthetic 10K/100K/1M indexed-resolution and context-selection
+  benchmark support plus checksum-verified Maven/Quarkus snapshot replay.
+
 ## PR133 — AI Repository Report
 
 - Added one immutable, deterministic repository-report model composed from PR127

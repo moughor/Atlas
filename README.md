@@ -38,10 +38,18 @@ default `atlas ai explain` renders a deterministic 7,000-token projection withou
 requiring an LLM, while older snapshots retain the accepted legacy explanation.
 See [`docs/PR133_AI_REPOSITORY_REPORT.md`](docs/PR133_AI_REPOSITORY_REPORT.md).
 
-The current repository includes completed work through PR133. Recent repository
+PR134 resolves repository subjects against canonical PR129 identities and composes
+bounded, deterministic explanations with exact evidence closure, confidence,
+availability, lineage, limitations, citations, and truncation metadata. Targeted
+`--json` output requires no LLM; optional narrative generation receives only the
+selected source-free explanation rather than the complete semantic snapshot. See
+[`docs/PR134_EXPLAIN_ANYTHING.md`](docs/PR134_EXPLAIN_ANYTHING.md).
+
+The current repository includes completed work through PR134. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
-reachability, deterministic risk/hotspot indicators, and bounded executive reports.
+reachability, deterministic risk/hotspot indicators, bounded executive reports, and
+canonical subject explanations.
 
 ## Install
 
@@ -98,6 +106,8 @@ Replay a semantic snapshot through the PR133 report benchmark:
 ```text
 python -m benchmarks.benchmark_pr133_repository_report path/to/latest.ass
 python -m benchmarks.benchmark_pr133_repository_report --synthetic-projects 10000 --measure-memory
+python -m benchmarks.benchmark_pr134_explain_anything path/to/latest.ass
+python -m benchmarks.benchmark_pr134_explain_anything --nodes 10000 100000 1000000
 ```
 
 The default workload creates 23 projects containing 23,000 source files and
@@ -140,8 +150,10 @@ The default `atlas ai explain` repository overview prefers the persisted PR133
 repository report and is rendered deterministically from a token-bounded,
 source-free projection. It does not send repository
 facts to an LLM, so a provider cannot replace counts, invent technologies, or
-promote weak evidence into facts. Explanations for an explicit `--subject`
-continue to use the configured provider with ASS-grounded context. Metric
+promote weak evidence into facts. Explanations for an explicit `--subject` resolve a
+canonical PR129 identity and construct a bounded structured context. `--json` renders
+that context deterministically without a provider; optional narrative generation can
+use the configured provider but receives no raw source or complete ASS. Metric
 definitions and current limitations are documented in
 [`docs/ATLAS_AI_EXPLAIN_ACCURACY_REVIEW.md`](docs/ATLAS_AI_EXPLAIN_ACCURACY_REVIEW.md).
 
