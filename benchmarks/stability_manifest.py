@@ -39,8 +39,8 @@ _BENCHMARK_ID = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?")
 _MACHINE_PATH = re.compile(
     r"(?ix)(?:"
     r"file://[^\s,;\)\]\}]+"
-    r"|(?<![A-Za-z0-9])[A-Z]:[\\/][^\s,;\)\]\}]+"
-    r"|(?<![:A-Za-z0-9])(?:\\\\|//)[^\s,;\)\]\}]+"
+    r"|(?<![A-Za-z0-9._-])[A-Z]:[\\/][^\s,;\)\]\}]+"
+    r"|(?<![:A-Za-z0-9\\/])(?:\\\\|//)[^\s,;\)\]\}]+"
     r"|(?:^|[\s=:\(\[\{])/(?![/*])[^\s,;\)\]\}]+"
     r")"
 )
@@ -304,9 +304,12 @@ def portable_snapshot_payload(snapshot: object, repository_root: Path) -> dict[s
         "analyzer_version": snapshot.analyzer_version,
         "semantic_context": context,
     }
-    if contains_machine_path(payload):
+    violation = _first_machine_path(payload)
+    if violation is not None:
+        location, sample = violation
         raise ValueError(
-            "portable semantic snapshot still contains an absolute machine path"
+            "portable semantic snapshot still contains an absolute machine path "
+            f"at {location}: {sample!r}"
         )
     return payload
 
@@ -333,6 +336,40 @@ def contains_machine_path(value: object) -> bool:
         if decoded == candidate:
             return False
         candidate = decoded
+
+
+def _first_machine_path(
+    value: object,
+    location: str = "$",
+) -> tuple[str, str] | None:
+    """Return one deterministic, bounded diagnostic for a machine path."""
+
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_location = f"{location}[{json.dumps(str(key), ensure_ascii=False)}]"
+            if contains_machine_path(key):
+                return f"{key_location}.<key>", _bounded_sample(str(key))
+            violation = _first_machine_path(item, key_location)
+            if violation is not None:
+                return violation
+        return None
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        for index, item in enumerate(value):
+            violation = _first_machine_path(item, f"{location}[{index}]")
+            if violation is not None:
+                return violation
+        return None
+    if isinstance(value, str) and contains_machine_path(value):
+        return location, _bounded_sample(value)
+    return None
+
+
+def _bounded_sample(value: str, *, limit: int = 160) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
 
 
 def portable_value(value: object, repository_root: Path) -> object:

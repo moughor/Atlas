@@ -19,6 +19,8 @@ from benchmarks.stability_manifest import (
     canonical_text_digest,
     collect_snapshot_artifacts,
     compare_manifests,
+    contains_machine_path,
+    portable_snapshot_payload,
     portable_value,
 )
 from moughorai.ai_context import WorkspaceSemanticContext
@@ -218,6 +220,90 @@ def test_portable_projection_rejects_normalized_key_collisions(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="key collision"):
         portable_value({str(root): 1, root.as_uri(): 2}, root)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        r"declared_dependency:maven:org.acme.treeshake:lib-a:\${project.version}:compile",
+        r"dependency:maven:org.acme.treeshake%3Alib-e:%5C%24%7Bproject.version%7D:compile",
+        r'''char[]quotedChars="()<>@,;:\\\"/[]?= \t\r\n".''',
+    ),
+)
+def test_machine_path_detection_preserves_quarkus_semantic_syntax(value: str) -> None:
+    assert not contains_machine_path(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        r"C:\Users\alice\repository\pom.xml",
+        r"source=C%3A%5CUsers%5Calice%5Crepository%5Cpom.xml",
+        r"\\server\share\repository\pom.xml",
+        "//server/share/repository/pom.xml",
+        "file:///C:/Users/alice/repository/pom.xml",
+        "/home/alice/repository/pom.xml",
+    ),
+)
+def test_machine_path_detection_still_rejects_real_machine_paths(value: str) -> None:
+    assert contains_machine_path(value)
+
+
+def test_portable_snapshot_accepts_quarkus_semantic_syntax(tmp_path: Path) -> None:
+    dependency_id = (
+        r"dependency:maven:org.acme.treeshake%3Alib-a:"
+        r"%5C%24%7Bproject.version%7D:compile"
+    )
+    context = WorkspaceSemanticContext({
+        "schema_version": 1,
+        "semantic_graph": {
+            "nodes": [{"id": dependency_id}],
+            "edges": [{
+                "target": dependency_id,
+                "evidence": [
+                    r"declared_dependency:maven:org.acme.treeshake:"
+                    r"lib-a:\${project.version}:compile"
+                ],
+            }],
+        },
+        "symbols": [{
+            "metadata": {
+                "return_type": r'''char[]quotedChars="()<>@,;:\\\"/[]?= \t\r\n".'''
+            }
+        }],
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="path-scoped",
+        analyzer_version="2.0.0",
+    )
+
+    projected = portable_snapshot_payload(snapshot, tmp_path)
+
+    assert projected["semantic_context"]["semantic_graph"]["nodes"][0][
+        "id"
+    ] == dependency_id
+
+
+def test_portable_snapshot_reports_machine_path_location(tmp_path: Path) -> None:
+    context = WorkspaceSemanticContext({
+        "schema_version": 1,
+        "symbols": [{"metadata": {"external_path": r"D:\cache\artifact.jar"}}],
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="path-scoped",
+        analyzer_version="2.0.0",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r'\$\["semantic_context"\]\["symbols"\]\[0\]'
+            r'\["metadata"\]\["external_path"\]'
+        ),
+    ):
+        portable_snapshot_payload(snapshot, tmp_path)
 
 
 @pytest.mark.parametrize(
