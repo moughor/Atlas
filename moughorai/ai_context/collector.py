@@ -15,11 +15,13 @@ from moughorai.workspace.files import project_files
 from moughorai.dependency_intelligence import DeclaredDependency
 from moughorai.repository_summary import RepositorySummaryService
 from moughorai.architecture_detection import ArchitectureDetectionService
+from moughorai.ai_git_context import GitContextError, GitContextService
 from moughorai.design_patterns import PatternDetectionService
 from moughorai.call_graph import CallGraph
 from moughorai.java_architecture import JavaArchitectureGraph
 from moughorai.knowledge_graph import KnowledgeGraph
 from moughorai.reachability import ReachabilityAnalysisService
+from moughorai.risk_analysis import RiskAnalysisService
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -87,17 +89,35 @@ class SemanticContextCollector:
             context_data["repository_summary"],
             context_data["semantic_graph"],
         ).to_dict()
+        knowledge_graph = KnowledgeGraph.from_dict(context_data["semantic_graph"])
         context_data["design_patterns"] = PatternDetectionService().detect(
-            KnowledgeGraph.from_dict(context_data["semantic_graph"]),
+            knowledge_graph,
             java_architecture_graphs=java_architecture_graphs,
             call_graphs=call_graphs,
         ).to_dict()
-        context_data["reachability"] = ReachabilityAnalysisService().analyze(
-            KnowledgeGraph.from_dict(context_data["semantic_graph"]),
+        reachability = ReachabilityAnalysisService().analyze(
+            knowledge_graph,
             symbol_metadata=context_data["symbols"],
             repository_summary=context_data["repository_summary"],
             call_graphs=call_graphs,
-        ).to_dict(grouped=True)
+        )
+        context_data["reachability"] = reachability.to_dict(grouped=True)
+        risk_service = RiskAnalysisService()
+        git_history = None
+        try:
+            git_history = GitContextService(
+                self.service.workspace.root
+            ).collect_history(
+                commit_limit=risk_service.configuration.git_commit_limit
+            )
+        except (GitContextError, OSError):
+            pass
+        context_data["risk_analysis"] = risk_service.analyze(
+            knowledge_graph,
+            symbol_metadata=context_data["symbols"],
+            repository_summary=context_data["repository_summary"],
+            git_history=git_history,
+        ).to_dict()
         context = WorkspaceSemanticContext(context_data)
         collection = SemanticCollectionReport(
             tuple(run.project for run in report.runs),

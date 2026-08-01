@@ -1,22 +1,35 @@
 from __future__ import annotations
 from collections import defaultdict, deque
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+import hashlib
+import json
 from moughorai.global_symbols import SymbolId
-from .models import KnowledgeEdge, KnowledgeNode, KnowledgeRelation
+from .models import (
+    KnowledgeDegreeSummary,
+    KnowledgeEdge,
+    KnowledgeNode,
+    KnowledgeRelation,
+    KnowledgeRelationDegree,
+)
 from .models import KnowledgeKind
 
 class KnowledgeGraph:
     def __init__(self, nodes=(), edges=()):
         self._nodes={n.id:n for n in nodes}; self._edges=set(); self._out=defaultdict(set); self._in=defaultdict(set)
+        self._sorted_nodes = None; self._sorted_edges = None; self._stable_digest = None
         for e in edges: self.add_edge(e)
     @property
-    def nodes(self): return tuple(sorted(self._nodes.values()))
+    def nodes(self):
+        if self._sorted_nodes is None: self._sorted_nodes=tuple(sorted(self._nodes.values()))
+        return self._sorted_nodes
     @property
-    def edges(self): return tuple(sorted(self._edges))
-    def add_node(self,node): self._nodes[node.id]=node
+    def edges(self):
+        if self._sorted_edges is None: self._sorted_edges=tuple(sorted(self._edges))
+        return self._sorted_edges
+    def add_node(self,node): self._nodes[node.id]=node; self._sorted_nodes=None; self._stable_digest=None
     def get(self,node_id): return self._nodes.get(node_id)
     def add_edge(self,edge):
-        self._edges.add(edge); self._out[edge.source].add(edge); self._in[edge.target].add(edge)
+        self._edges.add(edge); self._out[edge.source].add(edge); self._in[edge.target].add(edge); self._sorted_edges=None; self._stable_digest=None
     def outgoing(self,node_id,relation=None): return tuple(sorted(e for e in self._out.get(node_id,()) if relation is None or e.relation is relation))
     def incoming(self,node_id,relation=None): return tuple(sorted(e for e in self._in.get(node_id,()) if relation is None or e.relation is relation))
     def by_kind(self,kind): return tuple(node for node in self.nodes if node.kind is kind)
@@ -30,6 +43,116 @@ class KnowledgeGraph:
                 nxt=e.target if e.source==cur else e.source
                 if nxt not in seen: seen.add(nxt); q.append((nxt,d+1))
         return tuple(self._nodes[x] for x in sorted(seen) if x in self._nodes)
+
+    def degree_summaries(
+        self,
+        *,
+        relations: Iterable[KnowledgeRelation] | None = None,
+        subject_kinds: Iterable[KnowledgeKind] | None = None,
+        neighbor_kinds: Iterable[KnowledgeKind] | None = None,
+        subject_ids: Iterable[str] | None = None,
+        include_zero: bool = True,
+    ) -> tuple[KnowledgeDegreeSummary, ...]:
+        """Collect distinct-neighbour degrees in one ``O(V + E)`` pass.
+
+        Relationship and endpoint-kind filters make the meaning of a degree
+        explicit.  Multiple canonical edges with different evidence do not
+        inflate the count for the same neighbour and relationship. Deterministic
+        result materialization sorts only the selected subject identifiers.
+        """
+
+        selected_relations = None if relations is None else frozenset(relations)
+        selected_subjects = None if subject_kinds is None else frozenset(subject_kinds)
+        selected_neighbors = None if neighbor_kinds is None else frozenset(neighbor_kinds)
+        selected_ids = None if subject_ids is None else frozenset(subject_ids)
+        node_ids = {
+            node.id
+            for node in self._nodes.values()
+            if selected_subjects is None or node.kind in selected_subjects
+            if selected_ids is None or node.id in selected_ids
+        }
+        incoming: dict[str, set[str]] = defaultdict(set)
+        outgoing: dict[str, set[str]] = defaultdict(set)
+        incoming_by_relation: dict[tuple[str, KnowledgeRelation], set[str]] = defaultdict(set)
+        outgoing_by_relation: dict[tuple[str, KnowledgeRelation], set[str]] = defaultdict(set)
+
+        for edge in self._edges:
+            if selected_relations is not None and edge.relation not in selected_relations:
+                continue
+            source = self._nodes.get(edge.source)
+            target = self._nodes.get(edge.target)
+            if source is None or target is None:
+                continue
+            if edge.source in node_ids and (
+                selected_neighbors is None or target.kind in selected_neighbors
+            ):
+                outgoing[edge.source].add(edge.target)
+                outgoing_by_relation[(edge.source, edge.relation)].add(edge.target)
+            if edge.target in node_ids and (
+                selected_neighbors is None or source.kind in selected_neighbors
+            ):
+                incoming[edge.target].add(edge.source)
+                incoming_by_relation[(edge.target, edge.relation)].add(edge.source)
+
+        result = []
+        relation_order = tuple(sorted(selected_relations or tuple(KnowledgeRelation), key=lambda item: item.value))
+        selected_ids = (
+            node_ids
+            if include_zero
+            else set(incoming).union(outgoing)
+        )
+        for node_id in sorted(selected_ids):
+            breakdown = tuple(
+                KnowledgeRelationDegree(
+                    relation,
+                    len(incoming_by_relation.get((node_id, relation), ())),
+                    len(outgoing_by_relation.get((node_id, relation), ())),
+                )
+                for relation in relation_order
+                if incoming_by_relation.get((node_id, relation))
+                or outgoing_by_relation.get((node_id, relation))
+            )
+            result.append(KnowledgeDegreeSummary(
+                node_id,
+                len(incoming.get(node_id, ())),
+                len(outgoing.get(node_id, ())),
+                breakdown,
+            ))
+        return tuple(result)
+
+    def stable_digest(self) -> str:
+        """Hash canonical serialization without materializing one large JSON string."""
+
+        if self._stable_digest is not None:
+            return self._stable_digest
+        digest = hashlib.sha256()
+
+        def update(value: object) -> None:
+            digest.update(json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8"))
+
+        digest.update(b'{"edges":[')
+        for index, edge in enumerate(self.edges):
+            if index:
+                digest.update(b",")
+            update({
+                "source": edge.source,
+                "target": edge.target,
+                "kind": edge.relation.value,
+                "evidence": list(edge.evidence),
+            })
+        digest.update(b'],"nodes":[')
+        for index, node in enumerate(self.nodes):
+            if index:
+                digest.update(b",")
+            update(self._node_to_dict(node))
+        digest.update(b'],"schema_version":1}')
+        self._stable_digest = digest.hexdigest()
+        return self._stable_digest
     def to_dict(self):
         return {
             'schema_version': 1,

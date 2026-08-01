@@ -32,3 +32,22 @@ class KnowledgeEdge:
     target: str
     relation: KnowledgeRelation
     evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, order=True)
+class KnowledgeRelationDegree:
+    """Distinct-neighbour degree for one canonical relationship."""
+
+    relation: KnowledgeRelation
+    incoming: int = 0
+    outgoing: int = 0
+
+
+@dataclass(frozen=True, order=True)
+class KnowledgeDegreeSummary:
+    """Deterministic relation-filtered degree summary for one graph node."""
+
+    node_id: str
+    incoming: int
+    outgoing: int
+    relations: tuple[KnowledgeRelationDegree, ...] = ()
