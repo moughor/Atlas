@@ -38,9 +38,11 @@ def test_explain_uses_snapshot_and_records_conversation(tmp_path: Path) -> None:
     memory = ConversationMemoryStore(tmp_path)
     result = ExplainEngine(LlmClient(provider), memory=memory).explain(
         snapshot,
-        ExplainRequest(subject="app"),
+        ExplainRequest(subject="app", kind="project"),
     )
-    assert result.markdown.startswith("# Architecture")
+    assert result.markdown.startswith("# Atlas Structured Explanation")
+    assert "## Optional provider narrative" in result.markdown
+    assert result.markdown.endswith("# Architecture\n\nVerified.")
     messages = memory.messages(result.conversation_id)
     assert [message.role.value for message in messages] == ["user", "assistant"]
     assert messages[1].references["snapshot"] == snapshot.snapshot_id
@@ -74,7 +76,7 @@ def test_empty_explanation_is_rejected(tmp_path: Path) -> None:
     try:
         ExplainEngine(LlmClient(provider)).explain(
             snapshot,
-            ExplainRequest(subject="app"),
+            ExplainRequest(subject="app", kind="project"),
         )
     except ValueError as exc:
         assert "empty output" in str(exc)
@@ -288,7 +290,7 @@ def test_default_repository_explanation_compacts_pr131_reachability() -> None:
     assert "MUST_NOT_ENTER_DEFAULT_PROMPT" not in result.markdown
 
 
-def test_specific_subject_preserves_detailed_context_path() -> None:
+def test_graphless_specific_subject_is_explicitly_unavailable() -> None:
     context = WorkspaceSemanticContext({
         "repository_summary": {"projects": [{"name": "api"}]},
         "symbols": [{"qualified_name": "DETAIL_MARKER"}],
@@ -300,11 +302,57 @@ def test_specific_subject_preserves_detailed_context_path() -> None:
     )
     provider = ScriptedLlmProvider(["Detail"])
 
-    ExplainEngine(LlmClient(provider)).explain(
+    result = ExplainEngine(LlmClient(provider)).explain(
         snapshot,
         ExplainRequest(subject="demo.Service"),
     )
 
+    assert provider.calls == []
+    assert result.structured_explanation is not None
+    assert result.structured_explanation.availability.value == "unavailable"
+    assert "DETAIL_MARKER" not in result.markdown
+
+
+def test_specific_subject_uses_only_bounded_structured_context() -> None:
+    context = WorkspaceSemanticContext({
+        "semantic_graph": {
+            "schema_version": 1,
+            "nodes": [{
+                "id": "type:service",
+                "kind": "type",
+                "qualified_name": "demo.Service",
+                "project_id": "app",
+                "language": "java",
+            }],
+            "edges": [],
+        },
+        "symbols": [{
+            "id": "type:service",
+            "kind": "type",
+            "name": "Service",
+            "qualified_name": "demo.Service",
+            "project_id": "app",
+            "source": "src/main/java/demo/Service.java",
+        }],
+        "unrelated_payload": "MUST_NOT_ENTER_PR134_PROMPT",
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="workspace",
+        analyzer_version="test",
+    )
+    provider = ScriptedLlmProvider(["Detail"])
+
+    result = ExplainEngine(LlmClient(provider)).explain(
+        snapshot,
+        ExplainRequest(subject="demo.Service", kind="type"),
+    )
+
     request = provider.calls[0][0]
-    assert request.metadata["prompt_template"] == "atlas-grounded-v1"
-    assert "DETAIL_MARKER" in request.messages[1].content
+    assert request.metadata["prompt_template"] == "atlas-explain-anything-v1"
+    assert '"structured_explanation"' in request.messages[1].content
+    assert "demo.Service" in request.messages[1].content
+    assert "MUST_NOT_ENTER_PR134_PROMPT" not in request.messages[1].content
+    assert result.structured_explanation is not None
+    assert result.context_digest == result.structured_explanation.context_digest
+    assert result.estimated_input_tokens <= ExplainEngine.MAXIMUM_INPUT_TOKENS

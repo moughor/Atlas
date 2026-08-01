@@ -761,6 +761,14 @@ def test_persisted_default_explain_is_provider_free_source_free_and_deterministi
 
     assert first.markdown == second.markdown
     assert first.estimated_input_tokens == 0
+    assert first.structured_explanation is not None
+    assert second.structured_explanation is not None
+    assert (
+        first.structured_explanation.to_json()
+        == second.structured_explanation.to_json()
+    )
+    assert first.context_digest == first.structured_explanation.context_digest
+    assert first.citations == first.structured_explanation.citations
     assert "## AI repository report" in first.markdown
     assert first.markdown.count("### Executive summary") == 1
     assert "## Inventory" not in first.markdown
@@ -779,10 +787,14 @@ def test_pr133_default_skips_provider_while_targeted_explain_remains_compatible(
 
     default = engine.explain(snapshot)
     assert "## AI repository report" in default.markdown
+    assert default.structured_explanation is not None
     assert provider.calls == []
 
     targeted = engine.explain(snapshot, ExplainRequest(subject="api"))
-    assert targeted.markdown == "# Targeted\n\nVerified."
+    assert targeted.markdown.startswith("# Atlas Structured Explanation")
+    assert "## Optional provider narrative" in targeted.markdown
+    assert targeted.markdown.endswith("# Targeted\n\nVerified.")
+    assert targeted.structured_explanation is not None
     assert len(provider.calls) == 1
 
 

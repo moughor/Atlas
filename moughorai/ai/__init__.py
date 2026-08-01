@@ -1,7 +1,14 @@
 """Stable public facade for Atlas AI 1.0."""
 
 from moughorai.ai_ask import AskEngine, AskRequest, AskResult
-from moughorai.ai_explain import ExplainEngine, ExplainRequest, ExplainResult
+from moughorai.ai_explain import (
+    ExplainEngine,
+    ExplainRequest,
+    ExplainResult,
+    ExplanationAvailability,
+    StructuredExplanation,
+    StructuredExplanationRequest,
+)
 from moughorai.ai_git_context import GitContext, GitContextService
 from moughorai.ai_ide import IdeAction, IdeAssistant, IdeRequest, IdeResponse, SupportedIde
 from moughorai.ai_memory import ConversationMemoryStore, ConversationRole
@@ -16,6 +23,7 @@ __all__ = [
     "AtlasSemanticSnapshot", "SemanticSnapshotStore",
     "ConversationMemoryStore", "ConversationRole",
     "ExplainEngine", "ExplainRequest", "ExplainResult",
+    "ExplanationAvailability", "StructuredExplanation", "StructuredExplanationRequest",
     "ReviewEngine", "ReviewRequest", "ReviewResult",
     "AskEngine", "AskRequest", "AskResult",
     "PatchEngine", "PatchRequest", "PatchProposal", "GitPatchValidator",

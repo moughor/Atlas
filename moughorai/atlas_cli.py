@@ -42,6 +42,7 @@ from .ai_context import (
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
+    Workspace,
     WorkspaceAnalysisOrchestrator,
     WorkspaceConfigurationError,
     WorkspaceRecoveryManager,
@@ -400,8 +401,11 @@ def governance_command(
 
 
 def _load_ai_snapshot(root: Path, snapshot: Path | None):
-    context = _context(root)
-    store = SemanticSnapshotStore(context.service.workspace)
+    # Snapshot-backed AI commands must not rediscover or rescan the repository.
+    # A minimal workspace supplies only the durable ASS location; all repository
+    # facts come from the checksum-verified snapshot itself.
+    workspace = Workspace(root.expanduser().resolve(), ())
+    store = SemanticSnapshotStore(workspace)
     loaded = store.load(snapshot)
     if loaded is None:
         target = snapshot or store.latest_path
@@ -449,11 +453,34 @@ def ai_explain_command(
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
     snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
     subject: Annotated[str, typer.Option("--subject", help="Workspace semantic subject.")] = "workspace",
+    kind: Annotated[str | None, typer.Option("--kind", help="Constrain the canonical subject kind.")] = None,
+    project: Annotated[str | None, typer.Option("--project", help="Constrain the owning project.")] = None,
+    language: Annotated[str | None, typer.Option("--language", help="Constrain the subject language.")] = None,
+    path_constraint: Annotated[str | None, typer.Option("--path", help="Constrain a workspace-relative subject path.")] = None,
+    target: Annotated[str | None, typer.Option("--target", help="Canonical target for a relationship explanation.")] = None,
+    relation: Annotated[str | None, typer.Option("--relation", help="Canonical relationship kind to explain.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Print deterministic structured explanation JSON without an LLM.")] = False,
 ) -> None:
     """Render a repository report or explain a targeted semantic subject."""
     def operation() -> None:
         loaded = _load_ai_snapshot(root, snapshot)
-        request = ExplainRequest(subject=subject)
+        request = ExplainRequest(
+            subject=subject,
+            kind=kind,
+            project=project,
+            language=language,
+            path_constraint=path_constraint,
+            target=target,
+            relation=relation,
+            narrative=not json_output,
+        )
+        if json_output:
+            result = ExplainEngine().explain(loaded, request)
+            structured = result.structured_explanation
+            if structured is None:
+                raise ValueError("structured explanation is unavailable")
+            typer.echo(structured.to_json())
+            return
         if ExplainEngine._is_repository_default(request):
             result = ExplainEngine(
                 memory=ConversationMemoryStore(root),
