@@ -1,5 +1,31 @@
 # Changelog
 
+## PR133 — AI Repository Report
+
+- Added one immutable, deterministic repository-report model composed from PR127
+  through PR132 facts, with exact serialization round trips and stable lineage.
+- Added executive, architecture, repository-health, strengths, weaknesses, risks,
+  technical-debt, quality, and recommendation sections with explicit capability and
+  observation states; unavailable analyses remain visible instead of being filled.
+- Reused the PR129 canonical graph for bounded in-degree, out-degree, fan-in, and
+  fan-out summaries without introducing another graph or analyzer.
+- Reused PR130 evidence and confidence contracts, verified upstream citations, and
+  kept legacy producer confidence fields distinct from shared confidence results.
+- Published additive `semantic_context.repository_report` data and added a
+  deterministic 7,000-token selector that retains whole items and their citations.
+- Updated default `atlas ai explain` to prefer the persisted report without creating
+  an LLM provider; explicit subjects retain the existing grounded provider path.
+- Preserved old snapshot explanations, removed duplicate legacy rendering for PR133
+  snapshots, and excluded raw source, absolute paths, and author identities.
+- Bounded report items, evidence references, limitations, and rendered repetition
+  with exact omitted counts and compact cross-references.
+- Bound every retained evidence record to its citing item and report lineage,
+  rejected inconsistent selection/count metadata, and canonicalized reordered
+  section and nested-evidence inputs.
+- Added five-repeat synthetic, Maven, and Quarkus replay measurements; the 149K-node
+  Quarkus report remains deterministic, builds below two seconds p95, and adds
+  0.030312% to its replayed snapshot.
+
 ## PR132 — Risk and Hotspot Analysis
 
 - Added deterministic, top-k repository risk indicators over the PR129 canonical

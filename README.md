@@ -29,10 +29,19 @@ Loader/generated contracts, and reports incomplete call coverage instead of
 inventing dead-code certainty. See
 [`docs/PR131_DEAD_CODE_REACHABILITY.md`](docs/PR131_DEAD_CODE_REACHABILITY.md).
 
-The current repository includes completed work through PR132. Recent repository
+PR133 composes those existing facts into one immutable, source-free AI repository
+report. Every canonical section records capability and observation state; findings
+retain evidence, producer, deterministic confidence where applicable, producer
+coverage where available, and limitation metadata. Exact measurements use their
+capability state instead of fabricated numeric coverage. The
+default `atlas ai explain` renders a deterministic 7,000-token projection without
+requiring an LLM, while older snapshots retain the accepted legacy explanation.
+See [`docs/PR133_AI_REPOSITORY_REPORT.md`](docs/PR133_AI_REPOSITORY_REPORT.md).
+
+The current repository includes completed work through PR133. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
-reachability, and deterministic risk/hotspot indicators.
+reachability, deterministic risk/hotspot indicators, and bounded executive reports.
 
 ## Install
 
@@ -84,6 +93,13 @@ Run the reproducible large-workspace benchmark:
 python -m benchmarks.benchmark_large_workspace
 ```
 
+Replay a semantic snapshot through the PR133 report benchmark:
+
+```text
+python -m benchmarks.benchmark_pr133_repository_report path/to/latest.ass
+python -m benchmarks.benchmark_pr133_repository_report --synthetic-projects 10000 --measure-memory
+```
+
 The default workload creates 23 projects containing 23,000 source files and
 measures Atlas production indexing and workspace-fingerprinting paths. Generated
 data is temporary unless an explicit workspace path is supplied.
@@ -108,7 +124,7 @@ python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-The final PR132 validation completed 3,550 passing tests with one explicitly
+The final PR133 validation completed 3,575 passing tests with one explicitly
 skipped test. Benchmark timings are machine-dependent and are deliberately not
 used as pass/fail thresholds.
 
@@ -120,15 +136,16 @@ conversation memory, Explain/Review/Ask engines, validated non-applying patch
 proposals, Git context, and an editor-neutral IDE protocol. See
 `docs/PR120_ATLAS_AI_1_0.md`.
 
-The default `atlas ai explain` repository overview is rendered deterministically
-from a bounded, source-free semantic projection. It does not send repository
+The default `atlas ai explain` repository overview prefers the persisted PR133
+repository report and is rendered deterministically from a token-bounded,
+source-free projection. It does not send repository
 facts to an LLM, so a provider cannot replace counts, invent technologies, or
 promote weak evidence into facts. Explanations for an explicit `--subject`
 continue to use the configured provider with ASS-grounded context. Metric
 definitions and current limitations are documented in
 [`docs/ATLAS_AI_EXPLAIN_ACCURACY_REVIEW.md`](docs/ATLAS_AI_EXPLAIN_ACCURACY_REVIEW.md).
 
-## Risk and hotspot analysis
+## Repository report and risk analysis
 
 PR132 adds deterministic, evidence-backed repository risk rankings to semantic
 snapshots and repository explanations. Atlas combines only available structured
@@ -137,3 +154,7 @@ as unavailable rather than zero. The normal pipeline currently contributes
 positive canonical graph degree, complete project inventory bytes, and bounded
 Git change facts; complexity and resolved test density require authoritative producers.
 See [`docs/PR132_RISK_HOTSPOT_ANALYSIS.md`](docs/PR132_RISK_HOTSPOT_ANALYSIS.md).
+
+PR133 does not turn risk indicators into defects, missing analyses into negative
+findings, or test-file inventory into test quality. Strengths and weaknesses remain
+explicitly unavailable until an authoritative structured producer exists.
