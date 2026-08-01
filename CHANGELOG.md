@@ -1,5 +1,39 @@
 # Changelog
 
+## PR132 — Risk and Hotspot Analysis
+
+- Added deterministic, top-k repository risk indicators over the PR129 canonical
+  graph using documented weights, comparable cohorts, exact raw units, bounded
+  evidence, explicit availability, and separate confidence.
+- Added positive distinct-neighbour fan-in/fan-out, project inventory size,
+  bounded Git change-frequency and change-author-concentration inputs without
+  interpreting absent graph relations or missing test mappings as zero.
+- Added file-size completeness metadata so stat failures make size unavailable,
+  and hardened external metric evidence so free-form upstream text cannot enter
+  source-free PR132 snapshots.
+- Published an additive, source-free `risk_analysis` snapshot field and compact
+  repository-explanation projection while preserving older snapshot behavior.
+- Added exact serialization, lineage-aware caching, scope exclusions, heatmaps,
+  deterministic scale/replay benchmarks, and focused adversarial tests.
+- Ranked with full-precision values before deterministic presentation rounding,
+  froze and synchronized cached reports, and bounded producer, evidence, and
+  heatmap projections with explicit omitted counts.
+- Unified test/source scope classification and made bounded Git evidence
+  locale-independent on Windows while preserving traceable UTF-8 paths.
+
+## Atlas AI Explain accuracy hardening
+
+- Replaced the default repository LLM response with deterministic Markdown
+  rendered from a bounded, source-free Atlas projection; targeted subject
+  explanations retain the existing provider path.
+- Added explicit inventory count/byte aliases while preserving legacy repository
+  summary keys and older snapshot compatibility.
+- Added mathematically exact language percentages, overlapping build-system
+  counts without percentages, conservative framework/technology presentation,
+  unresolved entry-point roles, and evidence-aware architecture suppression.
+- Removed broad Maven substring matching that confused internal integration and
+  reactive artifact names with Spring or React adoption.
+
 ## PR131 — Dead Code and Reachability Analysis
 
 - Added deterministic production/test reachability over the PR129 graph and

@@ -29,10 +29,10 @@ Loader/generated contracts, and reports incomplete call coverage instead of
 inventing dead-code certainty. See
 [`docs/PR131_DEAD_CODE_REACHABILITY.md`](docs/PR131_DEAD_CODE_REACHABILITY.md).
 
-The current repository includes completed work through PR106. Recent production
-hardening added linear-time semantic table builders, thread-safe global symbol
-storage, a reproducible 23,000-file benchmark, a versioned public API boundary,
-and an explicit plugin threat model.
+The current repository includes completed work through PR132. Recent repository
+intelligence work adds source-free summaries, a canonical knowledge graph,
+evidence-backed architecture and design-pattern findings, conservative
+reachability, and deterministic risk/hotspot indicators.
 
 ## Install
 
@@ -108,8 +108,9 @@ python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-The verified PR106 repository suite contains 3,323 tests. Benchmark timings are
-machine-dependent and are deliberately not used as pass/fail thresholds.
+The final PR132 validation completed 3,550 passing tests with one explicitly
+skipped test. Benchmark timings are machine-dependent and are deliberately not
+used as pass/fail thresholds.
 
 Atlas is distributed under the MIT License.
 # Atlas AI 1.0
@@ -118,3 +119,21 @@ Atlas includes an ASS-grounded AI layer with a dedicated `atlas ai` CLI,
 conversation memory, Explain/Review/Ask engines, validated non-applying patch
 proposals, Git context, and an editor-neutral IDE protocol. See
 `docs/PR120_ATLAS_AI_1_0.md`.
+
+The default `atlas ai explain` repository overview is rendered deterministically
+from a bounded, source-free semantic projection. It does not send repository
+facts to an LLM, so a provider cannot replace counts, invent technologies, or
+promote weak evidence into facts. Explanations for an explicit `--subject`
+continue to use the configured provider with ASS-grounded context. Metric
+definitions and current limitations are documented in
+[`docs/ATLAS_AI_EXPLAIN_ACCURACY_REVIEW.md`](docs/ATLAS_AI_EXPLAIN_ACCURACY_REVIEW.md).
+
+## Risk and hotspot analysis
+
+PR132 adds deterministic, evidence-backed repository risk rankings to semantic
+snapshots and repository explanations. Atlas combines only available structured
+signals, keeps confidence separate from the score, and reports missing evidence
+as unavailable rather than zero. The normal pipeline currently contributes
+positive canonical graph degree, complete project inventory bytes, and bounded
+Git change facts; complexity and resolved test density require authoritative producers.
+See [`docs/PR132_RISK_HOTSPOT_ANALYSIS.md`](docs/PR132_RISK_HOTSPOT_ANALYSIS.md).

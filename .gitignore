@@ -25,3 +25,6 @@ build/
 PR*.patch
 PR*_Delivery.zip
 *_Delivery.zip
+
+# Local benchmark run artifacts
+benchmarks/Maven/
