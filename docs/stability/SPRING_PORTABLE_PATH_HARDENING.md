@@ -166,6 +166,14 @@ lineage; raw equality is not the cross-run portable gate. Both raw files were ex
 canonical graph contained 104,095 nodes and 114,190 edges, and the corrected snapshot
 contained zero method return types with an assignment.
 
+A three-repeat diagnostic replay manifest was then generated at
+`SPRING_CHECKOUT/.atlas/spring-m1.2-candidate-replay.json` against Atlas commit
+`b5a5b004d40c28faa0b3aa8fe4ad6bf46b296c99`. Replay durations were 73,930,
+73,848, and 73,616 ms, and every exact replay artifact remained identical. The
+manifest correctly reports `baseline_eligible=false`, `declared-historical`, and
+`analysis_success_verified=false` because no accepted fresh Spring manifest exists.
+It is diagnostic evidence, not an accepted or provisional golden.
+
 ## Maven and Quarkus comparison
 
 Fresh analyses remained functionally green and deterministically ordered:
@@ -198,6 +206,7 @@ change. The checked-in Maven and Quarkus baselines were not modified.
 | Determinism | Pass | All portable semantic/report/explain/risk/graph/order hashes identical |
 | Portable projection | Pass | Full recursive projection succeeds; compact size measured |
 | Source-free | Pass | Existing source-free projection contract and recursive machine-path guard pass |
+| Diagnostic replay | Pass | Three exact repeats at the recorded final Atlas documentation commit |
 | Linked replay | Fail | No accepted Spring fresh manifest exists for canonical replay lineage |
 | Performance metadata | Fail | Two diagnostic samples, not a canonical three-sample capture from a fresh initial state |
 
