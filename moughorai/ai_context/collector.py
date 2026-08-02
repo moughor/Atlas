@@ -8,6 +8,9 @@ from typing import Any
 from moughorai.global_symbols import GlobalSymbol, GlobalSymbolDatabase
 from moughorai.global_symbols.builder import GlobalSymbolDatabaseBuilder
 from moughorai.java_symbols import JavaSymbolService
+from moughorai.java_workspace.source_selection import (
+    select_compiled_java_sources,
+)
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
 from moughorai.workspace import WorkspaceRunReport, WorkspaceService
@@ -205,7 +208,13 @@ class SemanticContextCollector:
         include: tuple[str, ...],
         exclude: tuple[str, ...],
     ) -> tuple[Path, ...]:
-        return tuple(path for path in project_files(root, include, exclude) if path.suffix.lower() == ".java")
+        paths = tuple(
+            path
+            for path in project_files(root, include, exclude)
+            if path.suffix.lower() == ".java"
+        )
+        selected, _excluded_data = select_compiled_java_sources(root, paths)
+        return selected
 
     @staticmethod
     def _field(value: object, name: str) -> Any:

@@ -375,15 +375,15 @@ def test_previous_analysis_producer_is_invalidated(tmp_path: Path) -> None:
     stale = replace(
         current,
         producer_fingerprint=ANALYSIS_RESULT_PRODUCER_FINGERPRINT.replace(
+            "workspace-analysis-result-v4",
             "workspace-analysis-result-v3",
-            "workspace-analysis-result-v2",
         ),
     )
 
     results, report = store.restore(stale)
 
     assert ANALYSIS_RESULT_PRODUCER_FINGERPRINT.endswith(
-        "workspace-analysis-result-v3"
+        "workspace-analysis-result-v4"
     )
     assert results == {}
     assert report.invalidated == ("demo",)

@@ -25,6 +25,9 @@ from moughorai.java_symbols import (
     SymbolKind,
 )
 from moughorai.java_workspace import JavaWorkspaceScanner, SourceRootKind
+from moughorai.java_workspace.source_selection import (
+    select_compiled_java_sources,
+)
 from moughorai.python_semantics import PythonSemanticAnalyzer
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
@@ -208,6 +211,10 @@ class JavaLanguageAnalyzer:
             )
         ) or bool(project.option_map.get(GRADLE_SETTINGS_MEMBERSHIP_OPTION))
         diagnostics: list[Diagnostic] = []
+        paths, _excluded_data = select_compiled_java_sources(
+            project.path,
+            paths,
+        )
         if maven_project:
             module = self._workspace_scanner.scan_module(project.path)
             source_roots = tuple(
