@@ -117,6 +117,13 @@ No Spring project name, path, or conditional exists in production code. The root
 continues to use the checkout basename for compatibility; `rootProject.name` is not
 used to change Atlas project identity.
 
+Later Elasticsearch hardening added a separate, narrowly verified recursive Groovy
+helper form. That support still does not evaluate Gradle: the complete helper body
+and each invocation must match a statically proven contract, traversal is bounded to
+literal roots, and unsupported membership mutations fail closed. See
+`ELASTICSEARCH_FAILURE_INVESTIGATION.md` and
+`../PR67_WORKSPACE_PROJECT_MODEL.md` for the current contract.
+
 ## Java source-root follow-up
 
 After discovery was corrected, 28 projects succeeded and `spring-core` exposed a
@@ -174,8 +181,8 @@ Five repeated discovery-only measurements returned 29 projects and the same
 workspace serialization hash
 `672c5b85e38275d568b100ffc56bb209d86a36c2263e87694f79fefbe4c497eb`
 each time. They ranged from 96.659 to 101.354 ms with a 97.941 ms median. The
-settings parser adds no recursive traversal; it resolves and checks only literal
-declared paths.
+Spring settings membership in this recorded run used only literal declared paths;
+the later verified-helper path was not exercised by this benchmark.
 
 The final snapshot records 88,058 canonical graph nodes and 96,615 edges. Repository
 summary reports Gradle in all 29 projects and npm in `framework-docs`. The default
@@ -245,19 +252,22 @@ analysis-order-unavailable state. No accepted golden was changed.
 
 ## Limitations and baseline status
 
-- Literal collection loops, variables, interpolation, conditions, slashy strings,
+- General collection loops, variables, interpolation, conditions, slashy strings,
   dual settings files, `projectDir`, `includeBuild`, nested settings evaluation, the
-  external settings plugin, and executable Gradle logic are not evaluated.
+  external settings plugin, and executable Gradle logic are not evaluated. A later
+  exception recognizes one complete statically verified recursive Groovy helper
+  shape without executing it; arbitrary recursive settings logic remains unsupported.
 - The `${project.name}.gradle` mapping is not interpreted. Dependency intelligence
   therefore covers default root/buildSrc descriptors but does not claim complete
   child-script dependency coverage.
 - Gradle logical hierarchy is represented by the existing filesystem hierarchy;
   composite-build semantics are not modeled.
-- Version-specific source sets are not modeled as distinct semantic variants. Only
-  an alternative with an exact eligible baseline counterpart is omitted and warned;
-  additive versioned, `testFixtures`, JMH, and other custom-root files remain
-  analyzed in one unversioned semantic scope. Atlas neither proves that Gradle
-  compiles them nor qualifies symbols by Java/source-set variant. Inventory totals
+- Version-specific source sets are not modeled as target-selected semantic variants.
+  Only an alternative with an exact eligible baseline counterpart is omitted and
+  warned; additive versioned, `testFixtures`, JMH, and other custom-root files remain
+  analyzed. Later hardening can isolate a proven duplicate across distinct
+  conventional non-versioned Gradle source sets, but marks cross-scope architecture
+  unavailable and does not prove that Gradle compiles either source. Inventory totals
   still measure files rather than semantic variant coverage.
 - Ambiguous physical aliases or flattened Atlas project-name collisions fail closed:
   the affected declared branch is not published. Unsupported or ambiguous settings

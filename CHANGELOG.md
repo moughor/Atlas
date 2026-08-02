@@ -1,5 +1,21 @@
 # Changelog
 
+## M1.1 hardening - Elasticsearch benchmark investigation
+
+- Added narrowly verified recursive Gradle membership discovery that remains within
+  literal roots and fails closed for unsupported helper behavior, path identities,
+  symlinks, and preceding unmodeled settings membership mutations.
+- Separated version-specific Java overlays only when an exact baseline counterpart
+  is analyzed, and retained additive version-specific files.
+- Added conservative source-set-scoped symbol identity only after a duplicate type
+  is proven across conventional Gradle source sets; unavailable cross-source-set
+  architecture relations are omitted and reported as partial rather than guessed.
+- Advanced the analysis-result producer fingerprint to v3 so PR70 persistence and
+  PR74 recovery invalidate stale pre-hardening analysis results.
+- Validated the complete Atlas suite at 3,803 passed and 2 skipped; Elasticsearch
+  twice at 545/545; Maven at 92/92; Quarkus at 1,442/1,442; and Spring at 29/29.
+- Kept the accepted Maven and Quarkus golden baselines unchanged.
+
 ## M1 hardening — portable semantic paths and Java member identity
 
 - Narrowed UNC detection to complete server/share roots while retaining recursive

@@ -118,6 +118,12 @@ The portable-path hardening, corrected Java producer drift, and `M1.2 REQUIRED`
 golden decision are recorded in
 [`docs/stability/SPRING_PORTABLE_PATH_HARDENING.md`](docs/stability/SPRING_PORTABLE_PATH_HARDENING.md).
 
+The Elasticsearch stability investigation documents narrow, statically verified
+recursive Gradle membership, exact-counterpart handling for version-specific Java
+overlays, and conservative symbol scopes when duplicate types are proven across
+Gradle source sets. See
+[`docs/stability/ELASTICSEARCH_FAILURE_INVESTIGATION.md`](docs/stability/ELASTICSEARCH_FAILURE_INVESTIGATION.md).
+
 Run the reproducible large-workspace benchmark:
 
 ```text
