@@ -10,11 +10,17 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from moughorai.version import __version__
+
 from .cache import WorkspaceCache, WorkspaceSnapshot
 from .event_bus import WorkspaceEventKind
 from .service import WorkspaceService
 
 STATE_SCHEMA_VERSION = 1
+ANALYSIS_RESULT_PRODUCER_FINGERPRINT = (
+    f"atlas/{__version__}:workspace-analysis-result-v2"
+)
+_LEGACY_PRODUCER_FINGERPRINT = "atlas/legacy:unversioned-analysis-result"
 
 
 class WorkspaceStateError(ValueError):
@@ -29,6 +35,7 @@ class WorkspacePersistentState:
     valid_projects: tuple[str, ...]
     results: tuple[tuple[str, Any], ...]
     saved_at: str
+    producer_fingerprint: str = ANALYSIS_RESULT_PRODUCER_FINGERPRINT
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -38,6 +45,7 @@ class WorkspacePersistentState:
             "valid_projects": list(self.valid_projects),
             "results": dict(self.results),
             "saved_at": self.saved_at,
+            "producer_fingerprint": self.producer_fingerprint,
         }
 
     @classmethod
@@ -49,6 +57,9 @@ class WorkspacePersistentState:
             raw_valid = data["valid_projects"]
             raw_results = data["results"]
             saved_at = str(data["saved_at"])
+            producer_fingerprint = str(
+                data.get("producer_fingerprint", _LEGACY_PRODUCER_FINGERPRINT)
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise WorkspaceStateError("workspace state is missing required fields") from exc
         if schema_version != STATE_SCHEMA_VERSION:
@@ -64,6 +75,7 @@ class WorkspacePersistentState:
             valid_projects=tuple(sorted(set(raw_valid))),
             results=tuple(sorted((str(k), v) for k, v in raw_results.items())),
             saved_at=saved_at,
+            producer_fingerprint=producer_fingerprint,
         )
 
 
@@ -96,12 +108,16 @@ class WorkspaceStateStore:
         cache: WorkspaceCache | None = None,
         encoder: Callable[[Any], Any] | None = None,
         decoder: Callable[[Any], Any] | None = None,
+        producer_fingerprint: str = ANALYSIS_RESULT_PRODUCER_FINGERPRINT,
     ) -> None:
         self.service = service
         self.path = Path(path) if path is not None else service.workspace.root / ".atlas" / "workspace-state.json"
         self.cache = cache or WorkspaceCache()
         self.encoder = encoder or (lambda value: value)
         self.decoder = decoder or (lambda value: value)
+        if not isinstance(producer_fingerprint, str) or not producer_fingerprint.strip():
+            raise ValueError("producer_fingerprint must be a non-empty string")
+        self.producer_fingerprint = producer_fingerprint.strip()
 
     def capture(self, results: Mapping[str, Any], valid_projects: tuple[str, ...]) -> WorkspacePersistentState:
         snapshot = self.cache.snapshot(self.service.workspace)
@@ -120,6 +136,7 @@ class WorkspaceStateStore:
             valid,
             tuple(encoded),
             datetime.now(timezone.utc).isoformat(),
+            self.producer_fingerprint,
         )
 
     def save(self, state: WorkspacePersistentState) -> Path:
@@ -170,6 +187,19 @@ class WorkspaceStateStore:
         saved_map = dict(state.project_fingerprints)
         result_map = dict(state.results)
         names = set(self.service.workspace.names())
+        if state.producer_fingerprint != self.producer_fingerprint:
+            report = WorkspaceRestoreReport(
+                (),
+                tuple(sorted(names.intersection(result_map))),
+                tuple(sorted(set(result_map).difference(names))),
+                True,
+            )
+            self.service.events.emit(
+                WorkspaceEventKind.STATE_RESTORED,
+                source="workspace.persistence",
+                payload=report.to_dict(),
+            )
+            return {}, report
         restored: dict[str, Any] = {}
         invalidated: list[str] = []
         ignored = sorted(set(result_map).difference(names))

@@ -40,7 +40,10 @@ class GlobalSymbolSnapshot:
                 by_source[symbol.source].append(symbol)
         object.__setattr__(self, "_by_id", MappingProxyType({symbol.id: symbol for symbol in self.symbols}))
         object.__setattr__(self, "_by_qualified", MappingProxyType({key: tuple(value) for key, value in by_qualified.items()}))
-        object.__setattr__(self, "_by_scoped", MappingProxyType({(symbol.project_id, symbol.qualified_name): symbol for symbol in self.symbols}))
+        by_scoped: dict[tuple[str | None, str], GlobalSymbol] = {}
+        for symbol in self.symbols:
+            by_scoped.setdefault((symbol.project_id, symbol.qualified_name), symbol)
+        object.__setattr__(self, "_by_scoped", MappingProxyType(by_scoped))
         object.__setattr__(self, "_by_name", MappingProxyType({key: tuple(value) for key, value in by_name.items()}))
         object.__setattr__(self, "_by_kind", MappingProxyType({key: tuple(value) for key, value in by_kind.items()}))
         object.__setattr__(self, "_by_source", MappingProxyType({key: tuple(value) for key, value in by_source.items()}))
@@ -79,7 +82,9 @@ class GlobalSymbolDatabase:
 
     def __init__(self, symbols: Iterable[GlobalSymbol] = ()) -> None:
         self._by_id: dict[SymbolId, GlobalSymbol] = {}
-        self._by_q: dict[tuple[str | None, str], GlobalSymbol] = {}
+        self._by_q: dict[
+            tuple[str | None, str, GlobalSymbolKind], GlobalSymbol
+        ] = {}
         self._by_name: defaultdict[str, list[GlobalSymbol]] = defaultdict(list)
         self._by_source: defaultdict[Path, list[GlobalSymbol]] = defaultdict(list)
         self._version = 0
@@ -98,9 +103,9 @@ class GlobalSymbolDatabase:
             return 0
         with self._lock:
             ids: set[SymbolId] = set()
-            qualified: set[tuple[str | None, str]] = set()
+            qualified: set[tuple[str | None, str, GlobalSymbolKind]] = set()
             for symbol in incoming:
-                scoped = (symbol.project_id, symbol.qualified_name)
+                scoped = (symbol.project_id, symbol.qualified_name, symbol.kind)
                 if scoped in self._by_q or scoped in qualified:
                     raise DuplicateSymbolError(f"{symbol.project_id or '<global>'}:{symbol.qualified_name}")
                 if symbol.id in self._by_id or symbol.id in ids:
@@ -109,7 +114,9 @@ class GlobalSymbolDatabase:
                 qualified.add(scoped)
             for symbol in incoming:
                 self._by_id[symbol.id] = symbol
-                self._by_q[(symbol.project_id, symbol.qualified_name)] = symbol
+                self._by_q[
+                    (symbol.project_id, symbol.qualified_name, symbol.kind)
+                ] = symbol
                 self._by_name[symbol.name].append(symbol)
                 if symbol.source is not None:
                     self._by_source[symbol.source].append(symbol)
@@ -123,9 +130,21 @@ class GlobalSymbolDatabase:
     def by_qualified_name(self, name: str, project_id: str | None = None) -> GlobalSymbol | None:
         with self._lock:
             if project_id is not None:
-                return self._by_q.get((project_id, name))
+                matches = sorted(
+                    (
+                        self._by_q[(project_id, name, kind)]
+                        for kind in GlobalSymbolKind
+                        if (project_id, name, kind) in self._by_q
+                    ),
+                    key=self._sort_key,
+                )
+                return matches[0] if matches else None
             matches = sorted(
-                (symbol for (scope, qualified), symbol in self._by_q.items() if qualified == name),
+                (
+                    symbol
+                    for (_, qualified, _), symbol in self._by_q.items()
+                    if qualified == name
+                ),
                 key=self._sort_key,
             )
             return matches[0] if matches else None
@@ -133,7 +152,11 @@ class GlobalSymbolDatabase:
     def find_qualified(self, name: str) -> tuple[GlobalSymbol, ...]:
         with self._lock:
             return tuple(sorted(
-                (symbol for (_, qualified), symbol in self._by_q.items() if qualified == name),
+                (
+                    symbol
+                    for (_, qualified, _), symbol in self._by_q.items()
+                    if qualified == name
+                ),
                 key=self._sort_key,
             ))
 
@@ -176,7 +199,9 @@ class GlobalSymbolDatabase:
             doomed = tuple(self._by_source.pop(source, ()))
             for symbol in doomed:
                 self._by_id.pop(symbol.id, None)
-                self._by_q.pop((symbol.project_id, symbol.qualified_name), None)
+                self._by_q.pop(
+                    (symbol.project_id, symbol.qualified_name, symbol.kind), None
+                )
                 by_name = [
                     candidate
                     for candidate in self._by_name[symbol.name]
@@ -197,7 +222,9 @@ class GlobalSymbolDatabase:
             if len(self._by_q) != len(symbols):
                 raise RuntimeError("qualified-name index size is inconsistent")
             for symbol in symbols:
-                if self._by_q.get((symbol.project_id, symbol.qualified_name)) is not symbol:
+                if self._by_q.get(
+                    (symbol.project_id, symbol.qualified_name, symbol.kind)
+                ) is not symbol:
                     raise RuntimeError(f"qualified-name index is inconsistent: {symbol.qualified_name}")
                 if symbol not in self._by_name.get(symbol.name, ()):
                     raise RuntimeError(f"simple-name index is inconsistent: {symbol.name}")

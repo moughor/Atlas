@@ -152,6 +152,32 @@ def test_parses_fields_methods_and_constructor() -> None:
     assert decl.methods[0].throws == ("NotFoundException",)
 
 
+def test_constructor_call_field_initializer_is_not_parsed_as_method() -> None:
+    unit = parse(r"""
+        class CookieRules {
+            private static final String SEPARATORS = new String(
+                new char[] {'\\', '/'}
+            );
+        }
+    """)
+
+    declaration = unit.types[0]
+    assert declaration.methods == ()
+    assert len(declaration.fields) == 1
+    assert declaration.fields[0].name == "SEPARATORS"
+    assert declaration.fields[0].type_name == "String"
+    assert declaration.fields[0].initializer == r"newString(newchar[]{'\\','/'})"
+
+
+def test_factory_call_field_initializer_is_not_parsed_as_method() -> None:
+    declaration = parse("class Flags { static final int MASK = factory(1); }").types[0]
+
+    assert declaration.methods == ()
+    assert declaration.fields[0].name == "MASK"
+    assert declaration.fields[0].type_name == "int"
+    assert declaration.fields[0].initializer == "factory(1)"
+
+
 def test_parses_generic_method_varargs_and_arrays() -> None:
     unit = JavaParser().parse_source("""
         class Tools {

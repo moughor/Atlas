@@ -218,6 +218,6 @@ class SemanticContextCollector:
         for symbol in values:
             if (
                 isinstance(symbol, GlobalSymbol)
-                and database.by_qualified_name(symbol.qualified_name, symbol.project_id) is None
+                and database.get(symbol.id) is None
             ):
                 database.add(symbol)

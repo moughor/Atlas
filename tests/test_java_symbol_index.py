@@ -9,6 +9,7 @@ from moughorai.java_symbols import (
     JavaSymbolService,
     SymbolKind,
 )
+from moughorai.global_symbols import GlobalSymbolDatabaseBuilder, GlobalSymbolKind
 
 
 def parse(source: str):
@@ -31,6 +32,47 @@ def test_builds_fully_qualified_type_and_member_symbols() -> None:
     assert index.find("com.example.UserService.repository")[0].kind is SymbolKind.FIELD
     assert index.find("com.example.UserService#<init>(UserRepository)")
     assert index.find("com.example.UserService#find(long)")
+
+
+def test_indexes_constructor_call_initializer_as_field_only() -> None:
+    unit = parse(r"""
+        package com.example;
+        class CookieRules {
+            private static final String SEPARATORS =
+                new String(new char[] {'\\', '/'});
+        }
+    """)
+
+    index = JavaSymbolIndexBuilder().build((unit,))
+
+    fields = index.find("com.example.CookieRules.SEPARATORS")
+    assert len(fields) == 1
+    assert fields[0].kind is SymbolKind.FIELD
+    assert not index.find("com.example.CookieRules#String(newchar[]{'\\','/'})")
+
+
+def test_field_and_nested_type_with_same_name_remain_distinct_symbols() -> None:
+    index = JavaSymbolIndexBuilder().build((parse("""
+        package com.example;
+        class ContextElement {
+            static final Key Key = new Key();
+            static final class Key {}
+        }
+    """),))
+
+    java_symbols = index.find("com.example.ContextElement.Key")
+    global_symbols = GlobalSymbolDatabaseBuilder().build(index).find_qualified(
+        "com.example.ContextElement.Key"
+    )
+
+    assert tuple(symbol.kind for symbol in java_symbols) == (
+        SymbolKind.FIELD,
+        SymbolKind.TYPE,
+    )
+    assert tuple(symbol.kind for symbol in global_symbols) == (
+        GlobalSymbolKind.FIELD,
+        GlobalSymbolKind.TYPE,
+    )
 
 
 def test_indexes_nested_types_with_enclosing_qualified_name() -> None:

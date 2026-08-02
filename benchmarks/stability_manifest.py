@@ -36,11 +36,14 @@ _PORTABLE_WORKSPACE_FINGERPRINT = "PATH_SCOPED_WORKSPACE_FINGERPRINT"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _BENCHMARK_ID = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?")
+# A UNC root is complete only when both server and share components are present.
+# Requiring that shape avoids treating escaped language text such as ``'\\\\'``
+# as a machine path while retaining the source-free publication boundary.
 _MACHINE_PATH = re.compile(
     r"(?ix)(?:"
     r"file://[^\s,;\)\]\}]+"
     r"|(?<![A-Za-z0-9._-])[A-Z]:[\\/][^\s,;\)\]\}]+"
-    r"|(?<![:A-Za-z0-9\\/])(?:\\\\|//)[^\s,;\)\]\}]+"
+    r"|(?<![:A-Za-z0-9\\/])(?:\\\\|//)[^\\/\s,;\)\]\}]+[\\/][^\\/\s,;\)\]\}]+"
     r"|(?:^|[\s=:\(\[\{])/(?![/*])[^\s,;\)\]\}]+"
     r")"
 )

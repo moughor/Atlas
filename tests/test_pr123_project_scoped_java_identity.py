@@ -117,6 +117,60 @@ def test_duplicate_symbol_inside_same_project_is_rejected() -> None:
         GlobalSymbolDatabase((symbol, symbol))
 
 
+def test_distinct_symbol_kinds_with_same_qualified_name_coexist() -> None:
+    field = GlobalSymbol.create(
+        GlobalSymbolKind.FIELD, "Key", "demo.Container.Key", project_id="one",
+    )
+    nested_type = GlobalSymbol.create(
+        GlobalSymbolKind.TYPE, "Key", "demo.Container.Key", project_id="one",
+    )
+
+    database = GlobalSymbolDatabase((field, nested_type))
+    snapshot = database.snapshot()
+
+    assert database.find_qualified("demo.Container.Key") == (field, nested_type)
+    assert snapshot.find_qualified("demo.Container.Key") == (field, nested_type)
+    assert database.by_qualified_name("demo.Container.Key", "one") == field
+    assert snapshot.by_qualified_name("demo.Container.Key", "one") == field
+    database.validate()
+
+
+def test_normal_pipeline_keeps_same_name_field_and_nested_type_metadata_distinct(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "atlas.yaml").write_text(
+        "projects:\n  - name: demo\n    path: .\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Container.java").write_text(
+        "package demo; "
+        "class Base {} "
+        "class Container { "
+        "@Deprecated private static final Key Key = new Key(); "
+        "public static final class Key extends Base {} "
+        "}",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["analyze", str(tmp_path), "--no-recover"])
+
+    assert result.exit_code == 0, result.output
+    snapshot = SemanticSnapshotStore(WorkspaceService(tmp_path).workspace).load()
+    assert snapshot is not None
+    matches = [
+        symbol
+        for symbol in snapshot.semantic_context["symbols"]
+        if symbol["qualified_name"] == "demo.Container.Key"
+    ]
+    by_kind = {symbol["kind"]: symbol["metadata"] for symbol in matches}
+    assert set(by_kind) == {"field", "type"}
+    assert by_kind["field"]["visibility"] == "private"
+    assert by_kind["field"]["annotations"] == "Deprecated"
+    assert "inherits" not in by_kind["field"]
+    assert by_kind["type"]["visibility"] == "public"
+    assert by_kind["type"]["inherits"] == "demo.Base"
+
+
 def test_junit_style_default_package_types_coexist_in_snapshot(tmp_path: Path) -> None:
     source = "public class DefaultPackageTestCase {}"
     _java_project(tmp_path, "jupiter-tests", source)

@@ -397,7 +397,7 @@ def _with_java_relations(
 ) -> tuple[GlobalSymbol, ...]:
     """Persist only resolved Java relations that survive recovery."""
     java_symbols = {
-        symbol.qualified_name: symbol
+        (symbol.kind.value, symbol.qualified_name): symbol
         for symbol in index.symbols
     }
     inheritance: dict[str, set[str]] = {}
@@ -444,7 +444,7 @@ def _with_java_relations(
     enriched = []
     for symbol in symbols:
         metadata = dict(symbol.metadata)
-        java_symbol = java_symbols.get(symbol.qualified_name)
+        java_symbol = java_symbols.get((symbol.kind.value, symbol.qualified_name))
         if java_symbol is not None:
             modifiers = tuple(sorted(set(getattr(java_symbol, "modifiers", ()))))
             annotations = tuple(sorted(set(getattr(java_symbol, "annotations", ()))))
@@ -465,8 +465,16 @@ def _with_java_relations(
                 and {"public", "static"}.issubset(modifiers)
             ):
                 metadata["entry_point"] = "java-main"
-        inherited = inheritance.get(symbol.qualified_name)
-        overridden = overrides.get(symbol.qualified_name)
+        inherited = (
+            inheritance.get(symbol.qualified_name)
+            if symbol.kind is GlobalSymbolKind.TYPE
+            else None
+        )
+        overridden = (
+            overrides.get(symbol.qualified_name)
+            if symbol.kind is GlobalSymbolKind.METHOD
+            else None
+        )
         if inherited:
             metadata["inherits"] = ",".join(sorted(inherited))
         if overridden:

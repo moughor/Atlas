@@ -16,7 +16,11 @@ from .configuration import ResolvedConfiguration
 from .event_bus import WorkspaceEvent, WorkspaceEventKind
 from .execution import ProjectRunStatus, WorkspaceAnalysisOrchestrator, WorkspaceRunReport
 from .models import Project
-from .persistence import WorkspaceStateError, WorkspaceStateStore
+from .persistence import (
+    ANALYSIS_RESULT_PRODUCER_FINGERPRINT,
+    WorkspaceStateError,
+    WorkspaceStateStore,
+)
 from .service import WorkspaceService
 
 
@@ -60,6 +64,7 @@ class WorkspaceRecoveryJournal:
     projects: tuple[RecoveryProject, ...]
     started_at: str
     updated_at: str
+    producer_fingerprint: str = ANALYSIS_RESULT_PRODUCER_FINGERPRINT
 
     def get(self, name: str) -> RecoveryProject:
         for project in self.projects:
@@ -98,6 +103,7 @@ class WorkspaceRecoveryJournal:
             "projects": {project.name: project.to_dict() for project in self.projects},
             "started_at": self.started_at,
             "updated_at": self.updated_at,
+            "producer_fingerprint": self.producer_fingerprint,
         }
 
     @classmethod
@@ -111,6 +117,12 @@ class WorkspaceRecoveryJournal:
             raw_projects = data["projects"]
             started_at = str(data["started_at"])
             updated_at = str(data["updated_at"])
+            producer_fingerprint = str(
+                data.get(
+                    "producer_fingerprint",
+                    "atlas/legacy:unversioned-analysis-result",
+                )
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise WorkspaceRecoveryError("recovery journal is missing required fields") from exc
         if schema != RECOVERY_SCHEMA_VERSION:
@@ -133,7 +145,17 @@ class WorkspaceRecoveryJournal:
             projects.append(RecoveryProject(name, status, raw.get("value"), _optional_string(raw.get("error"))))
         _parse_time(started_at)
         _parse_time(updated_at)
-        return cls(schema, workspace_fingerprint, configuration_fingerprint, requested, order, tuple(projects), started_at, updated_at)
+        return cls(
+            schema,
+            workspace_fingerprint,
+            configuration_fingerprint,
+            requested,
+            order,
+            tuple(projects),
+            started_at,
+            updated_at,
+            producer_fingerprint,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +196,7 @@ class WorkspaceRecoveryManager:
         encoder: Callable[[Any], Any] | None = None,
         decoder: Callable[[Any], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
+        producer_fingerprint: str | None = None,
     ) -> None:
         self.service = service
         configured_path = configuration.get("recovery.path") if configuration is not None else None
@@ -187,7 +210,29 @@ class WorkspaceRecoveryManager:
         self.configuration = configuration
         self.encoder = encoder or (lambda value: value)
         self.decoder = decoder or (lambda value: value)
-        self.state_store = state_store or WorkspaceStateStore(service, encoder=self.encoder, decoder=self.decoder)
+        resolved_producer = (
+            producer_fingerprint
+            if producer_fingerprint is not None
+            else getattr(
+                state_store,
+                "producer_fingerprint",
+                ANALYSIS_RESULT_PRODUCER_FINGERPRINT,
+            )
+        )
+        if not isinstance(resolved_producer, str) or not resolved_producer.strip():
+            raise ValueError("producer_fingerprint must be a non-empty string")
+        self.producer_fingerprint = resolved_producer.strip()
+        if (
+            state_store is not None
+            and state_store.producer_fingerprint != self.producer_fingerprint
+        ):
+            raise ValueError("state_store producer fingerprint is inconsistent")
+        self.state_store = state_store or WorkspaceStateStore(
+            service,
+            encoder=self.encoder,
+            decoder=self.decoder,
+            producer_fingerprint=self.producer_fingerprint,
+        )
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = RLock()
         self._journal: WorkspaceRecoveryJournal | None = None
@@ -231,6 +276,7 @@ class WorkspaceRecoveryManager:
             tuple(RecoveryProject(project.name, RecoveryProjectStatus.PENDING) for project in order),
             now,
             now,
+            self.producer_fingerprint,
         )
         self._save(self._journal)
         self.service.events.emit(WorkspaceEventKind.RECOVERY_STARTED, source="workspace.recovery", payload=self._report(self._journal, True).to_dict())
@@ -369,6 +415,8 @@ class WorkspaceRecoveryManager:
             return None, self._invalidate("workspace fingerprint changed")
         if journal.configuration_fingerprint != self._configuration_fingerprint():
             return None, self._invalidate("recovery configuration changed")
+        if journal.producer_fingerprint != self.producer_fingerprint:
+            return None, self._invalidate("analysis producer changed")
         current = set(self.service.workspace.names())
         if set(journal.analysis_order) != current.intersection(journal.analysis_order) or not set(journal.requested).issubset(current):
             return None, self._invalidate("workspace project set changed")

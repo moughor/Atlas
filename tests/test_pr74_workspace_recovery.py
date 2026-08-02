@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 from threading import Lock
@@ -48,6 +49,11 @@ def interrupt_after_core(manager: WorkspaceRecoveryManager, orchestrator: Worksp
 def test_default_journal_path(tmp_path: Path) -> None:
     manager = WorkspaceRecoveryManager(make_service(tmp_path))
     assert manager.path == tmp_path / ".atlas" / "workspace-recovery.json"
+
+
+def test_recovery_manager_rejects_empty_producer_fingerprint(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="producer_fingerprint"):
+        WorkspaceRecoveryManager(make_service(tmp_path), producer_fingerprint="")
 
 
 def test_interruption_leaves_durable_statuses(tmp_path: Path) -> None:
@@ -163,6 +169,49 @@ def test_configuration_change_invalidates_journal(tmp_path: Path) -> None:
     manager.execute(WorkspaceAnalysisOrchestrator(service), lambda project, dependencies: project.name)
     report = WorkspaceRecoveryManager(service, configuration=second).inspect()
     assert report.invalidated and report.invalidation_reason == "recovery configuration changed"
+
+
+def test_analysis_producer_change_invalidates_journal(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    WorkspaceRecoveryManager(
+        service,
+        producer_fingerprint="test/old",
+    ).execute(
+        WorkspaceAnalysisOrchestrator(service),
+        lambda project, dependencies: project.name,
+    )
+
+    report = WorkspaceRecoveryManager(
+        service,
+        producer_fingerprint="test/new",
+    ).inspect()
+
+    assert report.invalidated
+    assert report.invalidation_reason == "analysis producer changed"
+
+
+def test_unversioned_legacy_journal_is_read_then_invalidated(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    manager = WorkspaceRecoveryManager(service)
+    manager.execute(
+        WorkspaceAnalysisOrchestrator(service),
+        lambda project, dependencies: project.name,
+    )
+    envelope = json.loads(manager.path.read_text(encoding="utf-8"))
+    envelope["journal"].pop("producer_fingerprint")
+    canonical = json.dumps(
+        envelope["journal"],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    envelope["checksum"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    manager.path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    report = WorkspaceRecoveryManager(service).inspect()
+
+    assert report.invalidated
+    assert report.invalidation_reason == "analysis producer changed"
 
 
 def test_stale_journal_is_invalidated(tmp_path: Path) -> None:

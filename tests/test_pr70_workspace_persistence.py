@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from moughorai.workspace import (
+    ANALYSIS_RESULT_PRODUCER_FINGERPRINT,
     STATE_SCHEMA_VERSION,
     WorkspaceAnalysisOrchestrator,
     WorkspacePersistentState,
@@ -47,6 +48,12 @@ def test_capture_includes_schema_and_valid_results(tmp_path: Path) -> None:
     assert state.schema_version == STATE_SCHEMA_VERSION
     assert dict(state.results)["core"]["project"] == "core"
     assert state.valid_projects == ("api", "core", "ui")
+    assert state.producer_fingerprint == ANALYSIS_RESULT_PRODUCER_FINGERPRINT
+
+
+def test_state_store_rejects_empty_producer_fingerprint(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="producer_fingerprint"):
+        WorkspaceStateStore(make_service(tmp_path), producer_fingerprint="")
 
 
 def test_capture_ignores_unknown_results(tmp_path: Path) -> None:
@@ -126,6 +133,38 @@ def test_restore_all_unchanged_results(tmp_path: Path) -> None:
     assert tuple(sorted(results)) == ("api", "core", "ui")
     assert report.restored == ("api", "core", "ui")
     assert report.invalidated == ()
+
+
+def test_changed_analysis_producer_invalidates_persisted_results(
+    tmp_path: Path,
+) -> None:
+    service, orch = populated(tmp_path)
+    old_store = WorkspaceStateStore(service, producer_fingerprint="test/old")
+    state = old_store.capture(orch._results, orch.planner.valid_projects)
+
+    results, report = WorkspaceStateStore(
+        service,
+        producer_fingerprint="test/new",
+    ).restore(state)
+
+    assert results == {}
+    assert report.invalidated == ("api", "core", "ui")
+
+
+def test_unversioned_legacy_state_loads_but_is_not_reused(tmp_path: Path) -> None:
+    service, orch = populated(tmp_path)
+    current = WorkspaceStateStore(service).capture(
+        orch._results,
+        orch.planner.valid_projects,
+    )
+    payload = current.to_dict()
+    payload.pop("producer_fingerprint")
+
+    legacy = WorkspacePersistentState.from_dict(payload)
+    results, report = WorkspaceStateStore(service).restore(legacy)
+
+    assert results == {}
+    assert report.invalidated == ("api", "core", "ui")
 
 
 def test_restore_none_reports_no_state(tmp_path: Path) -> None:

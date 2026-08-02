@@ -228,9 +228,14 @@ def test_portable_projection_rejects_normalized_key_collisions(tmp_path: Path) -
         r"declared_dependency:maven:org.acme.treeshake:lib-a:\${project.version}:compile",
         r"dependency:maven:org.acme.treeshake%3Alib-e:%5C%24%7Bproject.version%7D:compile",
         r'''char[]quotedChars="()<>@,;:\\\"/[]?= \t\r\n".''',
+        r"org.example.CookieRules#String(newchar[]{'\\','/'})",
+        r'''org.springframework.http.ResponseCookie.Rfc6265Utils#String(newchar[]{'(',')','<','>','@',',',';',':','\\','"','/','[',']','?','=','{','}',' '})''',
+        r"java.util.regex.Pattern#compile(\d+\s+)",
+        r"character:'\\'",
+        r"semantic\identifier",
     ),
 )
-def test_machine_path_detection_preserves_quarkus_semantic_syntax(value: str) -> None:
+def test_machine_path_detection_preserves_escaped_semantic_syntax(value: str) -> None:
     assert not contains_machine_path(value)
 
 
@@ -241,8 +246,13 @@ def test_machine_path_detection_preserves_quarkus_semantic_syntax(value: str) ->
         r"source=C%3A%5CUsers%5Calice%5Crepository%5Cpom.xml",
         r"\\server\share\repository\pom.xml",
         "//server/share/repository/pom.xml",
+        r"source=%5C%5Cserver%5Cshare%5Crepository%5Cpom.xml",
+        r"source=%255C%255Cserver%255Cshare%255Crepository%255Cpom.xml",
+        r"\\?\C:\repository\pom.xml",
+        r"\\.\pipe\atlas",
         "file:///C:/Users/alice/repository/pom.xml",
         "/home/alice/repository/pom.xml",
+        r"temp=C:\Users\alice\AppData\Local\Temp\atlas\result.json",
     ),
 )
 def test_machine_path_detection_still_rejects_real_machine_paths(value: str) -> None:
@@ -283,6 +293,53 @@ def test_portable_snapshot_accepts_quarkus_semantic_syntax(tmp_path: Path) -> No
     assert projected["semantic_context"]["semantic_graph"]["nodes"][0][
         "id"
     ] == dependency_id
+
+
+def test_portable_snapshot_preserves_escaped_semantic_text_deterministically(
+    tmp_path: Path,
+) -> None:
+    signature = r"org.example.CookieRules#String(newchar[]{'\\','/'})"
+    context = WorkspaceSemanticContext({
+        "schema_version": 1,
+        "semantic_graph": {
+            "nodes": [{"id": "method:fixture", "qualified_name": signature}],
+            "edges": [],
+        },
+        "unknown_extension": {"regex": r"\d+\s+", "character": r"'\\'"},
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="path-scoped",
+        analyzer_version="2.0.0",
+    )
+
+    first = portable_snapshot_payload(snapshot, tmp_path)
+    encoded = json.dumps(first, ensure_ascii=False, sort_keys=True)
+    round_tripped = json.loads(encoded)
+    second = portable_snapshot_payload(snapshot, tmp_path)
+
+    assert round_tripped == first == second
+    assert json.dumps(second, ensure_ascii=False, sort_keys=True) == encoded
+    assert first["semantic_context"]["semantic_graph"]["nodes"][0][
+        "qualified_name"
+    ] == signature
+
+
+def test_portable_snapshot_unknown_fields_do_not_bypass_path_validation(
+    tmp_path: Path,
+) -> None:
+    context = WorkspaceSemanticContext({
+        "schema_version": 1,
+        "unknown_extension": {"nested": [r"\\server\share\secret.txt"]},
+    })
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="path-scoped",
+        analyzer_version="2.0.0",
+    )
+
+    with pytest.raises(ValueError, match=r"unknown_extension.*nested"):
+        portable_snapshot_payload(snapshot, tmp_path)
 
 
 def test_portable_snapshot_reports_machine_path_location(tmp_path: Path) -> None:

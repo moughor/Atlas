@@ -169,8 +169,11 @@ class JavaParser:
         if not signature:
             raise JavaParseError("Expected member declaration", self._current())
 
+        assignment = self._first_top_level(signature, JavaTokenType.ASSIGN)
         paren_index = self._first_top_level(signature, JavaTokenType.LEFT_PAREN)
-        if paren_index is not None:
+        if paren_index is not None and (
+            assignment is None or paren_index < assignment
+        ):
             close_index = self._matching_index(signature, paren_index, JavaTokenType.LEFT_PAREN, JavaTokenType.RIGHT_PAREN)
             name_index = paren_index - 1
             if name_index < 0:
@@ -194,7 +197,6 @@ class JavaParser:
             self._consume_member_terminator()
             return result
 
-        assignment = self._first_top_level(signature, JavaTokenType.ASSIGN)
         declaration = signature if assignment is None else signature[:assignment]
         initializer = None if assignment is None else self._join(signature[assignment + 1:]) or None
         if len(declaration) < 2:
