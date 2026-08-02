@@ -173,6 +173,7 @@ class KnowledgeGraphBuilder:
                 qualified_name=qualified_name,
                 project_id=project,
                 language=str(item.get("language") or "unknown"),
+                scope_id=str(item.get("scope_id") or ""),
             ))
             symbol_ids.add(node_id)
 

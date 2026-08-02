@@ -18,7 +18,12 @@ from moughorai.java_architecture import (
     JavaArchitectureService,
 )
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
-from moughorai.java_symbols import JavaSymbolIndex, MethodSymbol, SymbolKind
+from moughorai.java_symbols import (
+    DuplicateTypeError,
+    JavaSymbolIndex,
+    MethodSymbol,
+    SymbolKind,
+)
 from moughorai.java_workspace import JavaWorkspaceScanner, SourceRootKind
 from moughorai.python_semantics import PythonSemanticAnalyzer
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
@@ -245,7 +250,39 @@ class JavaLanguageAnalyzer:
                     "ATLAS-JAVA-PARSE", str(exc), DiagnosticSeverity.ERROR,
                     location=path, pass_name="java-language-analyzer",
                 ))
-        index = self._symbol_builder.build(tuple(units), tuple(sources), project_id=project.name)
+        try:
+            index = self._symbol_builder.build(
+                tuple(units), tuple(sources), project_id=project.name,
+            )
+        except DuplicateTypeError as error:
+            isolated = (
+                self._analyze_gradle_source_sets(
+                    project,
+                    tuple(units),
+                    tuple(sources),
+                    error,
+                )
+                if gradle_project
+                else None
+            )
+            if isolated is None:
+                raise
+            isolated_units, symbols = isolated
+            diagnostics.append(Diagnostic(
+                "ATLAS-JAVA-SOURCE-SETS-PARTIAL",
+                f"Gradle project {project.name!r} contains conflicting types "
+                "in distinct conventional source sets; source sets were "
+                "analyzed independently and cross-source-set architecture "
+                "relations are unavailable",
+                DiagnosticSeverity.WARNING,
+                location=None,
+                pass_name="java-language-analyzer",
+            ))
+            return (
+                SemanticDocument("java", "", isolated_units)
+                .with_artifact("global_symbols", symbols)
+                .with_diagnostics(diagnostics)
+            )
         symbols = _scope_symbols(self._global_builder.build(index).snapshot().symbols, project.name)
         architecture = self._architecture.build(index, tuple(units))
         symbols = _with_java_relations(symbols, index, architecture)
@@ -257,10 +294,76 @@ class JavaLanguageAnalyzer:
             .with_diagnostics(diagnostics)
         )
 
+    def _analyze_gradle_source_sets(
+        self,
+        project: Project,
+        units: tuple[object, ...],
+        sources: tuple[Path, ...],
+        error: DuplicateTypeError,
+    ) -> tuple[tuple[object, ...], tuple[GlobalSymbol, ...]] | None:
+        """Recover only when conventional Gradle source-set evidence is exact."""
+        first_scope = _gradle_java_source_set(project.path, error.first_source)
+        second_scope = _gradle_java_source_set(project.path, error.second_source)
+        if (
+            first_scope is None
+            or second_scope is None
+            or first_scope == second_scope
+        ):
+            return None
+
+        grouped: dict[str, list[tuple[Path, object]]] = {}
+        for unit, source in zip(units, sources, strict=True):
+            source_set = _gradle_java_source_set(project.path, source)
+            if source_set is None:
+                return None
+            grouped.setdefault(source_set, []).append((source, unit))
+
+        ordered_units: list[object] = []
+        scoped_symbols: list[GlobalSymbol] = []
+        for source_set in sorted(grouped):
+            entries = sorted(
+                grouped[source_set],
+                key=lambda item: item[0].resolve().relative_to(
+                    project.path.resolve()
+                ).as_posix(),
+            )
+            scoped_sources = tuple(item[0] for item in entries)
+            scoped_units = tuple(item[1] for item in entries)
+            index = self._symbol_builder.build(
+                scoped_units,
+                scoped_sources,
+                project_id=project.name,
+            )
+            scope_id = f"gradle-source-set:{source_set}"
+            evidence = {
+                "analysis_scope": source_set,
+                "analysis_status": "partial",
+                "architecture_relations": "unavailable",
+                "source_scope_evidence": "conventional-gradle-source-set",
+            }
+            symbols = _scope_symbols(
+                self._global_builder.build(index).snapshot().symbols,
+                project.name,
+                scope_id=scope_id,
+                metadata=evidence,
+            )
+            scoped_symbols.extend(_with_java_relations(
+                symbols,
+                index,
+                JavaArchitectureGraph(),
+            ))
+            ordered_units.extend(scoped_units)
+        return tuple(ordered_units), tuple(scoped_symbols)
+
 
 _VERSIONED_GRADLE_JAVA_PATH = re.compile(
-    r"^src/(main|test)/java[1-9][0-9]*/(.+)$"
+    r"^src/(?:(?P<source_set_a>main|test)/java[1-9][0-9]*|"
+    r"(?P<source_set_b>main|test)[1-9][0-9]*/java)/(?P<tail>.+)$"
 )
+_CONVENTIONAL_GRADLE_JAVA_PATH = re.compile(
+    r"^src/(?P<source_set>[A-Za-z][A-Za-z0-9_-]*)/java/.+$"
+)
+_VERSIONED_GRADLE_SOURCE_SET = re.compile(r"^(?:main|test)[1-9][0-9]*$")
 
 
 def _without_shadowed_gradle_variants(
@@ -283,12 +386,29 @@ def _without_shadowed_gradle_variants(
         if match is None:
             selected.append(path)
             continue
-        baseline = project_root / "src" / match.group(1) / "java" / match.group(2)
+        source_set = match.group("source_set_a") or match.group("source_set_b")
+        baseline = project_root / "src" / source_set / "java" / match.group("tail")
         if baseline.resolve() not in eligible:
             selected.append(path)
             continue
         shadowed.append(path)
     return tuple(selected), tuple(shadowed)
+
+
+def _gradle_java_source_set(root: Path, source: object) -> str | None:
+    if not isinstance(source, (str, Path)):
+        return None
+    try:
+        relative = Path(source).resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    match = _CONVENTIONAL_GRADLE_JAVA_PATH.fullmatch(relative)
+    if match is None:
+        return None
+    source_set = match.group("source_set")
+    if _VERSIONED_GRADLE_SOURCE_SET.fullmatch(source_set):
+        return None
+    return source_set
 
 
 class PythonLanguageAnalyzer:
@@ -376,15 +496,28 @@ def _normalize_extension(value: str) -> str:
     return normalized if normalized.startswith(".") else f".{normalized}"
 
 
-def _scope_symbols(symbols: tuple[GlobalSymbol, ...], project_id: str) -> tuple[GlobalSymbol, ...]:
+def _scope_symbols(
+    symbols: tuple[GlobalSymbol, ...],
+    project_id: str,
+    *,
+    scope_id: str | None = None,
+    metadata: Mapping[str, str] | None = None,
+) -> tuple[GlobalSymbol, ...]:
     ids = {
-        symbol.id: SymbolId.from_parts(symbol.kind, symbol.qualified_name, project_id)
+        symbol.id: SymbolId.from_parts(
+            symbol.kind,
+            symbol.qualified_name,
+            project_id,
+            scope_id,
+        )
         for symbol in symbols
     }
     return tuple(
         GlobalSymbol(
             ids[symbol.id], symbol.kind, symbol.name, symbol.qualified_name,
-            ids.get(symbol.owner_id), symbol.source, symbol.metadata, project_id,
+            ids.get(symbol.owner_id), symbol.source,
+            tuple(sorted({**dict(symbol.metadata), **(metadata or {})}.items())),
+            project_id, scope_id,
         )
         for symbol in symbols
     )

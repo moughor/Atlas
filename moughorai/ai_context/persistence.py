@@ -110,7 +110,7 @@ def decode_analysis_result(value: Any) -> Any:
 
 
 def _encode_symbol(symbol: GlobalSymbol) -> dict[str, Any]:
-    return {
+    result = {
         "kind": symbol.kind.value,
         "name": symbol.name,
         "qualified_name": symbol.qualified_name,
@@ -119,6 +119,9 @@ def _encode_symbol(symbol: GlobalSymbol) -> dict[str, Any]:
         "metadata": dict(symbol.metadata),
         "project_id": symbol.project_id,
     }
+    if symbol.scope_id is not None:
+        result["scope_id"] = symbol.scope_id
+    return result
 
 
 def _decode_symbol(value: Mapping[str, Any]) -> GlobalSymbol:
@@ -129,6 +132,7 @@ def _decode_symbol(value: Mapping[str, Any]) -> GlobalSymbol:
         source=Path(value["source"]) if value.get("source") is not None else None,
         metadata={str(key): str(item) for key, item in value.get("metadata", {}).items()},
         project_id=str(value["project_id"]) if value.get("project_id") is not None else None,
+        scope_id=str(value["scope_id"]) if value.get("scope_id") is not None else None,
     )
     owner = value.get("owner_id")
     if owner is None:
@@ -142,6 +146,7 @@ def _decode_symbol(value: Mapping[str, Any]) -> GlobalSymbol:
         symbol.source,
         symbol.metadata,
         symbol.project_id,
+        symbol.scope_id,
     )
 
 

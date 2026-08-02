@@ -107,12 +107,15 @@ class WorkspaceContextBuilder:
         edges: dict[tuple[str, str, str], set[str]] = {}
         by_name: dict[str, list[GlobalSymbol]] = {}
         by_suffix: dict[str, list[GlobalSymbol]] = {}
-        by_scoped = {
-            (symbol.project_id, symbol.qualified_name): symbol
-            for symbol in ordered
-        }
+        by_scoped: dict[
+            tuple[str | None, str | None, str], list[GlobalSymbol]
+        ] = {}
         for symbol in ordered:
             by_name.setdefault(symbol.qualified_name, []).append(symbol)
+            by_scoped.setdefault(
+                (symbol.project_id, symbol.scope_id, symbol.qualified_name),
+                [],
+            ).append(symbol)
             by_suffix.setdefault(
                 symbol.qualified_name.rsplit(".", 1)[-1],
                 [],
@@ -126,19 +129,44 @@ class WorkspaceContextBuilder:
         ) -> None:
             edges.setdefault((source, target, kind), set()).add(evidence)
 
-        def resolve(reference: str, project_id: str | None) -> GlobalSymbol | None:
-            scoped = by_scoped.get((project_id, reference))
-            if scoped is not None:
-                return scoped
+        def resolve(
+            reference: str,
+            source: GlobalSymbol,
+        ) -> GlobalSymbol | None:
+            scoped = by_scoped.get(
+                (source.project_id, source.scope_id, reference),
+                (),
+            )
+            if len(scoped) == 1:
+                return scoped[0]
+            if source.scope_id is not None:
+                return None
             exact = by_name.get(reference, ())
+            project_exact = tuple(
+                item for item in exact if item.project_id == source.project_id
+            )
+            if len(project_exact) == 1:
+                return project_exact[0]
+            if len(project_exact) > 1:
+                return None
             if len(exact) == 1:
                 return exact[0]
             suffix = by_suffix.get(reference.rsplit(".", 1)[-1], ())
             scoped_suffix = tuple(
-                item for item in suffix if item.project_id == project_id
+                item
+                for item in suffix
+                if item.project_id == source.project_id
+                and item.scope_id == source.scope_id
             )
             if len(scoped_suffix) == 1:
                 return scoped_suffix[0]
+            project_suffix = tuple(
+                item for item in suffix if item.project_id == source.project_id
+            )
+            if len(project_suffix) == 1:
+                return project_suffix[0]
+            if len(project_suffix) > 1:
+                return None
             return suffix[0] if len(suffix) == 1 else None
 
         for symbol in ordered:
@@ -149,13 +177,16 @@ class WorkspaceContextBuilder:
                     ".java": "java", ".py": "python", ".pyi": "python",
                     ".ts": "typescript", ".tsx": "typescript",
                 }.get(symbol.source.suffix.casefold(), "unknown")
-            nodes.append({
+            node = {
                 "id": str(symbol.id),
                 "project_id": symbol.project_id,
                 "language": language or "unknown",
                 "kind": symbol.kind.value,
                 "qualified_name": symbol.qualified_name,
-            })
+            }
+            if symbol.scope_id is not None:
+                node["scope_id"] = symbol.scope_id
+            nodes.append(node)
             if symbol.owner_id is not None:
                 add_edge(
                     str(symbol.id),
@@ -165,7 +196,7 @@ class WorkspaceContextBuilder:
                 )
             for imported in filter(None, metadata.get("imports", "").split(",")):
                 normalized = imported.lstrip(".").replace("/", ".")
-                target = resolve(normalized, symbol.project_id)
+                target = resolve(normalized, symbol)
                 if target is not None:
                     add_edge(
                         str(symbol.id),
@@ -179,7 +210,7 @@ class WorkspaceContextBuilder:
                 ("overrides", "overrides"),
             ):
                 for reference in filter(None, metadata.get(key, "").split(",")):
-                    target = resolve(reference, symbol.project_id)
+                    target = resolve(reference, symbol)
                     if target is not None:
                         add_edge(
                             str(symbol.id),
@@ -271,6 +302,8 @@ class WorkspaceContextBuilder:
         }
         if symbol.project_id is not None:
             result["project_id"] = symbol.project_id
+        if symbol.scope_id is not None:
+            result["scope_id"] = symbol.scope_id
         return result
 
     def _types(self, values: Mapping[str, TypeTable] | TypeTable | None) -> dict[str, Any]:
