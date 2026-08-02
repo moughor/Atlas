@@ -74,12 +74,22 @@ independent conventional source scopes merely to make a duplicate disappear.
 
 For Maven, custom source roots require structured build metadata. Atlas does not
 infer a Maven compile root merely because a resource directory contains a nested
-`src/main/java` path. Gradle retains the legacy project-bounded Java scan because
-Atlas does not evaluate source-set configuration; Java-looking files in custom or
-resource roots can therefore be analyzed unless workspace enumeration excludes
-them. A conventional path is not by itself proof that Gradle compiles the file.
-Source-set identity is introduced only by the evidence-backed duplicate recovery
-described above, not by speculative build configuration inference.
+`src/main/java` path. Other Java projects now separate the complete repository
+inventory from compiled semantic inputs through bounded, evidence-ordered source
+selection. Atlas recognizes direct literal Gradle `java/resources.srcDir(s)` calls,
+root-registered IntelliJ module source/resource roots, established conventional
+source sets, and generated roots without executing build logic. Owner-relative
+`testData` and `test-data` trees remain inventory-only when no stronger compiled
+root evidence exists. Independently discovered projects and explicitly registered
+module roots override that fallback.
+
+Assignments, variables, multiline calls, alternative Gradle source-set APIs, and
+executable build logic are not evaluated. Unsupported custom-root syntax remains
+unknown rather than being inferred from a nested directory named `src`. Source-set
+identity is introduced only by the evidence-backed duplicate recovery described
+above, not by speculative build configuration inference. See
+`stability/INTELLIJ_FIXTURE_SOURCE_ROOT_INVESTIGATION.md` for the evidence hierarchy,
+preservation cases, and current JPS module-scoping limitation.
 
 Recovered source sets preserve every successfully parsed symbol plus deterministic
 member ownership, visibility, annotations, and Java `main` entry-point metadata.

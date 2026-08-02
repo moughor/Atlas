@@ -124,6 +124,11 @@ overlays, and conservative symbol scopes when duplicate types are proven across
 Gradle source sets. See
 [`docs/stability/ELASTICSEARCH_FAILURE_INVESTIGATION.md`](docs/stability/ELASTICSEARCH_FAILURE_INVESTIGATION.md).
 
+The IntelliJ diagnostic investigation separates fixture-only Java trees and
+structured resource roots from compiled semantic inputs while preserving registered
+modules and genuine duplicate failures. See
+[`docs/stability/INTELLIJ_FIXTURE_SOURCE_ROOT_INVESTIGATION.md`](docs/stability/INTELLIJ_FIXTURE_SOURCE_ROOT_INVESTIGATION.md).
+
 Run the reproducible large-workspace benchmark:
 
 ```text

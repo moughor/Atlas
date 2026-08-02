@@ -1,5 +1,26 @@
 # Changelog
 
+## M1.1 hardening - IntelliJ fixture source isolation
+
+- Added evidence-ordered Java source selection that keeps complete repository
+  inventory while excluding fixture-only `testData`/`test-data` and structured
+  resource inputs from compiled semantics.
+- Reused bounded literal Gradle evidence and root-registered IntelliJ IML metadata,
+  with deterministic containment, source/resource precedence, and canonical file
+  identity; no build logic is executed.
+- Preserved standard test, test-fixture, JMH, generated, versioned, explicit custom,
+  and independently owned nested-project sources, plus genuine duplicate rejection.
+- Advanced the analysis-result producer fingerprint to v4 so persistence and crash
+  recovery invalidate stale pre-classification semantic results.
+- Resolved both original IntelliJ fixture collisions. The 119-project corpus remains
+  diagnostic at 118/119 because two legitimate registered JPS modules define the
+  same qualified type and Atlas does not yet model their module-scoped identity.
+- Validated the complete Atlas suite at 3,827 passed and 3 platform skips; Maven at
+  92/92, Quarkus at 1,442/1,442, Spring at 29/29, and Elasticsearch at 545/545 with
+  the documented portable semantic gates preserved.
+- Kept accepted benchmark goldens unchanged; the IntelliJ failure correctly prevents
+  snapshot publication and canonical promotion.
+
 ## M1.1 hardening - Elasticsearch benchmark investigation
 
 - Added narrowly verified recursive Gradle membership discovery that remains within
