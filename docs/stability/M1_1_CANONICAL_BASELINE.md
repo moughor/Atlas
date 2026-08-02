@@ -117,6 +117,14 @@ encoded forms, and the path-scoped workspace fingerprint. It preserves all seman
 fields and rejects any remaining literal or encoded machine root. It does not remove
 source facts merely to obtain a desired hash.
 
+Machine-root detection applies recursively to keys, values, sequences, and unknown
+extension fields after repeated percent-decoding. A Windows UNC root requires a
+server and share component; isolated Java, regex, or serialized-expression escapes
+are preserved. Complete drive, UNC, file-URI, and prohibited POSIX roots remain
+rejected. Path-bearing DTOs separately require normalized repository-relative paths
+without backslashes or upward traversal. See
+`SPRING_PORTABLE_PATH_HARDENING.md` for the security review and regression matrix.
+
 ## Fresh checkout and capture
 
 Use an empty target outside the Atlas source tree. `prepare` refuses an existing

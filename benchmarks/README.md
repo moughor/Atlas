@@ -39,6 +39,8 @@ It reuses `repository_benchmark` for analysis; it is not a second benchmark engi
 The complete schema, hash, golden, replay, and promotion contracts are in
 `docs/stability/M1_1_CANONICAL_BASELINE.md`. Accepted M1.1 execution evidence is in
 `docs/stability/M1_1_VALIDATION_REPORT.md`.
+The escaped-semantic-string versus machine-root boundary and its Spring promotion
+review are in `docs/stability/SPRING_PORTABLE_PATH_HARDENING.md`.
 
 ## Direct or provisional fresh analysis
 

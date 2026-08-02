@@ -263,13 +263,16 @@ analysis-order-unavailable state. No accepted golden was changed.
   the affected declared branch is not published. Unsupported or ambiguous settings
   syntax currently degrades to partial discovery without a workspace-level
   diagnostic.
-- Portable snapshot projection currently rejects one valid Java signature containing
-  a backslash as if it were a machine path (canonical graph node 59,169). The safety
-  gate was not bypassed.
+- The portable-path false positive is resolved without bypassing the recursive
+  machine-path guard. Its malformed synthetic method exposed a broader Java producer
+  defect: invocation-initialized fields were classified as methods. Correcting the
+  producer changes Maven, Quarkus, and Spring semantics and requires a reviewed M1.2
+  baseline transition.
 
-Spring is therefore a successful pinned diagnostic benchmark, not a promoted
-canonical golden. The existing Maven and Quarkus goldens remain authoritative and
-are not modified by this investigation.
+Spring remains a successful pinned diagnostic benchmark rather than a promoted
+canonical golden. Two corrected 29/29 runs and their portable hashes are recorded in
+`SPRING_PORTABLE_PATH_HARDENING.md`. The existing Maven and Quarkus M1.1 goldens
+remain authoritative and were not modified; corrected producer goldens require M1.2.
 
 ## Maintainer decision
 
@@ -281,7 +284,7 @@ are not modified by this investigation.
 | Java variants | Keep | Exact-path overlay comparison avoids the proven duplicate while preserving additive and loose-project scans. |
 | Tests | Keep | Small fixtures cover command syntax, safety, ownership, summary evidence, and source variants. |
 | Documentation | Keep | Records exact evidence and unsupported semantics without changing the roadmap. |
-| Spring golden | Defer | The portable-path safety gate must pass before promotion. |
+| Spring golden | Defer | The portable gate passes, but clean canonical lineage and reviewed M1.2 producer goldens are required. |
 
 No Gradle execution, persistent cache, parallelism, broad exception suppression,
 temporary traceback output, or repository-specific fallback was added.

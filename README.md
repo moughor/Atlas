@@ -114,6 +114,9 @@ The accepted Maven and Quarkus M1.1 baseline evidence is recorded in
 [`docs/stability/M1_1_VALIDATION_REPORT.md`](docs/stability/M1_1_VALIDATION_REPORT.md).
 The benchmark-driven Spring Framework Gradle discovery investigation is recorded in
 [`docs/stability/SPRING_FRAMEWORK_INVESTIGATION.md`](docs/stability/SPRING_FRAMEWORK_INVESTIGATION.md).
+The portable-path hardening, corrected Java producer drift, and `M1.2 REQUIRED`
+golden decision are recorded in
+[`docs/stability/SPRING_PORTABLE_PATH_HARDENING.md`](docs/stability/SPRING_PORTABLE_PATH_HARDENING.md).
 
 Run the reproducible large-workspace benchmark:
 

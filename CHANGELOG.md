@@ -1,5 +1,23 @@
 # Changelog
 
+## M1 hardening — portable semantic paths and Java member identity
+
+- Narrowed UNC detection to complete server/share roots while retaining recursive
+  rejection of literal, encoded, nested, device, drive, URI, temp, and POSIX machine
+  paths in portable artifacts.
+- Corrected Java field initializers containing constructor or factory calls so they
+  no longer produce malformed synthetic method symbols.
+- Preserved legal field/nested-type name collisions through kind-aware global symbol
+  identity while retaining exact duplicate rejection and deterministic lookup.
+- Added an analysis-result producer fingerprint to PR70 persistence and PR74 recovery;
+  legacy payloads remain readable but stale pre-fix results are invalidated.
+- Validated Spring twice at 29/29 with stable portable semantics, Maven at 92/92,
+  Quarkus at 1,442/1,442, and the complete Atlas suite at 3,772 passed with one
+  platform skip.
+- Kept Maven and Quarkus M1.1 goldens unchanged and deferred Spring promotion to a
+  reviewed M1.2 baseline transition because corrected producer semantics change all
+  three repositories.
+
 ## M1 hardening — Spring Framework Gradle discovery
 
 - Added bounded static parsing for top-level literal Gradle `include(...)` and
