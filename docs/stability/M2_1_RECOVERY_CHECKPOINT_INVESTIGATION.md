@@ -310,6 +310,124 @@ The candidate is acceptable only if targeted tests and repeated measurements pro
 - unchanged accepted results for Maven, Quarkus, Spring Framework, Elasticsearch, and
   the known IntelliJ diagnostic boundary.
 
+## Executed regression validation
+
+The final production candidate was commit
+`75a4dfd9bcf119b6c0ec8195c12d3aa8963e6fb7`. The following commands were actually
+executed after the final recovery changes:
+
+| Validation | Result |
+| --- | --- |
+| Focused persistence, recovery, mutation, compatibility, concurrency, and M2.1 benchmark-runner tests | 96 passed in 2.23 s |
+| Complete Atlas test suite | 3,923 passed, 3 skipped in 30.50 s; no warnings |
+| `python -B -m compileall -q benchmarks moughorai` | exit 0 |
+| `git diff --check` | exit 0 |
+
+The complete suite result above is the final post-review run. Earlier exploratory
+and focused runs are not substituted for it.
+
+### Accepted-repository compatibility
+
+Each successful-repository capture used the pinned Git revision, one worker,
+`--force --no-recover`, two repetitions, and a fresh `.atlas` state for each
+repetition. The benchmark runner required identical raw snapshot identity and size,
+analysis order, semantic projection, canonical graph, repository report, risk
+analysis, and provider-free Explain output between the two repetitions.
+
+| Repository | Pinned result | Fresh durations | Repeated raw ASS size | Comparison with retained M2.0 evidence |
+| --- | ---: | ---: | ---: | --- |
+| Apache Maven | 92/92 | 37.441 s; 37.498 s | 33,715,785 B | All comparable semantic, graph, report, risk, Explain, and order hashes exact |
+| Spring Framework | 29/29 | 121.048 s; 117.078 s | 146,029,291 B | All comparable hashes exact |
+| Quarkus | 1,442/1,442 | 599.049 s; 552.348 s | 358,304,086 B | All comparable hashes exact |
+| Elasticsearch | 545/545 | 671.573 s; 506.862 s | 544,047,043 B | All comparable hashes exact |
+| IntelliJ Community | 118 succeeded, one accepted `idea` failure out of 119 | 239.106 s; 237.421 s | none, as required after failure | Report, order, statuses, error, and three retained diagnostic hashes exact |
+
+The successful-repository raw envelopes were exactly reproducible within each new
+two-run capture. The raw snapshot sizes for Maven, Spring, and Elasticsearch are each
+one byte smaller than their retained M2.0 lineage, while Quarkus is the same size.
+M2.0
+intentionally did not retain raw IDs as cross-run gates. Every comparable semantic
+hash is exact, so these lineage-sized differences are not semantic drift. Timing is
+diagnostic only under filesystem-warm-or-uncontrolled conditions.
+
+The IntelliJ reports were byte-identical. Their canonical order, project/status, and
+failure/error digests were respectively
+`572e84e65d0edd96bbfabbe7caf8d9c3d22d57c0d823e3528d9f784747ac0520`,
+`dd5a83338f526ba5a09847bcd395d592a85f40072220ce8a46a55f703a103b5c`,
+and `f0873a382d564ab0b1ff2fbbb97b9c17e618c520a9e9d37ccc92ee9a4995792e`.
+No `latest.ass` existed before, between, or after the valid runs. Both stderr streams
+were identical and contained only nine repository-owned PyDev invalid-escape
+`SyntaxWarning` diagnostics. An initial sandboxed attempt was rejected because it
+could not write IntelliJ's analysis-history database; it produced no report and no
+snapshot. The two retained valid runs used the required external-write permission.
+
+### Second real-repository recovery A/B
+
+Spring Framework was also measured through the full-workspace recovery/execution
+path, whose timed boundary excludes final CLI history and ASS publication, with the
+same M2 profiler and process-memory probe in both modes:
+
+| Metric | Recovery off | Recovery on | On/off |
+| --- | ---: | ---: | ---: |
+| Result | 29/29 | 29/29 | exact order, duration-free report, and encoded-result hashes |
+| Wall time | 51.4624327 s | 113.6754022 s | 2.208901x |
+| Process CPU | 51.4062500 s | 113.0625000 s | 2.199392x |
+| Maximum sampled RSS | 243,089,408 B | 592,756,736 B | 2.438431x |
+| Content reads | 9,223 | 31,909 | 3.459720x |
+| Content hashes | 0 | 22,686 | absolute increase 22,686 |
+| Directory enumerations | 2,768 | 8,304 | exactly 3x |
+
+The 22,686 hashes are exactly twice Spring's 11,343 fingerprinted resources: one
+initial full verification plus each resource's single owning-project refresh. All
+59 persistence, 61 recovery, and 29 serialization scopes succeeded. Persistence
+processed 1,216,285,609 cumulative bytes and recovery processed 2,531,151,286, for
+3,747,436,895 cumulative checkpoint bytes. The retained final journal and state were
+220,165,919 bytes. This second real repository independently confirms that full
+workspace re-hashing is gone and that growing checkpoint serialization is now the
+dominant remaining amplification.
+
+### Safety-bounded deviation from full recovery-on coverage
+
+Full recovery-on executions were deliberately not performed for Quarkus or
+Elasticsearch. Applying the two observed Maven and Spring normalized coefficients
+to project count and final snapshot size gives the following sensitivity ranges:
+
+| Repository | Cumulative checkpoint-write sensitivity |
+| --- | ---: |
+| Quarkus | 457,207,530,506 to 889,428,549,361 B |
+| Elasticsearch | 262,379,143,592 to 510,419,198,060 B |
+
+These are sensitivity estimates, not predictions or bounds. They omit result-size
+distribution, filesystem behavior, compression, and any future delta format. They
+are nevertheless sufficient to show that hundreds of gigabytes of repeated writes
+would be an unsafe pre-commit validation exercise for a read-amplification fix.
+For reproducibility, each value is
+`target projects * target ASS bytes * normalized coefficient`. The observed Spring
+coefficient is `0.884904398369`; the observed Maven coefficient is
+`1.721448538899`. The table encloses the two results with integer endpoints.
+Maven and Spring provide two full real-repository recovery A/Bs, and the deterministic
+12-project synthetic case provides six additional paired samples. Quarkus and
+Elasticsearch instead received the complete two-run semantic compatibility capture
+above. IntelliJ retained its deterministic failed-workspace boundary and cannot
+publish the semantic snapshot needed to calibrate a full recovery run.
+
+This is an explicit, safety-driven deviation from the literal request to run recovery
+on and off for every accepted repository. Full recovery-on was not executed for
+Quarkus, Elasticsearch, or IntelliJ; their recovery-disabled compatibility was
+validated above. This is not reported as completed recovery-on coverage.
+
+## Maintainer review
+
+| Classification | Decision |
+| --- | --- |
+| Keep | Per-transition checksummed journal, atomic replacement, resume-time full verification, completion-time project refresh, PR70 state-save frequency, public `WorkspaceStateStore.capture()` behavior, and v5 legacy invalidation |
+| Simplify | No further recovery simplification is justified before checkpoint serialization is measured as its own change |
+| Remove | Rejected pilot artifacts and temporary in-worktree profiling outputs; none enter production or Git |
+| Future work | Measure deterministic state deltas or immutable checkpoint fragments without weakening the journal's crash boundary |
+
+The final review found no new cache, parallelism, repository-specific behavior,
+schema fork, public-API break, lock-order regression, or semantic-output change.
+
 ## Limitations and remaining opportunities
 
 - The large-repository unprofiled comparison is one controlled Maven pair, not a
@@ -318,10 +436,10 @@ The candidate is acceptable only if targeted tests and repeated measurements pro
   variance.
 - OS-cold results are unavailable.
 - M2 content-read events are Atlas boundaries, not physical I/O counters.
-- Baseline RSS and allocation counts remain unavailable; post-change RSS alone cannot
-  establish a memory improvement.
-- Per-completion state serialization and atomic writes remain as measured future
-  optimization candidates.
+- Maven baseline RSS and Python allocation counts remain unavailable. The Spring
+  on/off RSS values are scope-boundary observations, not operating-system peaks.
+- Per-completion state serialization and atomic writes are now the measured next
+  Pareto candidate; M2.1 intentionally leaves their frequency and format unchanged.
 - The journal still writes every transition by design; its retained measured wall sum
   was not a Pareto target.
 - No persistent incremental verification, metadata shortcut, batching policy, or
@@ -329,8 +447,10 @@ The candidate is acceptable only if targeted tests and repeated measurements pro
 
 ## Recommendation for M2.2
 
-First complete post-change A/B validation on the five accepted repositories. If
-serialization and state writes become the new measured Pareto leader, M2.2 may
-investigate deterministic state-delta or immutable-fragment persistence. It must keep
-the journal authoritative, preserve per-project crash recovery, and begin with a new
-measurement rather than adopting Options B or E speculatively.
+Begin with a dedicated checkpoint-serialization and atomic-write measurement on
+Maven and Spring. Only if that evidence remains the Pareto leader should M2.2
+investigate deterministic state deltas or immutable checkpoint fragments. It must
+keep the journal authoritative, preserve per-project crash recovery, validate
+producer/configuration/content lineage, and avoid requiring unsafe full
+recovery-on runs for Quarkus or Elasticsearch before the write amplification is
+reduced. Options B and E remain designs to measure, not preselected implementations.
