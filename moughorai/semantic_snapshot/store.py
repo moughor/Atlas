@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Callable
 
 from moughorai.ai_context import WorkspaceSemanticContext
+from moughorai.measurement import MeasurementPhase, MeasurementSession
 from moughorai.version import __version__
 from moughorai.workspace import Workspace
 from moughorai.workspace.cache import WorkspaceCache
@@ -32,11 +33,13 @@ class SemanticSnapshotStore:
         *,
         clock: Callable[[], datetime] | None = None,
         cache: WorkspaceCache | None = None,
+        measurement: MeasurementSession | None = None,
     ) -> None:
         self.workspace = workspace
         self.directory = Path(directory or workspace.root / ".atlas" / "ass")
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.cache = cache or WorkspaceCache()
+        self.measurement = measurement or MeasurementSession()
+        self.cache = cache or WorkspaceCache(measurement=self.measurement)
         self._lock = RLock()
 
     @property
@@ -50,27 +53,59 @@ class SemanticSnapshotStore:
         history_reference: int | str | None = None,
         analyzer_version: str = __version__,
     ) -> AtlasSemanticSnapshot:
-        fingerprints = self.cache.snapshot(self.workspace).to_dict()
-        fingerprint = hashlib.sha256(canonical_json(fingerprints).encode("utf-8")).hexdigest()
-        return AtlasSemanticSnapshot.create(
-            context,
-            workspace_fingerprint=fingerprint,
-            analyzer_version=analyzer_version,
-            history_reference=history_reference,
-        )
+        with self.measurement.scope(
+            MeasurementPhase.SNAPSHOT,
+            consumer="semantic-snapshot",
+            sample_key="snapshot",
+        ) as scope:
+            fingerprints = self.cache.snapshot(self.workspace).to_dict()
+            fingerprint = hashlib.sha256(canonical_json(fingerprints).encode("utf-8")).hexdigest()
+            snapshot = AtlasSemanticSnapshot.create(
+                context,
+                workspace_fingerprint=fingerprint,
+                analyzer_version=analyzer_version,
+                history_reference=history_reference,
+            )
+            scope.add_units(len(fingerprints))
+            scope.add_objects_produced(1)
+            return snapshot
 
     def save(self, snapshot: AtlasSemanticSnapshot) -> Path:
-        text = self._serialize(snapshot)
+        with self.measurement.scope(
+            MeasurementPhase.SERIALIZATION,
+            consumer="semantic-snapshot",
+            sample_key="snapshot",
+        ) as serialization:
+            text = self._serialize(snapshot)
+            serialization.add_units(1)
         timestamp = self._timestamp(self.clock())
         historical = self.directory / f"{timestamp}.ass"
-        with self._lock:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            historical = self._write_historical(
-                historical,
-                text,
-                snapshot.snapshot_id,
-            )
-            self._atomic_write(self.latest_path, text, replace=True)
+        with self.measurement.scope(
+            MeasurementPhase.PUBLICATION,
+            consumer="semantic-snapshot",
+            sample_key="snapshot",
+        ) as publication:
+            with self._lock:
+                self.directory.mkdir(parents=True, exist_ok=True)
+                historical, historical_written = self._write_historical(
+                    historical,
+                    text,
+                    snapshot.snapshot_id,
+                )
+                self._atomic_write(self.latest_path, text, replace=True)
+            publication.add_units(1 + int(historical_written))
+            if self.measurement.config.enabled:
+                published_bytes = 0
+                try:
+                    published_bytes += self.latest_path.stat().st_size
+                except OSError:
+                    pass
+                if historical_written:
+                    try:
+                        published_bytes += historical.stat().st_size
+                    except OSError:
+                        pass
+                publication.add_bytes(published_bytes)
         return historical
 
     def _write_historical(
@@ -78,34 +113,66 @@ class SemanticSnapshotStore:
         historical: Path,
         text: str,
         snapshot_id: str,
-    ) -> Path:
+    ) -> tuple[Path, bool]:
         try:
             self._atomic_write(historical, text, replace=False)
-            return historical
+            return historical, True
         except SemanticSnapshotError:
-            if historical.read_text(encoding="utf-8") == text:
-                return historical
+            existing_matches = historical.read_text(encoding="utf-8") == text
+            self.measurement.filesystem.file_content_read(
+                "semantic-snapshot",
+                historical,
+            )
+            if existing_matches:
+                return historical, False
         suffixed = historical.with_name(
             f"{historical.stem}-{snapshot_id[:12]}{historical.suffix}"
         )
         try:
             self._atomic_write(suffixed, text, replace=False)
         except SemanticSnapshotError:
-            if suffixed.read_text(encoding="utf-8") != text:
+            existing_matches = suffixed.read_text(encoding="utf-8") == text
+            self.measurement.filesystem.file_content_read(
+                "semantic-snapshot",
+                suffixed,
+            )
+            if not existing_matches:
                 raise SemanticSnapshotError(
                     f"semantic snapshot identifier collision: {suffixed.name}"
                 )
-        return suffixed
+            return suffixed, False
+        return suffixed, True
 
     def load(self, path: str | Path | None = None) -> AtlasSemanticSnapshot | None:
         target = Path(path) if path is not None else self.latest_path
         if not target.exists():
             return None
         try:
-            envelope = json.loads(
-                target.read_text(encoding="utf-8"),
-                parse_constant=self._reject_non_finite,
-            )
+            with self.measurement.scope(
+                MeasurementPhase.PERSISTENCE,
+                consumer="semantic-snapshot",
+                sample_key="snapshot",
+            ) as persistence:
+                text = target.read_text(encoding="utf-8")
+                persistence.add_units(1)
+                if self.measurement.config.enabled:
+                    persisted_bytes = self.measurement.filesystem.file_content_read(
+                        "semantic-snapshot",
+                        target,
+                    )
+                    if persisted_bytes is not None:
+                        persistence.add_bytes(persisted_bytes)
+            with self.measurement.scope(
+                MeasurementPhase.SERIALIZATION,
+                consumer="semantic-snapshot",
+                sample_key="snapshot",
+            ) as serialization:
+                envelope = json.loads(
+                    text,
+                    parse_constant=self._reject_non_finite,
+                )
+                del text
+                serialization.add_units(1)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             raise SemanticSnapshotError(f"cannot read semantic snapshot: {exc}") from exc
         if not isinstance(envelope, dict) or envelope.get("format") != SEMANTIC_SNAPSHOT_FORMAT:

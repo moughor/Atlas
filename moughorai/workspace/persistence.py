@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from moughorai.measurement import MeasurementPhase
 from moughorai.version import __version__
 
 from .cache import WorkspaceCache, WorkspaceSnapshot
@@ -112,7 +113,8 @@ class WorkspaceStateStore:
     ) -> None:
         self.service = service
         self.path = Path(path) if path is not None else service.workspace.root / ".atlas" / "workspace-state.json"
-        self.cache = cache or WorkspaceCache()
+        self.measurement = service.measurement
+        self.cache = cache or WorkspaceCache(measurement=self.measurement)
         self.encoder = encoder or (lambda value: value)
         self.decoder = decoder or (lambda value: value)
         if not isinstance(producer_fingerprint, str) or not producer_fingerprint.strip():
@@ -120,42 +122,67 @@ class WorkspaceStateStore:
         self.producer_fingerprint = producer_fingerprint.strip()
 
     def capture(self, results: Mapping[str, Any], valid_projects: tuple[str, ...]) -> WorkspacePersistentState:
-        snapshot = self.cache.snapshot(self.service.workspace)
-        names = set(self.service.workspace.names())
-        valid = tuple(sorted(names.intersection(valid_projects).intersection(results)))
-        encoded: list[tuple[str, Any]] = []
-        for name in valid:
-            try:
-                encoded.append((name, self.encoder(results[name])))
-            except Exception as exc:
-                raise WorkspaceStateError(f"cannot encode result for project {name!r}: {exc}") from exc
-        return WorkspacePersistentState(
-            STATE_SCHEMA_VERSION,
-            self._workspace_fingerprint(snapshot),
-            snapshot.fingerprints,
-            valid,
-            tuple(encoded),
-            datetime.now(timezone.utc).isoformat(),
-            self.producer_fingerprint,
-        )
+        with self.measurement.scope(
+            MeasurementPhase.PERSISTENCE,
+            consumer="workspace-state",
+            sample_key="workspace-state",
+        ) as scope:
+            snapshot = self.cache.snapshot(self.service.workspace)
+            names = set(self.service.workspace.names())
+            valid = tuple(sorted(names.intersection(valid_projects).intersection(results)))
+            encoded: list[tuple[str, Any]] = []
+            for name in valid:
+                try:
+                    encoded.append((name, self.encoder(results[name])))
+                except Exception as exc:
+                    raise WorkspaceStateError(f"cannot encode result for project {name!r}: {exc}") from exc
+            state = WorkspacePersistentState(
+                STATE_SCHEMA_VERSION,
+                self._workspace_fingerprint(snapshot),
+                snapshot.fingerprints,
+                valid,
+                tuple(encoded),
+                datetime.now(timezone.utc).isoformat(),
+                self.producer_fingerprint,
+            )
+            scope.add_units(len(valid))
+            scope.add_objects_produced(1)
+            return state
 
     def save(self, state: WorkspacePersistentState) -> Path:
-        payload = state.to_dict()
-        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        envelope = {"checksum": hashlib.sha256(canonical.encode("utf-8")).hexdigest(), "state": payload}
-        text = json.dumps(envelope, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=self.path.name + ".", suffix=".tmp", dir=self.path.parent)
-        temp_path = Path(temporary)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, self.path)
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
+        with self.measurement.scope(
+            MeasurementPhase.SERIALIZATION,
+            consumer="workspace-state",
+            sample_key="workspace-state",
+        ) as serialization:
+            payload = state.to_dict()
+            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            envelope = {"checksum": hashlib.sha256(canonical.encode("utf-8")).hexdigest(), "state": payload}
+            text = json.dumps(envelope, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+            serialization.add_units(1)
+        with self.measurement.scope(
+            MeasurementPhase.PERSISTENCE,
+            consumer="workspace-state",
+            sample_key="workspace-state",
+        ) as persistence:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=self.path.name + ".", suffix=".tmp", dir=self.path.parent)
+            temp_path = Path(temporary)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(text)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_path, self.path)
+            finally:
+                if temp_path.exists():
+                    temp_path.unlink()
+            persistence.add_units(1)
+            if self.measurement.config.enabled:
+                try:
+                    persistence.add_bytes(self.path.stat().st_size)
+                except OSError:
+                    pass
         self.service.events.emit(
             WorkspaceEventKind.STATE_SAVED,
             source="workspace.persistence",
@@ -167,7 +194,28 @@ class WorkspaceStateStore:
         if not self.path.exists():
             return None
         try:
-            envelope = json.loads(self.path.read_text(encoding="utf-8"))
+            with self.measurement.scope(
+                MeasurementPhase.PERSISTENCE,
+                consumer="workspace-state",
+                sample_key="workspace-state",
+            ) as persistence:
+                text = self.path.read_text(encoding="utf-8")
+                persistence.add_units(1)
+                if self.measurement.config.enabled:
+                    persisted_bytes = self.measurement.filesystem.file_content_read(
+                        "workspace-state",
+                        self.path,
+                    )
+                    if persisted_bytes is not None:
+                        persistence.add_bytes(persisted_bytes)
+            with self.measurement.scope(
+                MeasurementPhase.SERIALIZATION,
+                consumer="workspace-state",
+                sample_key="workspace-state",
+            ) as serialization:
+                envelope = json.loads(text)
+                del text
+                serialization.add_units(1)
         except (OSError, json.JSONDecodeError) as exc:
             raise WorkspaceStateError(f"cannot read workspace state: {exc}") from exc
         if not isinstance(envelope, Mapping) or not isinstance(envelope.get("state"), Mapping):

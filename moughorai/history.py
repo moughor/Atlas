@@ -71,6 +71,12 @@ class HistoryDatabase:
                     );
                     CREATE INDEX IF NOT EXISTS project_runs_project
                         ON project_runs(project, analysis_run_id);
+                    CREATE TABLE IF NOT EXISTS adaptive_history_exclusions (
+                        analysis_run_id INTEGER PRIMARY KEY
+                            REFERENCES analysis_runs(id) ON DELETE CASCADE,
+                        reason TEXT NOT NULL
+                            CHECK (reason = 'performance-measurement')
+                    );
                     """
                 )
                 row = connection.execute(
@@ -86,7 +92,15 @@ class HistoryDatabase:
         except sqlite3.Error as exc:
             raise HistoryDatabaseError(f"cannot initialize history database: {exc}") from exc
 
-    def record(self, report: WorkspaceRunReport, *, created_at: str | None = None) -> int:
+    def record(
+        self,
+        report: WorkspaceRunReport,
+        *,
+        created_at: str | None = None,
+        adaptive_eligible: bool = True,
+    ) -> int:
+        if not isinstance(adaptive_eligible, bool):
+            raise HistoryDatabaseError("adaptive eligibility must be a boolean")
         self.initialize()
         timestamp = created_at or datetime.now(timezone.utc).isoformat()
         try:
@@ -125,11 +139,39 @@ class HistoryDatabase:
                         for position, run in enumerate(report.runs)
                     ],
                 )
+                if not adaptive_eligible:
+                    connection.execute(
+                        """
+                        INSERT INTO adaptive_history_exclusions(
+                            analysis_run_id, reason
+                        ) VALUES (?, 'performance-measurement')
+                        """,
+                        (run_id,),
+                    )
                 return run_id
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryDatabaseError(f"cannot record analysis history: {exc}") from exc
 
     def list(self, *, limit: int = 20, offset: int = 0) -> tuple[HistoricalRun, ...]:
+        return self._list(limit=limit, offset=offset, adaptive_eligible_only=False)
+
+    def list_adaptive_eligible(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[HistoricalRun, ...]:
+        """Return runs whose timings were not collected under M2 profiling."""
+
+        return self._list(limit=limit, offset=offset, adaptive_eligible_only=True)
+
+    def _list(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        adaptive_eligible_only: bool,
+    ) -> tuple[HistoricalRun, ...]:
         if limit < 0 or offset < 0:
             raise HistoryDatabaseError("history limit and offset must be non-negative")
         if not self.path.exists():
@@ -137,12 +179,18 @@ class HistoryDatabase:
         self.initialize()
         try:
             with self._connect() as connection:
+                query = (
+                    "SELECT id FROM analysis_runs "
+                    "WHERE id NOT IN ("
+                    "SELECT analysis_run_id FROM adaptive_history_exclusions"
+                    ") ORDER BY id DESC LIMIT ? OFFSET ?"
+                    if adaptive_eligible_only
+                    else "SELECT id FROM analysis_runs "
+                    "ORDER BY id DESC LIMIT ? OFFSET ?"
+                )
                 ids = [
                     int(row[0])
-                    for row in connection.execute(
-                        "SELECT id FROM analysis_runs ORDER BY id DESC LIMIT ? OFFSET ?",
-                        (limit, offset),
-                    )
+                    for row in connection.execute(query, (limit, offset))
                 ]
                 return tuple(self._load(connection, run_id) for run_id in ids)
         except sqlite3.Error as exc:

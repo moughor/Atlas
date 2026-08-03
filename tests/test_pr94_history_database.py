@@ -47,6 +47,17 @@ def test_list_is_newest_first_and_paginated(tmp_path: Path) -> None:
     assert [item.run_id for item in database.list(limit=1, offset=1)] == [ids[1]]
 
 
+def test_profiled_timings_remain_visible_but_are_not_adaptive_inputs(
+    tmp_path: Path,
+) -> None:
+    database = HistoryDatabase(tmp_path)
+    eligible = database.record(report("normal"))
+    profiled = database.record(report("profiled"), adaptive_eligible=False)
+
+    assert [item.run_id for item in database.list()] == [profiled, eligible]
+    assert [item.run_id for item in database.list_adaptive_eligible()] == [eligible]
+
+
 def test_failed_report_is_preserved(tmp_path: Path) -> None:
     database = HistoryDatabase(tmp_path)
     item = database.get(database.record(report(failed=True)))

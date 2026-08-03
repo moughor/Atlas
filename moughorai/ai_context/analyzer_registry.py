@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sized
 from dataclasses import dataclass, replace
 from pathlib import Path
 import re
@@ -28,6 +28,7 @@ from moughorai.java_workspace import JavaWorkspaceScanner, SourceRootKind
 from moughorai.java_workspace.source_selection import (
     select_compiled_java_sources,
 )
+from moughorai.measurement import MeasurementPhase, MeasurementSession
 from moughorai.python_semantics import PythonSemanticAnalyzer
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
@@ -59,12 +60,20 @@ class AnalyzerRegistration:
 class AnalyzerRegistry:
     """Route project files to independently replaceable language analyzers."""
 
-    def __init__(self, analyzers: tuple[LanguageAnalyzer, ...] | None = None) -> None:
+    def __init__(
+        self,
+        analyzers: tuple[LanguageAnalyzer, ...] | None = None,
+        *,
+        measurement: MeasurementSession | None = None,
+    ) -> None:
         self._lock = RLock()
         self._by_language: dict[str, AnalyzerRegistration] = {}
         self._by_extension: dict[str, str] = {}
+        self.measurement = measurement or MeasurementSession()
         selected = analyzers if analyzers is not None else (
-            JavaLanguageAnalyzer(), PythonLanguageAnalyzer(), TypeScriptLanguageAnalyzer(),
+            JavaLanguageAnalyzer(measurement=self.measurement),
+            PythonLanguageAnalyzer(measurement=self.measurement),
+            TypeScriptLanguageAnalyzer(measurement=self.measurement),
         )
         for analyzer in selected:
             self.register(analyzer)
@@ -107,7 +116,14 @@ class AnalyzerRegistry:
             return self._by_language[language].analyzer if language is not None else None
 
     def __call__(self, project: Project, dependencies: Mapping[str, Any]) -> SemanticDocument:
-        files = project_files(project.path, project.include, project.exclude)
+        files = project_files(
+            project.path,
+            project.include,
+            project.exclude,
+            measurement=self.measurement,
+            consumer="analyzer-registry",
+            sample_key=project.name,
+        )
         grouped: dict[str, list[Path]] = {}
         registrations = self.registrations()
         by_extension = {
@@ -120,20 +136,54 @@ class AnalyzerRegistry:
             if language is not None:
                 grouped.setdefault(language, []).append(path)
 
-        documents = [
-            registration.analyzer.analyze(
-                project,
-                tuple(grouped[registration.language]),
-                dependencies,
-            )
-            for registration in registrations
-            if grouped.get(registration.language)
-        ]
-        merged = self._merge(project, dependencies, files, documents)
+        documents = []
+        for registration in registrations:
+            paths = tuple(grouped.get(registration.language, ()))
+            if not paths:
+                continue
+            with self.measurement.scope(
+                self._language_phase(registration.language),
+                consumer="analyzer-registry",
+                sample_key=project.name,
+            ) as scope:
+                document = registration.analyzer.analyze(
+                    project,
+                    paths,
+                    dependencies,
+                )
+                scope.add_units(len(paths))
+                global_symbols = document.get_artifact("global_symbols", ())
+                scope.add_objects_produced(
+                    len(global_symbols) if isinstance(global_symbols, Sized) else 0
+                )
+                documents.append(document)
+        with self.measurement.scope(
+            MeasurementPhase.SYMBOL_EXTRACTION,
+            consumer="analyzer-registry",
+            sample_key=project.name,
+        ) as scope:
+            merged = self._merge(project, dependencies, files, documents)
+            merged_symbols = merged.get_artifact("global_symbols", ())
+            scope.add_units(len(documents))
+            scope.add_objects_produced(len(merged_symbols))
+            scope.set_objects_retained(len(merged_symbols))
         return merged.with_artifact(
             "declared_dependencies",
-            DependencyIntelligenceService().analyze(project.path, files),
+            DependencyIntelligenceService(measurement=self.measurement).analyze(
+                project.path,
+                files,
+                sample_key=project.name,
+            ),
         )
+
+    @staticmethod
+    def _language_phase(language: str) -> MeasurementPhase | str:
+        return {
+            "java": MeasurementPhase.JAVA_PARSING,
+            "kotlin": MeasurementPhase.KOTLIN_PARSING,
+            "python": MeasurementPhase.PYTHON_PARSING,
+            "typescript": "language.typescript.parsing",
+        }.get(language, "language.other.parsing")
 
     @staticmethod
     def _merge(
@@ -192,12 +242,14 @@ class JavaLanguageAnalyzer:
         global_builder: GlobalSymbolDatabaseBuilder | None = None,
         architecture: JavaArchitectureService | None = None,
         workspace_scanner: JavaWorkspaceScanner | None = None,
+        measurement: MeasurementSession | None = None,
     ) -> None:
         self._parser = parser or JavaParser()
         self._symbol_builder = symbol_builder or JavaSymbolIndexBuilder()
         self._global_builder = global_builder or GlobalSymbolDatabaseBuilder()
         self._architecture = architecture or JavaArchitectureService()
         self._workspace_scanner = workspace_scanner or JavaWorkspaceScanner()
+        self.measurement = measurement or MeasurementSession()
 
     def analyze(self, project, paths, dependencies) -> SemanticDocument:
         maven_project = (project.path / "pom.xml").is_file()
@@ -250,48 +302,81 @@ class JavaLanguageAnalyzer:
         sources: list[Path] = []
         for path in paths:
             try:
-                units.append(self._parser.parse_source(path.read_text(encoding="utf-8-sig")))
+                source = path.read_text(encoding="utf-8-sig")
+                if self.measurement.filesystem.enabled:
+                    self.measurement.filesystem.file_content_read_unknown_size(
+                        "java-analyzer",
+                        path,
+                    )
+                    self.measurement.filesystem.language_parsed("java-analyzer")
+                try:
+                    unit = self._parser.parse_source(source)
+                finally:
+                    del source
+                units.append(unit)
                 sources.append(path)
             except (OSError, UnicodeError, ValueError) as exc:
                 diagnostics.append(Diagnostic(
                     "ATLAS-JAVA-PARSE", str(exc), DiagnosticSeverity.ERROR,
                     location=path, pass_name="java-language-analyzer",
                 ))
-        try:
-            index = self._symbol_builder.build(
-                tuple(units), tuple(sources), project_id=project.name,
-            )
-        except DuplicateTypeError as error:
-            isolated = (
-                self._analyze_gradle_source_sets(
-                    project,
-                    tuple(units),
-                    tuple(sources),
-                    error,
+        with self.measurement.scope(
+            MeasurementPhase.SYMBOL_EXTRACTION,
+            consumer="java-analyzer",
+            sample_key=project.name,
+        ) as scope:
+            try:
+                index = self._symbol_builder.build(
+                    tuple(units), tuple(sources), project_id=project.name,
                 )
-                if gradle_project
-                else None
+            except DuplicateTypeError as error:
+                isolated = (
+                    self._analyze_gradle_source_sets(
+                        project,
+                        tuple(units),
+                        tuple(sources),
+                        error,
+                    )
+                    if gradle_project
+                    else None
+                )
+                if isolated is None:
+                    raise
+                isolated_units, symbols = isolated
+                scope.add_units(len(isolated_units))
+                scope.add_objects_produced(len(symbols))
+                scope.set_objects_retained(len(symbols))
+                diagnostics.append(Diagnostic(
+                    "ATLAS-JAVA-SOURCE-SETS-PARTIAL",
+                    f"Gradle project {project.name!r} contains conflicting types "
+                    "in distinct conventional source sets; source sets were "
+                    "analyzed independently and cross-source-set architecture "
+                    "relations are unavailable",
+                    DiagnosticSeverity.WARNING,
+                    location=None,
+                    pass_name="java-language-analyzer",
+                ))
+                return (
+                    SemanticDocument("java", "", isolated_units)
+                    .with_artifact("global_symbols", symbols)
+                    .with_diagnostics(diagnostics)
+                )
+            symbols = _scope_symbols(
+                self._global_builder.build(index).snapshot().symbols,
+                project.name,
             )
-            if isolated is None:
-                raise
-            isolated_units, symbols = isolated
-            diagnostics.append(Diagnostic(
-                "ATLAS-JAVA-SOURCE-SETS-PARTIAL",
-                f"Gradle project {project.name!r} contains conflicting types "
-                "in distinct conventional source sets; source sets were "
-                "analyzed independently and cross-source-set architecture "
-                "relations are unavailable",
-                DiagnosticSeverity.WARNING,
-                location=None,
-                pass_name="java-language-analyzer",
-            ))
-            return (
-                SemanticDocument("java", "", isolated_units)
-                .with_artifact("global_symbols", symbols)
-                .with_diagnostics(diagnostics)
-            )
-        symbols = _scope_symbols(self._global_builder.build(index).snapshot().symbols, project.name)
-        architecture = self._architecture.build(index, tuple(units))
+            scope.add_units(len(units))
+            scope.add_objects_produced(len(index.symbols) + len(symbols))
+            scope.set_objects_retained(len(symbols))
+        with self.measurement.scope(
+            MeasurementPhase.ARCHITECTURE,
+            consumer="java-analyzer",
+            sample_key=project.name,
+        ) as scope:
+            architecture = self._architecture.build(index, tuple(units))
+            scope.add_units(len(units))
+            scope.add_objects_produced(len(architecture.nodes) + len(architecture.edges))
+            scope.set_objects_retained(len(architecture.nodes) + len(architecture.edges))
         symbols = _with_java_relations(symbols, index, architecture)
         document = SemanticDocument("java", "", tuple(units))
         return (
@@ -422,15 +507,30 @@ class PythonLanguageAnalyzer:
     language = "python"
     extensions = (".py", ".pyi")
 
-    def __init__(self, analyzer: PythonSemanticAnalyzer | None = None) -> None:
-        self._analyzer = analyzer or PythonSemanticAnalyzer()
+    def __init__(
+        self,
+        analyzer: PythonSemanticAnalyzer | None = None,
+        *,
+        measurement: MeasurementSession | None = None,
+    ) -> None:
+        self.measurement = measurement or MeasurementSession()
+        self._analyzer = analyzer or PythonSemanticAnalyzer(
+            measurement=self.measurement,
+        )
 
     def analyze(self, project, paths, dependencies) -> SemanticDocument:
         result = self._analyzer.analyze(project.path, paths)
         document = SemanticDocument("python", "", result.modules)
-        document = document.with_artifact(
-            "global_symbols", _scope_symbols(result.symbols, project.name),
-        )
+        with self.measurement.scope(
+            MeasurementPhase.SYMBOL_EXTRACTION,
+            consumer="python-analyzer",
+            sample_key=project.name,
+        ) as scope:
+            symbols = _scope_symbols(result.symbols, project.name)
+            scope.add_units(len(result.modules))
+            scope.add_objects_produced(len(symbols))
+            scope.set_objects_retained(len(symbols))
+        document = document.with_artifact("global_symbols", symbols)
         document = document.with_artifact("python_modules", result.modules)
         document = document.with_artifact("types", result.types)
         return document.with_diagnostics(result.diagnostics)
@@ -451,6 +551,9 @@ class TypeScriptLanguageAnalyzer:
         r"""function\s+([A-Za-z_$][\w$]*)\s*\("""
     )
 
+    def __init__(self, *, measurement: MeasurementSession | None = None) -> None:
+        self.measurement = measurement or MeasurementSession()
+
     def analyze(self, project, paths, dependencies) -> SemanticDocument:
         symbols: list[GlobalSymbol] = []
         diagnostics: list[Diagnostic] = []
@@ -458,6 +561,14 @@ class TypeScriptLanguageAnalyzer:
         for path in paths:
             try:
                 source = path.read_text(encoding="utf-8-sig")
+                if self.measurement.filesystem.enabled:
+                    self.measurement.filesystem.file_content_read_unknown_size(
+                        "typescript-analyzer",
+                        path,
+                    )
+                    self.measurement.filesystem.language_parsed(
+                        "typescript-analyzer"
+                    )
             except (OSError, UnicodeError) as exc:
                 diagnostics.append(Diagnostic(
                     "ATLAS-TYPESCRIPT-PARSE", str(exc), DiagnosticSeverity.ERROR,

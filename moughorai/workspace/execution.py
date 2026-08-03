@@ -4,8 +4,11 @@ from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from enum import Enum
-from time import monotonic
+from threading import Lock, current_thread, get_ident
+from time import monotonic, monotonic_ns
 from typing import Any
+
+from moughorai.measurement import MeasurementPhase
 
 from .incremental import IncrementalPlan, IncrementalWorkspacePlanner
 from .event_bus import WorkspaceEventKind
@@ -198,6 +201,11 @@ class WorkspaceAnalysisOrchestrator:
         values: dict[str, Any] = dict(self._results)
         pending = set(order_names)
         abort = False
+        measurement = self.service.measurement
+        measurement_enabled = measurement.config.enabled
+        worker_state_lock = Lock()
+        queued_count = 0
+        worker_last_finished: dict[int, int] = {}
 
         def dependency_statuses(project: Project) -> tuple[str, ...]:
             return tuple(
@@ -237,17 +245,64 @@ class WorkspaceAnalysisOrchestrator:
                 return True
             return False
 
-        def analyze(project: Project, dependency_results: Mapping[str, Any]) -> ProjectRun:
+        def analyze(
+            project: Project,
+            dependency_results: Mapping[str, Any],
+            queued_at_ns: int,
+        ) -> ProjectRun:
+            nonlocal queued_count
             started = monotonic()
+            if not measurement_enabled:
+                try:
+                    value = analyzer(project, dependency_results)
+                except Exception as exc:  # analyzer boundary
+                    elapsed = (monotonic() - started) * 1000
+                    return ProjectRun(
+                        project.name, ProjectRunStatus.FAILED, error=f"{type(exc).__name__}: {exc}", duration_ms=elapsed
+                    )
+                elapsed = (monotonic() - started) * 1000
+                return ProjectRun(project.name, ProjectRunStatus.SUCCEEDED, value=value, duration_ms=elapsed)
+
+            worker_started_ns = monotonic_ns()
+            thread_id = get_ident()
+            with worker_state_lock:
+                queued_count -= 1
+                queue_depth = queued_count
+                previous_finish = worker_last_finished.get(thread_id)
+            worker_id = current_thread().name.lower().replace("_", "-")
             try:
-                value = analyzer(project, dependency_results)
-            except Exception as exc:  # analyzer boundary
+                try:
+                    with measurement.scope(
+                        MeasurementPhase.PROJECT_ANALYSIS,
+                        consumer="workspace-execution",
+                        worker_id=worker_id,
+                        sample_key=project.name,
+                        worker_metrics=True,
+                    ) as scope:
+                        scope.set_queue_wait_ns(max(0, worker_started_ns - queued_at_ns))
+                        scope.set_queue_depth(queue_depth)
+                        if previous_finish is not None:
+                            scope.set_idle_time_ns(max(0, worker_started_ns - previous_finish))
+                        scope.add_units(1)
+                        value = analyzer(project, dependency_results)
+                except Exception as exc:  # analyzer boundary
+                    elapsed = (monotonic() - started) * 1000
+                    return ProjectRun(
+                        project.name,
+                        ProjectRunStatus.FAILED,
+                        error=f"{type(exc).__name__}: {exc}",
+                        duration_ms=elapsed,
+                    )
                 elapsed = (monotonic() - started) * 1000
                 return ProjectRun(
-                    project.name, ProjectRunStatus.FAILED, error=f"{type(exc).__name__}: {exc}", duration_ms=elapsed
+                    project.name,
+                    ProjectRunStatus.SUCCEEDED,
+                    value=value,
+                    duration_ms=elapsed,
                 )
-            elapsed = (monotonic() - started) * 1000
-            return ProjectRun(project.name, ProjectRunStatus.SUCCEEDED, value=value, duration_ms=elapsed)
+            finally:
+                with worker_state_lock:
+                    worker_last_finished[thread_id] = monotonic_ns()
 
         futures: dict[Future[ProjectRun], str] = {}
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="atlas-workspace") as executor:
@@ -272,7 +327,18 @@ class WorkspaceAnalysisOrchestrator:
                             continue
                         dependency_results = {dep: values[dep] for dep in project.dependencies if dep in values}
                         pending.remove(name)
-                        futures[executor.submit(analyze, project, dependency_results)] = name
+                        queued_at_ns = monotonic_ns() if measurement_enabled else 0
+                        if measurement_enabled:
+                            with worker_state_lock:
+                                queued_count += 1
+                        futures[
+                            executor.submit(
+                                analyze,
+                                project,
+                                dependency_results,
+                                queued_at_ns,
+                            )
+                        ] = name
                         made_progress = True
 
                 if not futures:
@@ -355,7 +421,13 @@ class WorkspaceAnalysisOrchestrator:
             dependency_results = {name: values[name] for name in project.dependencies if name in values}
             started = monotonic()
             try:
-                value = analyzer(project, dependency_results)
+                with self.service.measurement.scope(
+                    MeasurementPhase.PROJECT_ANALYSIS,
+                    consumer="workspace-execution",
+                    sample_key=project.name,
+                ) as scope:
+                    value = analyzer(project, dependency_results)
+                    scope.add_units(1)
             except Exception as exc:  # analyzer boundary
                 elapsed = (monotonic() - started) * 1000
                 run = ProjectRun(project.name, ProjectRunStatus.FAILED, error=f"{type(exc).__name__}: {exc}", duration_ms=elapsed)

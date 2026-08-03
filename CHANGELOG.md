@@ -1,5 +1,30 @@
 # Changelog
 
+## M2.0 performance measurement foundation
+
+- Added an opt-in, run-local measurement model with stable phase IDs, explicit
+  measured/unavailable/unsupported states, source-free filesystem counters, and
+  best-effort process-memory probes.
+- Added `atlas analyze --profile`, `--profile-output`, `--profile-memory`, and
+  owned-lifetime `--profile-python-memory` while preserving normal stdout and the
+  existing PR96 `atlas profile` contract.
+- Added the same opt-in sidecar controls to deterministic `atlas ai explain`
+  projection while excluding provider latency from Atlas phase measurements.
+- Added atomic, versioned JSON sidecars and concise human summaries on stderr without
+  placing operational metrics in semantic context or snapshots.
+- Kept aggregation evidence honest: additive work, inclusive sample sums, and
+  non-additive distributions are distinct; concurrent process CPU is unavailable
+  rather than misattributed, while existing worker queue facts remain scope-local.
+- Marked filesystem observations explicitly partial, counted physical bytes without
+  re-encoding full source payloads, and made sidecar/tracemalloc finalization unable
+  to change or mask Atlas command outcomes.
+- Added bounded, source-free repeat-read correlation with exact untracked coverage,
+  deterministic sampling coverage, strict provider/cross-field validation, and an
+  additive history annotation that excludes profiled timings from adaptive-worker
+  decisions without hiding those runs from normal history.
+- Documented the architecture, schema, CLI behavior, and evidence limitations; no
+  optimization, roadmap change, or enterprise-scale performance claim is included.
+
 ## M1.1 hardening - IntelliJ fixture source isolation
 
 - Added evidence-ordered Java source selection that keeps complete repository

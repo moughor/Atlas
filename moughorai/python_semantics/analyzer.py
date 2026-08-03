@@ -5,6 +5,7 @@ from pathlib import Path
 
 from moughorai.global_symbols import GlobalSymbol, GlobalSymbolKind
 from moughorai.global_symbols.models import SymbolId
+from moughorai.measurement import MeasurementSession
 from moughorai.semantic import Diagnostic, DiagnosticSeverity
 from moughorai.semantic.types import TypeRegistry, TypeTable
 
@@ -13,6 +14,9 @@ from .models import PythonAnalysisResult, PythonModule
 
 class PythonSemanticAnalyzer:
     """Extract deterministic Python declarations using the standard-library AST."""
+
+    def __init__(self, *, measurement: MeasurementSession | None = None) -> None:
+        self.measurement = measurement or MeasurementSession()
 
     def analyze(self, root: Path, paths: tuple[Path, ...]) -> PythonAnalysisResult:
         modules: list[PythonModule] = []
@@ -23,7 +27,17 @@ class PythonSemanticAnalyzer:
         for path in sorted(paths, key=Path.as_posix):
             module_name = self._module_name(root, path)
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+                source = path.read_text(encoding="utf-8-sig")
+                if self.measurement.filesystem.enabled:
+                    self.measurement.filesystem.file_content_read_unknown_size(
+                        "python-analyzer",
+                        path,
+                    )
+                    self.measurement.filesystem.language_parsed("python-analyzer")
+                try:
+                    tree = ast.parse(source, filename=str(path))
+                finally:
+                    del source
             except (OSError, UnicodeError, SyntaxError) as exc:
                 diagnostics.append(
                     Diagnostic(

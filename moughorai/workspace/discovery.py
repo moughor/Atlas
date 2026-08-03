@@ -10,6 +10,7 @@ from moughorai.gradle_syntax import (
 )
 from moughorai.project_inventory.maven_parser import MavenParseError, MavenParser
 from moughorai.project_locator import DEFAULT_PROJECT_MARKERS
+from moughorai.measurement import MeasurementPhase, MeasurementSession
 
 from .loader import WorkspaceLoader
 from .files import DEFAULT_IGNORED_DIRECTORIES
@@ -19,28 +20,75 @@ from .models import GRADLE_SETTINGS_MEMBERSHIP_OPTION, Project, Workspace
 class WorkspaceDiscovery:
     DEFAULT_IGNORED = DEFAULT_IGNORED_DIRECTORIES
 
-    def __init__(self, *, markers: tuple[str, ...] = DEFAULT_PROJECT_MARKERS, ignored: frozenset[str] = DEFAULT_IGNORED) -> None:
+    def __init__(
+        self,
+        *,
+        markers: tuple[str, ...] = DEFAULT_PROJECT_MARKERS,
+        ignored: frozenset[str] = DEFAULT_IGNORED,
+        measurement: MeasurementSession | None = None,
+    ) -> None:
         self.markers = markers
         self.ignored = ignored
+        self.measurement = measurement or MeasurementSession()
         self.loader = WorkspaceLoader()
         self.maven_parser = MavenParser()
 
     def discover(self, root: Path | str, *, max_depth: int = 4) -> Workspace:
-        workspace_root = Path(root).expanduser().resolve()
+        with self.measurement.scope(
+            MeasurementPhase.PATH_NORMALIZATION,
+            consumer="workspace-discovery",
+            sample_key="workspace",
+        ) as normalization:
+            workspace_root = Path(root).expanduser().resolve()
+            normalization.add_units(1)
+            self.measurement.filesystem.path_normalized("workspace-discovery")
         if not workspace_root.is_dir():
             raise FileNotFoundError(f"workspace root not found: {workspace_root}")
         config = self.loader.find_config(workspace_root)
         if config is not None:
-            return self.loader.load(config)
+            with self.measurement.scope(
+                MeasurementPhase.BUILD_PARSING,
+                consumer="workspace-discovery",
+                sample_key="workspace",
+            ) as build:
+                workspace = self.loader.load(config)
+                self.measurement.filesystem.descriptor_parsed("workspace-discovery")
+                build.add_units(1)
+                build.add_objects_produced(len(workspace.projects))
+                return workspace
         projects: list[Project] = []
-        for directory in self._directories(workspace_root, max_depth=max_depth):
-            if self._is_project(directory):
-                relative = directory.relative_to(workspace_root)
-                name = workspace_root.name if relative == Path(".") else "-".join(relative.parts)
-                projects.append(Project(name=name, path=directory))
-        projects = self._gradle_projects(workspace_root, projects)
-        projects.extend(self._maven_projects(workspace_root, projects))
-        projects = self._exclude_nested_projects(projects)
+        with self.measurement.scope(
+            MeasurementPhase.FILESYSTEM_TRAVERSAL,
+            consumer="workspace-discovery",
+            sample_key="workspace",
+        ) as traversal:
+            directory_count = 0
+            for directory in self._directories(workspace_root, max_depth=max_depth):
+                directory_count += 1
+                self.measurement.filesystem.directory_enumerated("workspace-discovery")
+                if self._is_project(directory):
+                    relative = directory.relative_to(workspace_root)
+                    name = workspace_root.name if relative == Path(".") else "-".join(relative.parts)
+                    projects.append(Project(name=name, path=directory))
+            traversal.add_units(directory_count)
+            traversal.add_objects_produced(len(projects))
+        with self.measurement.scope(
+            MeasurementPhase.BUILD_PARSING,
+            consumer="workspace-discovery",
+            sample_key="workspace",
+        ) as build:
+            projects = self._gradle_projects(workspace_root, projects)
+            projects.extend(self._maven_projects(workspace_root, projects))
+            build.add_units(len(projects))
+            build.add_objects_produced(len(projects))
+        with self.measurement.scope(
+            MeasurementPhase.PROJECT_OWNERSHIP,
+            consumer="workspace-discovery",
+            sample_key="workspace",
+        ) as ownership:
+            projects = self._exclude_nested_projects(projects)
+            ownership.add_units(len(projects))
+            ownership.add_objects_produced(len(projects))
         return Workspace(root=workspace_root, projects=tuple(sorted(projects, key=lambda item: item.name)))
 
     def _maven_projects(self, root: Path, existing: list[Project]) -> list[Project]:
@@ -61,6 +109,7 @@ class WorkspaceDiscovery:
                 continue
             parsed_paths.add(project_path)
             try:
+                self.measurement.filesystem.descriptor_parsed("workspace-discovery")
                 model = self.maven_parser.parse(project_path / "pom.xml")
             except MavenParseError:
                 continue
@@ -84,8 +133,7 @@ class WorkspaceDiscovery:
 
         return discovered
 
-    @staticmethod
-    def _gradle_projects(root: Path, existing: list[Project]) -> list[Project]:
+    def _gradle_projects(self, root: Path, existing: list[Project]) -> list[Project]:
         """Merge projects proven by literal Gradle settings declarations."""
         workspace_root = root.resolve()
         settings_files = tuple(
@@ -98,6 +146,11 @@ class WorkspaceDiscovery:
         settings = settings_files[0]
         try:
             source = settings.read_text(encoding="utf-8-sig")
+            self.measurement.filesystem.file_content_read_unknown_size(
+                "workspace-discovery",
+                settings,
+            )
+            self.measurement.filesystem.descriptor_parsed("workspace-discovery")
         except (OSError, UnicodeError):
             return list(existing)
 
@@ -274,7 +327,11 @@ class WorkspaceDiscovery:
             pending.extend((child, depth + 1) for child in children)
 
     def _is_project(self, directory: Path) -> bool:
-        return any((directory / marker).exists() for marker in self.markers)
+        for marker in self.markers:
+            self.measurement.filesystem.metadata_looked_up("workspace-discovery")
+            if (directory / marker).exists():
+                return True
+        return False
 
 
 def _literal_gradle_includes(source: str) -> tuple[str, ...]:

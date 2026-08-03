@@ -95,6 +95,26 @@ supported surface and compatibility policy.
 
 ## Performance
 
+M2 adds opt-in, source-free phase measurement to the normal analysis path without
+changing its stdout or semantic outputs:
+
+```text
+atlas analyze . --profile
+atlas analyze . --profile-output .atlas/measurements/atlas-profile.json
+atlas analyze . --profile --profile-memory
+atlas analyze . --profile-python-memory
+atlas ai explain . --profile
+```
+
+The default sidecar is `.atlas/measurements/latest.json`; a compact summary is written
+to stderr. The PR96 `atlas profile` command remains backward compatible and separate.
+See [`docs/MEASUREMENT_CLI.md`](docs/MEASUREMENT_CLI.md),
+[`docs/MEASUREMENT_SCHEMA.md`](docs/MEASUREMENT_SCHEMA.md), and
+[`docs/MEASUREMENT_LIMITATIONS.md`](docs/MEASUREMENT_LIMITATIONS.md). Embedders and
+instrumentation maintainers should also use
+[`docs/MEASUREMENT_API.md`](docs/MEASUREMENT_API.md) and the
+[`docs/MEASUREMENT_PLATFORM_MATRIX.md`](docs/MEASUREMENT_PLATFORM_MATRIX.md).
+
 M1.1 adds pinned repository definitions and a canonical orchestration layer around
 the repository-neutral M1 runner. It records exact provenance, project results,
 portable deterministic hashes, environment identity, and timing samples without

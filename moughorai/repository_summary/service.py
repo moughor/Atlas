@@ -19,6 +19,7 @@ from moughorai.project_inventory.detection_models import TechnologyCategory
 from moughorai.project_inventory.framework_service import MavenFrameworkService
 from moughorai.project_inventory.framework_rules import FRAMEWORK_RULES
 from moughorai.project_inventory.maven_parser import MavenParseError
+from moughorai.measurement import MeasurementPhase, MeasurementSession
 from moughorai.workspace import (
     GRADLE_SETTINGS_MEMBERSHIP_OPTION,
     Project,
@@ -47,12 +48,20 @@ class RepositorySummaryService:
         detector: ProjectTechnologyDetector | None = None,
         dependencies: DependencyIntelligenceService | None = None,
         maven_frameworks: MavenFrameworkService | None = None,
+        measurement: MeasurementSession | None = None,
     ) -> None:
         self.service = service
+        self.measurement = (
+            measurement
+            or getattr(service, "measurement", None)
+            or MeasurementSession()
+        )
         self.classifier = classifier or ProjectClassifier()
         self.statistics = statistics or ProjectStatisticsCollector()
         self.detector = detector or ProjectTechnologyDetector()
-        self.dependencies = dependencies or DependencyIntelligenceService()
+        self.dependencies = dependencies or DependencyIntelligenceService(
+            measurement=self.measurement
+        )
         self.maven_frameworks = maven_frameworks or MavenFrameworkService()
 
     def build(self) -> RepositorySummary:
@@ -103,27 +112,40 @@ class RepositorySummaryService:
         )
 
     def _project(self, project: Project):
-        paths = self._paths(project)
-        scanned_items = []
-        size_error_count = 0
-        for path in paths:
-            size, errors = self._size(path)
-            size_error_count += errors
-            scanned_items.append(ScannedFile(
-                path,
-                path.relative_to(project.path.resolve()),
-                size,
-                path.suffix.casefold(),
-            ))
-        scanned = tuple(scanned_items)
-        classified = self.classifier.classify_many(scanned)
-        directories = {item.relative_path.parent for item in classified}
-        inventory = self.statistics.collect(
-            root=project.path.resolve(),
-            files=classified,
-            total_directories=len(directories),
-        )
-        detection = self.detector.detect(inventory)
+        with self.measurement.scope(
+            MeasurementPhase.REPOSITORY_INVENTORY,
+            consumer="repository-summary",
+            sample_key=project.name,
+        ) as scope:
+            paths = self._paths(project)
+            scanned_items = []
+            size_error_count = 0
+            for path in paths:
+                if self.measurement.filesystem.enabled:
+                    self.measurement.filesystem.metadata_looked_up(
+                        "repository-summary"
+                    )
+                size, errors = self._size(path)
+                size_error_count += errors
+                scanned_items.append(ScannedFile(
+                    path,
+                    path.relative_to(project.path.resolve()),
+                    size,
+                    path.suffix.casefold(),
+                ))
+            scanned = tuple(scanned_items)
+            classified = self.classifier.classify_many(scanned)
+            directories = {item.relative_path.parent for item in classified}
+            inventory = self.statistics.collect(
+                root=project.path.resolve(),
+                files=classified,
+                total_directories=len(directories),
+            )
+            detection = self.detector.detect(inventory)
+            scope.add_units(len(paths))
+            scope.add_bytes(inventory.total_size)
+            scope.add_objects_produced(len(classified))
+            scope.set_objects_retained(len(classified))
         build_values = {
             item.name for item in detection.technologies
             if item.category is TechnologyCategory.BUILD
@@ -182,7 +204,14 @@ class RepositorySummaryService:
             if self._contains(project_root, candidate_root):
                 nested_roots.append(candidate_root)
         paths: list[Path] = []
-        for path in project_files(project.path, project.include, project.exclude):
+        for path in project_files(
+            project.path,
+            project.include,
+            project.exclude,
+            measurement=self.measurement,
+            consumer="repository-summary",
+            sample_key=project.name,
+        ):
             resolved_path = path.resolve()
             if not any(self._contains(root, resolved_path) for root in nested_roots):
                 paths.append(path)
@@ -358,6 +387,11 @@ class RepositorySummaryService:
                 continue
             try:
                 source = item.path.read_text(encoding="utf-8-sig")
+                if self.measurement.filesystem.enabled:
+                    self.measurement.filesystem.file_content_read_unknown_size(
+                        "repository-summary",
+                        item.path,
+                    )
             except (OSError, UnicodeError):
                 continue
             if (
@@ -367,10 +401,15 @@ class RepositorySummaryService:
                 entries.add(relative)
         return tuple(sorted(entries))
 
-    @staticmethod
-    def _package_entries(path: Path) -> set[str]:
+    def _package_entries(self, path: Path) -> set[str]:
         try:
-            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            source = path.read_text(encoding="utf-8-sig")
+            if self.measurement.filesystem.enabled:
+                self.measurement.filesystem.file_content_read_unknown_size(
+                    "repository-summary",
+                    path,
+                )
+            value = json.loads(source)
         except (OSError, UnicodeError, json.JSONDecodeError):
             return set()
         return {

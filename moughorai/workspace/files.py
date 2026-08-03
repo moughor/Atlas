@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import os
 from pathlib import Path
+
+from moughorai.measurement import MeasurementPhase, MeasurementSession
 
 
 DEFAULT_IGNORED_DIRECTORIES = frozenset({
@@ -21,9 +24,26 @@ def project_files(
     root: Path,
     include: tuple[str, ...],
     exclude: tuple[str, ...],
+    *,
+    measurement: MeasurementSession | None = None,
+    consumer: str = "workspace-files",
+    sample_key: str = "project-files",
 ) -> tuple[Path, ...]:
     """Return matched files without entering hidden or inaccessible directories."""
-    resolved_root = root.resolve()
+    normalization = (
+        nullcontext(None)
+        if measurement is None
+        else measurement.scope(
+            MeasurementPhase.PATH_NORMALIZATION,
+            consumer=consumer,
+            sample_key=sample_key,
+        )
+    )
+    with normalization as normalization_scope:
+        resolved_root = root.resolve()
+        if normalization_scope is not None:
+            normalization_scope.add_units(1)
+            measurement.filesystem.path_normalized(consumer)
     include_patterns = _compile_patterns(include)
     exclude_patterns = _compile_patterns(exclude)
     matched: list[Path] = []
@@ -31,32 +51,47 @@ def project_files(
     def ignore_error(error: OSError) -> None:
         return None
 
-    for current, directory_names, file_names in os.walk(
-        resolved_root,
-        topdown=True,
-        onerror=ignore_error,
-        followlinks=False,
-    ):
-        current_path = Path(current)
-        current_relative = current_path.relative_to(resolved_root)
-        directory_names[:] = sorted(
-            name
-            for name in directory_names
-            if not name.startswith(".")
-            and name not in DEFAULT_IGNORED_DIRECTORIES
-            and not _is_literal_excluded_tree(
-                current_relative / name,
-                exclude_patterns,
-            )
+    traversal = (
+        nullcontext(None)
+        if measurement is None
+        else measurement.scope(
+            MeasurementPhase.FILESYSTEM_TRAVERSAL,
+            consumer=consumer,
+            sample_key=sample_key,
         )
-        for name in sorted(file_names):
-            path = current_path / name
-            relative = path.relative_to(resolved_root)
-            if _matches(relative, include_patterns) and not _matches(
-                relative,
-                exclude_patterns,
-            ):
-                matched.append(path)
+    )
+    with traversal as traversal_scope:
+        for current, directory_names, file_names in os.walk(
+            resolved_root,
+            topdown=True,
+            onerror=ignore_error,
+            followlinks=False,
+        ):
+            if measurement is not None:
+                measurement.filesystem.directory_enumerated(consumer)
+            current_path = Path(current)
+            current_relative = current_path.relative_to(resolved_root)
+            directory_names[:] = sorted(
+                name
+                for name in directory_names
+                if not name.startswith(".")
+                and name not in DEFAULT_IGNORED_DIRECTORIES
+                and not _is_literal_excluded_tree(
+                    current_relative / name,
+                    exclude_patterns,
+                )
+            )
+            for name in sorted(file_names):
+                path = current_path / name
+                relative = path.relative_to(resolved_root)
+                if _matches(relative, include_patterns) and not _matches(
+                    relative,
+                    exclude_patterns,
+                ):
+                    matched.append(path)
+        if traversal_scope is not None:
+            traversal_scope.add_units(len(matched))
+            traversal_scope.add_objects_produced(len(matched))
     return tuple(matched)
 
 

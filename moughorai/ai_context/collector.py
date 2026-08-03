@@ -26,6 +26,7 @@ from moughorai.knowledge_graph import KnowledgeGraph
 from moughorai.reachability import ReachabilityAnalysisService
 from moughorai.risk_analysis import RiskAnalysisService
 from moughorai.repository_report import RepositoryReportService
+from moughorai.measurement import MeasurementPhase, MeasurementSession
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -48,8 +49,18 @@ class CollectedSemanticContext:
 class SemanticContextCollector:
     """Aggregate real analyzer artifacts into the deterministic PR108 model."""
 
-    def __init__(self, service: WorkspaceService) -> None:
+    def __init__(
+        self,
+        service: WorkspaceService,
+        *,
+        measurement: MeasurementSession | None = None,
+    ) -> None:
         self.service = service
+        self.measurement = (
+            measurement
+            or getattr(service, "measurement", None)
+            or MeasurementSession()
+        )
 
     def collect(self, report: WorkspaceRunReport) -> CollectedSemanticContext:
         if not report.succeeded:
@@ -61,26 +72,49 @@ class SemanticContextCollector:
         declared_dependencies: list[DeclaredDependency] = []
         java_architecture_graphs: dict[str, JavaArchitectureGraph] = {}
         call_graphs: dict[str, CallGraph] = {}
-        for run in report.runs:
-            if isinstance(run.value, SemanticDocument):
-                declared_dependencies.extend(
-                    item for item in run.value.get_artifact("declared_dependencies", ())
-                    if isinstance(item, DeclaredDependency)
-                )
-            if self._collect_result(
-                run.project,
-                run.value,
+        with self.measurement.scope(
+            MeasurementPhase.SYMBOL_EXTRACTION,
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            for run in report.runs:
+                if isinstance(run.value, SemanticDocument):
+                    declared_dependencies.extend(
+                        item for item in run.value.get_artifact("declared_dependencies", ())
+                        if isinstance(item, DeclaredDependency)
+                    )
+                if self._collect_result(
+                    run.project,
+                    run.value,
+                    diagnostics,
+                    types,
+                    symbols,
+                    java_architecture_graphs,
+                    call_graphs,
+                ):
+                    projects_with_symbols.add(run.project)
+            self._collect_java_sources(
                 diagnostics,
-                types,
                 symbols,
-                java_architecture_graphs,
-                call_graphs,
-            ):
-                projects_with_symbols.add(run.project)
-        self._collect_java_sources(diagnostics, symbols, skip=projects_with_symbols)
-        snapshot = symbols.snapshot()
-        repository_summary = RepositorySummaryService(self.service).build()
-        context = WorkspaceContextBuilder().build(
+                skip=projects_with_symbols,
+            )
+            snapshot = symbols.snapshot()
+            scope.add_units(len(report.runs))
+            scope.add_objects_produced(len(snapshot))
+            scope.set_objects_retained(len(snapshot))
+        with self.measurement.scope(
+            MeasurementPhase.REPOSITORY_SUMMARY,
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            repository_summary = RepositorySummaryService(
+                self.service,
+                measurement=self.measurement,
+            ).build()
+            scope.add_units(len(repository_summary.projects))
+            scope.add_objects_produced(len(repository_summary.projects))
+            scope.set_objects_retained(len(repository_summary.projects))
+        context = WorkspaceContextBuilder(measurement=self.measurement).build(
             self.service.workspace,
             diagnostics=diagnostics,
             symbols=snapshot.symbols,
@@ -89,44 +123,114 @@ class SemanticContextCollector:
             repository_summary=repository_summary,
         )
         context_data = context.to_dict()
-        context_data["architecture"] = ArchitectureDetectionService().detect(
-            context_data["repository_summary"],
-            context_data["semantic_graph"],
-        ).to_dict()
-        knowledge_graph = KnowledgeGraph.from_dict(context_data["semantic_graph"])
-        context_data["design_patterns"] = PatternDetectionService().detect(
-            knowledge_graph,
-            java_architecture_graphs=java_architecture_graphs,
-            call_graphs=call_graphs,
-        ).to_dict()
-        reachability = ReachabilityAnalysisService().analyze(
-            knowledge_graph,
-            symbol_metadata=context_data["symbols"],
-            repository_summary=context_data["repository_summary"],
-            call_graphs=call_graphs,
-        )
-        context_data["reachability"] = reachability.to_dict(grouped=True)
-        risk_service = RiskAnalysisService()
-        git_history = None
-        try:
-            git_history = GitContextService(
-                self.service.workspace.root
-            ).collect_history(
-                commit_limit=risk_service.configuration.git_commit_limit
+        with self.measurement.scope(
+            MeasurementPhase.ARCHITECTURE,
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            architecture = ArchitectureDetectionService().detect(
+                context_data["repository_summary"],
+                context_data["semantic_graph"],
             )
-        except (GitContextError, OSError):
-            pass
-        context_data["risk_analysis"] = risk_service.analyze(
-            knowledge_graph,
-            symbol_metadata=context_data["symbols"],
-            repository_summary=context_data["repository_summary"],
-            git_history=git_history,
-        ).to_dict()
-        context_data["repository_report"] = RepositoryReportService().build(
-            context_data,
-            graph_digest=knowledge_graph.stable_digest(),
-            knowledge_graph=knowledge_graph,
-        ).to_dict()
+            scope.add_units(len(context_data["semantic_graph"].get("nodes", ())))
+            scope.add_objects_produced(len(architecture.findings))
+            scope.set_objects_retained(len(architecture.findings))
+            context_data["architecture"] = architecture.to_dict()
+            del architecture
+        with self.measurement.scope(
+            MeasurementPhase.KNOWLEDGE_GRAPH,
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            knowledge_graph = KnowledgeGraph.from_dict(context_data["semantic_graph"])
+            scope.add_units(
+                len(knowledge_graph.nodes) + len(knowledge_graph.edges)
+            )
+            scope.add_objects_produced(
+                len(knowledge_graph.nodes) + len(knowledge_graph.edges)
+            )
+            scope.set_objects_retained(
+                len(knowledge_graph.nodes) + len(knowledge_graph.edges)
+            )
+        with self.measurement.scope(
+            "design_patterns.analysis",
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            patterns = PatternDetectionService().detect(
+                knowledge_graph,
+                java_architecture_graphs=java_architecture_graphs,
+                call_graphs=call_graphs,
+            )
+            scope.add_units(len(knowledge_graph.nodes))
+            scope.add_objects_produced(len(patterns.findings))
+            scope.set_objects_retained(len(patterns.findings))
+            context_data["design_patterns"] = patterns.to_dict()
+            del patterns
+        with self.measurement.scope(
+            MeasurementPhase.REACHABILITY,
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            reachability = ReachabilityAnalysisService().analyze(
+                knowledge_graph,
+                symbol_metadata=context_data["symbols"],
+                repository_summary=context_data["repository_summary"],
+                call_graphs=call_graphs,
+            )
+            scope.add_units(len(knowledge_graph.nodes))
+            scope.add_objects_produced(
+                len(reachability.roots) + len(reachability.findings)
+            )
+            scope.set_objects_retained(
+                len(reachability.roots) + len(reachability.findings)
+            )
+        context_data["reachability"] = reachability.to_dict(grouped=True)
+        with self.measurement.scope(
+            MeasurementPhase.RISK,
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            risk_service = RiskAnalysisService()
+            git_history = None
+            try:
+                git_history = GitContextService(
+                    self.service.workspace.root
+                ).collect_history(
+                    commit_limit=risk_service.configuration.git_commit_limit
+                )
+            except (GitContextError, OSError):
+                pass
+            risk_analysis = risk_service.analyze(
+                knowledge_graph,
+                symbol_metadata=context_data["symbols"],
+                repository_summary=context_data["repository_summary"],
+                git_history=git_history,
+            )
+            scope.add_units(risk_analysis.analyzed_subject_count)
+            scope.add_objects_produced(len(risk_analysis.hotspots))
+            scope.set_objects_retained(len(risk_analysis.hotspots))
+            context_data["risk_analysis"] = risk_analysis.to_dict()
+            del risk_analysis
+        with self.measurement.scope(
+            MeasurementPhase.REPOSITORY_REPORT,
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            repository_report = RepositoryReportService().build(
+                context_data,
+                graph_digest=knowledge_graph.stable_digest(),
+                knowledge_graph=knowledge_graph,
+            )
+            scope.add_units(len(repository_report.sections))
+            scope.add_objects_produced(
+                len(repository_report.sections) + len(repository_report.items)
+            )
+            scope.set_objects_retained(
+                len(repository_report.sections) + len(repository_report.items)
+            )
+            context_data["repository_report"] = repository_report.to_dict()
+            del repository_report
         context = WorkspaceSemanticContext(context_data)
         collection = SemanticCollectionReport(
             tuple(run.project for run in report.runs),
@@ -187,9 +291,26 @@ class SemanticContextCollector:
         for project in sorted(self.service.workspace.projects, key=lambda item: item.name):
             if project.name in skip:
                 continue
-            for path in self._java_files(project.path, project.include, project.exclude):
+            for path in self._java_files(
+                project.path,
+                project.include,
+                project.exclude,
+                sample_key=project.name,
+            ):
                 try:
-                    index = service.index_sources({path: path.read_text(encoding="utf-8-sig")})
+                    source = path.read_text(encoding="utf-8-sig")
+                    if self.measurement.filesystem.enabled:
+                        self.measurement.filesystem.file_content_read_unknown_size(
+                            "semantic-collector",
+                            path,
+                        )
+                        self.measurement.filesystem.language_parsed(
+                            "semantic-collector"
+                        )
+                    try:
+                        index = service.index_sources({path: source})
+                    finally:
+                        del source
                     self._add_unique(symbols, builder.build(index).snapshot().symbols)
                 except (OSError, UnicodeError, ValueError) as exc:
                     diagnostics.setdefault(project.name, []).append(
@@ -202,15 +323,24 @@ class SemanticContextCollector:
                         )
                     )
 
-    @staticmethod
     def _java_files(
+        self,
         root: Path,
         include: tuple[str, ...],
         exclude: tuple[str, ...],
+        *,
+        sample_key: str = "semantic-collector",
     ) -> tuple[Path, ...]:
         paths = tuple(
             path
-            for path in project_files(root, include, exclude)
+            for path in project_files(
+                root,
+                include,
+                exclude,
+                measurement=self.measurement,
+                consumer="semantic-collector",
+                sample_key=sample_key,
+            )
             if path.suffix.lower() == ".java"
         )
         selected, _excluded_data = select_compiled_java_sources(root, paths)

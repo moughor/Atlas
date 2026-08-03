@@ -6,6 +6,8 @@ import re
 import tomllib
 import xml.etree.ElementTree as ET
 
+from moughorai.measurement import MeasurementPhase, MeasurementSession
+
 from .models import DeclaredDependency
 
 
@@ -17,31 +19,56 @@ class DependencyIntelligenceService:
         "pyproject.toml", "package.json", "Cargo.toml",
     })
 
-    def analyze(self, root: Path, files: tuple[Path, ...]) -> tuple[DeclaredDependency, ...]:
-        dependencies: set[DeclaredDependency] = set()
-        for path in sorted(files, key=Path.as_posix):
-            if path.name not in self.MANIFESTS:
-                continue
-            try:
-                if path.name == "pom.xml":
-                    dependencies.update(self._maven(path))
-                elif path.name.startswith("build.gradle"):
-                    dependencies.update(self._gradle(path))
-                elif path.name == "requirements.txt":
-                    dependencies.update(self._requirements(path))
-                elif path.name == "pyproject.toml":
-                    dependencies.update(self._pyproject(path))
-                elif path.name == "package.json":
-                    dependencies.update(self._package_json(path))
-                elif path.name == "Cargo.toml":
-                    dependencies.update(self._cargo(path))
-            except (OSError, UnicodeError, ValueError, ET.ParseError, json.JSONDecodeError, tomllib.TOMLDecodeError):
-                continue
-        return tuple(sorted(dependencies, key=DeclaredDependency.deterministic_sort_key))
+    def __init__(self, *, measurement: MeasurementSession | None = None) -> None:
+        self.measurement = measurement or MeasurementSession()
 
-    @staticmethod
-    def _maven(path: Path):
-        root = ET.fromstring(path.read_text(encoding="utf-8-sig"))
+    def analyze(
+        self,
+        root: Path,
+        files: tuple[Path, ...],
+        *,
+        sample_key: str = "dependency-analysis",
+    ) -> tuple[DeclaredDependency, ...]:
+        with self.measurement.scope(
+            MeasurementPhase.DEPENDENCY_INTELLIGENCE,
+            consumer="dependency-intelligence",
+            sample_key=sample_key,
+        ) as scope:
+            dependencies: set[DeclaredDependency] = set()
+            manifest_count = 0
+            for path in sorted(files, key=Path.as_posix):
+                if path.name not in self.MANIFESTS:
+                    continue
+                manifest_count += 1
+                try:
+                    if path.name == "pom.xml":
+                        dependencies.update(self._maven(path))
+                    elif path.name.startswith("build.gradle"):
+                        dependencies.update(self._gradle(path))
+                    elif path.name == "requirements.txt":
+                        dependencies.update(self._requirements(path))
+                    elif path.name == "pyproject.toml":
+                        dependencies.update(self._pyproject(path))
+                    elif path.name == "package.json":
+                        dependencies.update(self._package_json(path))
+                    elif path.name == "Cargo.toml":
+                        dependencies.update(self._cargo(path))
+                    self.measurement.filesystem.descriptor_parsed(
+                        "dependency-intelligence"
+                    )
+                except (OSError, UnicodeError, ValueError, ET.ParseError, json.JSONDecodeError, tomllib.TOMLDecodeError):
+                    continue
+            result = tuple(sorted(
+                dependencies,
+                key=DeclaredDependency.deterministic_sort_key,
+            ))
+            scope.add_units(manifest_count)
+            scope.add_objects_produced(len(result))
+            scope.set_objects_retained(len(result))
+            return result
+
+    def _maven(self, path: Path):
+        root = ET.fromstring(self._read_text(path))
         result = []
         for node in root.findall(".//{*}dependency"):
             group = node.findtext("{*}groupId")
@@ -55,9 +82,8 @@ class DependencyIntelligenceService:
             ))
         return result
 
-    @staticmethod
-    def _gradle(path: Path):
-        text = path.read_text(encoding="utf-8-sig")
+    def _gradle(self, path: Path):
+        text = self._read_text(path)
         pattern = re.compile(
             r"""(?m)^\s*(implementation|api|compileOnly|runtimeOnly|testImplementation)"""
             r"""\s*(?:\(\s*)?["']([^:"']+):([^:"']+)(?::([^"']+))?["']"""
@@ -67,10 +93,9 @@ class DependencyIntelligenceService:
             for scope, group, artifact, version in pattern.findall(text)
         ]
 
-    @staticmethod
-    def _requirements(path: Path):
+    def _requirements(self, path: Path):
         result = []
-        for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        for raw in self._read_text(path).splitlines():
             line = raw.split("#", 1)[0].strip()
             if not line or line.startswith(("-", ".")):
                 continue
@@ -81,9 +106,8 @@ class DependencyIntelligenceService:
                 ))
         return result
 
-    @staticmethod
-    def _pyproject(path: Path):
-        data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    def _pyproject(self, path: Path):
+        data = tomllib.loads(self._read_text(path))
         poetry = data.get("tool", {}).get("poetry", {})
         result = []
         for scope, values in (
@@ -98,9 +122,8 @@ class DependencyIntelligenceService:
                 result.append(DeclaredDependency("pypi", name, version, scope, path, optional))
         return result
 
-    @staticmethod
-    def _package_json(path: Path):
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    def _package_json(self, path: Path):
+        data = json.loads(self._read_text(path))
         result = []
         for field, scope in (
             ("dependencies", "runtime"), ("devDependencies", "development"),
@@ -112,9 +135,8 @@ class DependencyIntelligenceService:
                 ))
         return result
 
-    @staticmethod
-    def _cargo(path: Path):
-        data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    def _cargo(self, path: Path):
+        data = tomllib.loads(self._read_text(path))
         result = []
         for field, scope in (
             ("dependencies", "runtime"), ("dev-dependencies", "development"),
@@ -125,3 +147,12 @@ class DependencyIntelligenceService:
                 optional = bool(value.get("optional", False)) if isinstance(value, dict) else False
                 result.append(DeclaredDependency("cargo", name, version, scope, path, optional))
         return result
+
+    def _read_text(self, path: Path) -> str:
+        text = path.read_text(encoding="utf-8-sig")
+        if self.measurement.filesystem.enabled:
+            self.measurement.filesystem.file_content_read_unknown_size(
+                "dependency-intelligence",
+                path,
+            )
+        return text

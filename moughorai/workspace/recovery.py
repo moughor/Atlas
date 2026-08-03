@@ -12,6 +12,8 @@ import tempfile
 from threading import RLock
 from typing import Any
 
+from moughorai.measurement import MeasurementPhase
+
 from .configuration import ResolvedConfiguration
 from .event_bus import WorkspaceEvent, WorkspaceEventKind
 from .execution import ProjectRunStatus, WorkspaceAnalysisOrchestrator, WorkspaceRunReport
@@ -199,6 +201,7 @@ class WorkspaceRecoveryManager:
         producer_fingerprint: str | None = None,
     ) -> None:
         self.service = service
+        self.measurement = service.measurement
         configured_path = configuration.get("recovery.path") if configuration is not None else None
         self.path = Path(path or configured_path or service.workspace.root / ".atlas" / "workspace-recovery.json")
         configured_age = configuration.get("recovery.max_age_seconds") if configuration is not None else None
@@ -398,10 +401,27 @@ class WorkspaceRecoveryManager:
             self.service.events.emit(WorkspaceEventKind.RECOVERY_COMPLETED, source="workspace.recovery", payload=self._report(journal, True).to_dict())
 
     def _load_valid(self) -> tuple[WorkspaceRecoveryJournal | None, WorkspaceRecoveryReport]:
+        with self.measurement.scope(
+            MeasurementPhase.RECOVERY,
+            consumer="workspace-recovery",
+            sample_key="workspace-recovery",
+        ) as scope:
+            result = self._load_valid_unmeasured()
+            scope.add_units(1)
+            return result
+
+    def _load_valid_unmeasured(self) -> tuple[WorkspaceRecoveryJournal | None, WorkspaceRecoveryReport]:
         if not self.path.exists():
             return None, WorkspaceRecoveryReport(False)
         try:
-            envelope = json.loads(self.path.read_text(encoding="utf-8"))
+            text = self.path.read_text(encoding="utf-8")
+            if self.measurement.config.enabled:
+                self.measurement.filesystem.file_content_read(
+                    "workspace-recovery",
+                    self.path,
+                )
+            envelope = json.loads(text)
+            del text
             if not isinstance(envelope, Mapping) or not isinstance(envelope.get("journal"), Mapping):
                 raise WorkspaceRecoveryError("recovery journal envelope is invalid")
             raw = envelope["journal"]
@@ -436,6 +456,21 @@ class WorkspaceRecoveryManager:
         return report
 
     def _save(self, journal: WorkspaceRecoveryJournal) -> Path:
+        with self.measurement.scope(
+            MeasurementPhase.RECOVERY,
+            consumer="workspace-recovery",
+            sample_key="workspace-recovery",
+        ) as scope:
+            path = self._save_unmeasured(journal)
+            scope.add_units(1)
+            if self.measurement.config.enabled:
+                try:
+                    scope.add_bytes(path.stat().st_size)
+                except OSError:
+                    pass
+            return path
+
+    def _save_unmeasured(self, journal: WorkspaceRecoveryJournal) -> Path:
         raw = journal.to_dict()
         envelope = {"checksum": hashlib.sha256(_canonical(raw).encode("utf-8")).hexdigest(), "journal": raw}
         text = json.dumps(envelope, sort_keys=True, indent=2, ensure_ascii=False) + "\n"

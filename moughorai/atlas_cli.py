@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 import json
 import logging
+import os
 from pathlib import Path
+import tempfile
+from threading import RLock
+import tracemalloc
 from typing import Annotated, Any
 
 import typer
@@ -21,6 +26,13 @@ from .git_diff import GitDiffError, GitDiffFilter, GitDiffService
 from .history import HistoryDatabase, HistoryDatabaseError
 from .dashboard import DashboardService
 from .profiling import PerformanceProfiler
+from .measurement import (
+    MeasurementConfig,
+    MeasurementPhase,
+    MeasurementReport,
+    MeasurementSession,
+    MetricStatus,
+)
 from .adaptive_scheduler import AdaptiveWorkspaceScheduler
 from .governance import GovernanceAuditLog, GovernanceError
 from .structured_logging import LogFormat, LogLevel, configure_logging, get_logger, log_event
@@ -105,15 +117,25 @@ class AtlasCliContext:
 Analyzer = Callable[[Project, Mapping[str, Any]], Any]
 _analyzer_factory: Callable[[WorkspaceService], Analyzer] | None = None
 _ai_provider_factory: Callable[[], Any] | None = None
+_tracemalloc_lock = RLock()
+_tracemalloc_users = 0
+_tracemalloc_owned = False
 
 
 def _default_analyzer(service: WorkspaceService) -> Analyzer:
-    return AnalyzerRegistry()
+    return AnalyzerRegistry(measurement=service.measurement)
 
 
-def _context(root: Path) -> AtlasCliContext:
+def _context(
+    root: Path,
+    *,
+    measurement: MeasurementSession | None = None,
+) -> AtlasCliContext:
     resolved = root.expanduser().resolve()
-    return AtlasCliContext(resolved, WorkspaceService(resolved))
+    return AtlasCliContext(
+        resolved,
+        WorkspaceService(resolved, measurement=measurement),
+    )
 
 
 def _analyzer(service: WorkspaceService) -> Analyzer:
@@ -163,22 +185,99 @@ def analyze(
     diff_head: Annotated[str | None, typer.Option("--diff-head", help="Git head revision (requires --diff-base).")] = None,
     staged: Annotated[bool, typer.Option("--staged", help="Analyze staged Git changes.")] = False,
     adaptive: Annotated[bool, typer.Option("--adaptive", help="Adapt workers to topology and historical timings.")] = False,
+    profile: Annotated[
+        bool,
+        typer.Option(
+            "--profile",
+            help="Write an opt-in M2 performance measurement sidecar.",
+        ),
+    ] = False,
+    profile_output: Annotated[
+        Path | None,
+        typer.Option(
+            "--profile-output",
+            help="Measurement JSON path; implies --profile.",
+        ),
+    ] = None,
+    profile_memory: Annotated[
+        bool,
+        typer.Option(
+            "--profile-memory",
+            help="Collect best-effort process memory counters; implies --profile.",
+        ),
+    ] = False,
+    profile_python_memory: Annotated[
+        bool,
+        typer.Option(
+            "--profile-python-memory",
+            help="Collect Python allocation samples with tracemalloc; implies --profile.",
+        ),
+    ] = False,
 ) -> None:
     """Analyze a workspace."""
     def operation() -> None:
-        context = _context(root)
-        selected = tuple(project or ())
-        actual_workers = _adaptive_workers(context, selected, workers) if adaptive else workers
-        report = _execute(context, projects=selected, workers=actual_workers, force=force, recover=recover)
-        report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
-        report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
-        history = HistoryDatabase(root)
-        run_id = history.record(report)
-        if report.succeeded:
-            collected = SemanticContextCollector(context.service).collect(report)
-            store = SemanticSnapshotStore(context.service.workspace)
-            store.save(store.capture(collected.context, history_reference=run_id))
-        _emit_report(report, output_format)
+        profile_enabled = (
+            profile
+            or profile_output is not None
+            or profile_memory
+            or profile_python_memory
+        )
+        profile_target = (
+            _measurement_output_path(root.expanduser().resolve(), profile_output)
+            if profile_enabled
+            else None
+        )
+        with _python_memory_collection(profile_python_memory):
+            measurement = MeasurementSession(MeasurementConfig(
+                enabled=profile_enabled,
+                capture_process_memory=profile_memory,
+                capture_python_memory=profile_python_memory,
+                worker_metrics_supported=True,
+            ))
+            try:
+                context = _context(root, measurement=measurement)
+                selected = tuple(project or ())
+                actual_workers = _adaptive_workers(context, selected, workers) if adaptive else workers
+                report = _execute(context, projects=selected, workers=actual_workers, force=force, recover=recover)
+                report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
+                report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
+                history = HistoryDatabase(root)
+                with measurement.scope(
+                    MeasurementPhase.PUBLICATION,
+                    consumer="analysis-history",
+                    sample_key="history",
+                ) as publication:
+                    run_id = history.record(
+                        report,
+                        adaptive_eligible=not profile_enabled,
+                    )
+                    publication.add_units(1)
+                    publication.add_objects_produced(1)
+                if report.succeeded:
+                    collected = SemanticContextCollector(
+                        context.service,
+                        measurement=measurement,
+                    ).collect(report)
+                    store = SemanticSnapshotStore(
+                        context.service.workspace,
+                        measurement=measurement,
+                    )
+                    store.save(store.capture(
+                        collected.context,
+                        history_reference=run_id,
+                    ))
+                _emit_report(report, output_format)
+            finally:
+                if profile_target is not None:
+                    _publish_measurement_report(
+                        profile_target,
+                        measurement,
+                        output_kind=(
+                            "default" if profile_output is None else "custom"
+                        ),
+                        memory_requested=profile_memory,
+                        python_memory_requested=profile_python_memory,
+                    )
 
     _run_command(operation)
 
@@ -400,12 +499,17 @@ def governance_command(
     _run_command(operation)
 
 
-def _load_ai_snapshot(root: Path, snapshot: Path | None):
+def _load_ai_snapshot(
+    root: Path,
+    snapshot: Path | None,
+    *,
+    measurement: MeasurementSession | None = None,
+):
     # Snapshot-backed AI commands must not rediscover or rescan the repository.
     # A minimal workspace supplies only the durable ASS location; all repository
     # facts come from the checksum-verified snapshot itself.
     workspace = Workspace(root.expanduser().resolve(), ())
-    store = SemanticSnapshotStore(workspace)
+    store = SemanticSnapshotStore(workspace, measurement=measurement)
     loaded = store.load(snapshot)
     if loaded is None:
         target = snapshot or store.latest_path
@@ -460,44 +564,88 @@ def ai_explain_command(
     target: Annotated[str | None, typer.Option("--target", help="Canonical target for a relationship explanation.")] = None,
     relation: Annotated[str | None, typer.Option("--relation", help="Canonical relationship kind to explain.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Print deterministic structured explanation JSON without an LLM.")] = False,
+    profile: Annotated[bool, typer.Option("--profile", help="Write an opt-in M2 Explain measurement sidecar.")] = False,
+    profile_output: Annotated[Path | None, typer.Option("--profile-output", help="Explain measurement JSON path; implies --profile.")] = None,
+    profile_memory: Annotated[bool, typer.Option("--profile-memory", help="Collect best-effort process memory counters; implies --profile.")] = False,
+    profile_python_memory: Annotated[bool, typer.Option("--profile-python-memory", help="Collect Python allocation samples; implies --profile.")] = False,
 ) -> None:
     """Render a repository report or explain a targeted semantic subject."""
     def operation() -> None:
-        loaded = _load_ai_snapshot(root, snapshot)
-        request = ExplainRequest(
-            subject=subject,
-            kind=kind,
-            project=project,
-            language=language,
-            path_constraint=path_constraint,
-            target=target,
-            relation=relation,
-            narrative=not json_output,
+        profile_enabled = (
+            profile
+            or profile_output is not None
+            or profile_memory
+            or profile_python_memory
         )
-        if json_output:
-            result = ExplainEngine().explain(loaded, request)
-            structured = result.structured_explanation
-            if structured is None:
-                raise ValueError("structured explanation is unavailable")
-            typer.echo(structured.to_json())
-            return
-        if ExplainEngine._is_repository_default(request):
-            result = ExplainEngine(
-                memory=ConversationMemoryStore(root),
-            ).explain(loaded, request)
-            typer.echo(result.markdown)
-            return
-        provider = (_ai_provider_factory or OllamaProvider)()
-        try:
-            result = ExplainEngine(
-                LlmClient(provider),
-                memory=ConversationMemoryStore(root),
-            ).explain(loaded, request)
-            typer.echo(result.markdown)
-        finally:
-            close = getattr(provider, "close", None)
-            if callable(close):
-                close()
+        profile_target = (
+            _measurement_output_path(
+                root.expanduser().resolve(),
+                profile_output,
+                default_name="latest-explain.json",
+            )
+            if profile_enabled
+            else None
+        )
+        with _python_memory_collection(profile_python_memory):
+            measurement = MeasurementSession(MeasurementConfig(
+                enabled=profile_enabled,
+                capture_process_memory=profile_memory,
+                capture_python_memory=profile_python_memory,
+            ))
+            try:
+                loaded = _load_ai_snapshot(
+                    root,
+                    snapshot,
+                    measurement=measurement,
+                )
+                request = ExplainRequest(
+                    subject=subject,
+                    kind=kind,
+                    project=project,
+                    language=language,
+                    path_constraint=path_constraint,
+                    target=target,
+                    relation=relation,
+                    narrative=not json_output,
+                )
+                if json_output:
+                    result = ExplainEngine(
+                        measurement=measurement,
+                    ).explain(loaded, request)
+                    structured = result.structured_explanation
+                    if structured is None:
+                        raise ValueError("structured explanation is unavailable")
+                    typer.echo(structured.to_json())
+                elif ExplainEngine._is_repository_default(request):
+                    result = ExplainEngine(
+                        memory=ConversationMemoryStore(root),
+                        measurement=measurement,
+                    ).explain(loaded, request)
+                    typer.echo(result.markdown)
+                else:
+                    provider = (_ai_provider_factory or OllamaProvider)()
+                    try:
+                        result = ExplainEngine(
+                            LlmClient(provider),
+                            memory=ConversationMemoryStore(root),
+                            measurement=measurement,
+                        ).explain(loaded, request)
+                        typer.echo(result.markdown)
+                    finally:
+                        close = getattr(provider, "close", None)
+                        if callable(close):
+                            close()
+            finally:
+                if profile_target is not None:
+                    _publish_measurement_report(
+                        profile_target,
+                        measurement,
+                        output_kind=(
+                            "default" if profile_output is None else "custom"
+                        ),
+                        memory_requested=profile_memory,
+                        python_memory_requested=profile_python_memory,
+                    )
 
     _run_command(operation)
 
@@ -625,6 +773,248 @@ def _run_command(operation: Callable[[], None]) -> None:
         raise typer.Exit(code=2) from exc
 
 
+def _measurement_output_path(
+    root: Path,
+    output: Path | None,
+    *,
+    default_name: str = "latest.json",
+) -> Path:
+    workspace_root = root.expanduser().resolve()
+    if output is None:
+        return workspace_root / ".atlas" / "measurements" / default_name
+    target = output.expanduser().resolve()
+    if target.suffix.casefold() != ".json":
+        raise ValueError("measurement output must use a .json extension")
+    try:
+        target.relative_to(workspace_root)
+    except ValueError:
+        return target
+    measurement_root = workspace_root / ".atlas" / "measurements"
+    try:
+        target.relative_to(measurement_root)
+    except ValueError as exc:
+        raise ValueError(
+            "measurement output inside a workspace must be under "
+            ".atlas/measurements so it cannot affect semantic identity"
+        ) from exc
+    return target
+
+
+class _PythonMemoryCollection(AbstractContextManager[None]):
+    """Own tracemalloc without a generator context rewriting exceptions."""
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self.joined = False
+
+    def __enter__(self) -> None:
+        global _tracemalloc_owned, _tracemalloc_users
+        if not self.enabled:
+            return None
+        with _tracemalloc_lock:
+            try:
+                tracing = tracemalloc.is_tracing()
+            except Exception:
+                tracing = False
+            if _tracemalloc_users == 0 and not tracing:
+                try:
+                    tracemalloc.start()
+                except Exception:
+                    _tracemalloc_owned = False
+                else:
+                    _tracemalloc_owned = True
+            _tracemalloc_users += 1
+            self.joined = True
+        return None
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        global _tracemalloc_owned, _tracemalloc_users
+        if self.joined:
+            with _tracemalloc_lock:
+                _tracemalloc_users = max(0, _tracemalloc_users - 1)
+                if _tracemalloc_users == 0 and _tracemalloc_owned:
+                    try:
+                        tracemalloc.stop()
+                    except Exception:
+                        pass
+                    finally:
+                        _tracemalloc_owned = False
+                self.joined = False
+        return False
+
+
+def _python_memory_collection(enabled: bool) -> AbstractContextManager[None]:
+    return _PythonMemoryCollection(enabled)
+
+
+def _write_measurement_report(
+    path: Path,
+    report: MeasurementReport,
+) -> Path:
+    """Atomically replace one source-free measurement sidecar."""
+
+    _validate_measurement_output_target(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(report.to_json())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+    return path
+
+
+def _validate_measurement_output_target(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(existing, Mapping):
+            raise ValueError("measurement sidecar must be a JSON object")
+        MeasurementReport.from_dict(existing)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "refusing to replace an existing file that is not a valid "
+            "Atlas performance measurement sidecar"
+        ) from exc
+
+
+def _publish_measurement_report(
+    path: Path,
+    measurement: MeasurementSession,
+    *,
+    output_kind: str,
+    memory_requested: bool,
+    python_memory_requested: bool,
+) -> bool:
+    """Publish operational evidence without changing an Atlas command outcome."""
+
+    try:
+        report = measurement.report()
+        _write_measurement_report(path, report)
+        _emit_measurement_summary(
+            report,
+            output_kind=output_kind,
+            memory_requested=memory_requested,
+            python_memory_requested=python_memory_requested,
+        )
+    except Exception:
+        typer.echo(
+            "profile: unavailable (sidecar-publication-failed)",
+            err=True,
+        )
+        return False
+    return True
+
+
+def _emit_measurement_summary(
+    report: MeasurementReport,
+    *,
+    output_kind: str,
+    memory_requested: bool,
+    python_memory_requested: bool,
+) -> None:
+    """Write a compact operational summary without changing command stdout."""
+
+    typer.echo(
+        f"profile: samples={len(report.samples)} phases={len(report.aggregates)} "
+        f"eligible={report.sampling.eligible_scopes} "
+        f"sample_every={report.sampling.sample_every} output={output_kind}",
+        err=True,
+    )
+    unavailable_phases = sum(
+        item["status"] == MetricStatus.UNAVAILABLE.value
+        for item in report.phase_statuses
+    )
+    unsupported_phases = sum(
+        item["status"] == MetricStatus.UNSUPPORTED.value
+        for item in report.phase_statuses
+    )
+    typer.echo(
+        "profile-coverage: "
+        f"unsupported={unsupported_phases} unavailable={unavailable_phases}",
+        err=True,
+    )
+    for aggregate in report.aggregates:
+        wall = next(
+            (
+                metric
+                for metric in aggregate.metrics
+                if metric.name == "wall_time_ns"
+            ),
+            None,
+        )
+        if wall is not None and wall.measured_count:
+            typer.echo(
+                f"profile-phase: {aggregate.phase_id} "
+                f"samples={aggregate.sample_count} "
+                "cumulative_sample_wall_ms="
+                f"{float(wall.total or 0) / 1_000_000:.3f}",
+                err=True,
+            )
+    if memory_requested:
+        rss = [
+            metric
+            for sample in report.samples
+            for name, metric in sample.metrics
+            if name == "rss_bytes" and metric.value is not None
+        ]
+        if rss:
+            typer.echo(
+                f"profile-memory: maximum_sampled_rss_bytes="
+                f"{max(int(metric.value) for metric in rss if metric.value is not None)}",
+                err=True,
+            )
+        else:
+            statuses = {
+                metric.status
+                for sample in report.samples
+                for name, metric in sample.metrics
+                if name == "rss_bytes"
+            }
+            state = (
+                "unsupported"
+                if MetricStatus.UNSUPPORTED in statuses
+                else "unavailable"
+            )
+            typer.echo(f"profile-memory: {state}", err=True)
+    if python_memory_requested:
+        python_peaks = [
+            metric
+            for sample in report.samples
+            for name, metric in sample.metrics
+            if name == "python_peak_allocated_bytes" and metric.value is not None
+        ]
+        if python_peaks:
+            typer.echo(
+                f"profile-python-memory: maximum_sampled_peak_bytes="
+                f"{max(int(metric.value) for metric in python_peaks if metric.value is not None)}",
+                err=True,
+            )
+        else:
+            statuses = {
+                metric.status
+                for sample in report.samples
+                for name, metric in sample.metrics
+                if name == "python_peak_allocated_bytes"
+            }
+            state = (
+                "unsupported"
+                if MetricStatus.UNSUPPORTED in statuses
+                else "unavailable"
+            )
+            typer.echo(f"profile-python-memory: {state}", err=True)
+
+
 def _apply_baseline_options(
     report: WorkspaceRunReport,
     *,
@@ -659,7 +1049,7 @@ def _adaptive_workers(context: AtlasCliContext, projects: tuple[str, ...], worke
     selected = projects or context.service.workspace.names()
     ordered = context.service.analysis_order(selected)
     durations: dict[str, list[float]] = {}
-    for historical in HistoryDatabase(context.root).list(limit=20):
+    for historical in HistoryDatabase(context.root).list_adaptive_eligible(limit=20):
         for run in historical.runs:
             durations.setdefault(run.project, []).append(run.duration_ms)
     averages = {name: sum(values) / len(values) for name, values in durations.items()}

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.ai_memory import ConversationMemoryStore, ConversationRole
 from moughorai.llm import LlmClient
+from moughorai.measurement import MeasurementPhase, MeasurementSession
 from moughorai.prompts import SemanticPromptBuilder
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 from moughorai.structured_explanation import (
@@ -62,10 +63,12 @@ class ExplainEngine:
         *,
         prompt_builder: SemanticPromptBuilder | None = None,
         memory: ConversationMemoryStore | None = None,
+        measurement: MeasurementSession | None = None,
     ) -> None:
         self.client = client
         self.prompts = prompt_builder or SemanticPromptBuilder()
         self.memory = memory
+        self.measurement = measurement or MeasurementSession()
 
     def explain(
         self,
@@ -86,35 +89,49 @@ class ExplainEngine:
         use_provider = False
         prompt = None
         if repository_default:
-            structured = StructuredExplanationService(snapshot).explain(
-                self._structured_request(selected, subject),
-                token_budget=self.MAXIMUM_INPUT_TOKENS,
-            )
-        else:
-            targeted_question = self._targeted_question(selected, subject)
-            token_budget = self._structured_context_budget(
-                targeted_question,
-                subject,
-            )
-            structured = StructuredExplanationService(snapshot).explain(
-                self._structured_request(selected, subject),
-                token_budget=token_budget,
-            )
-            use_provider = (
-                selected.narrative
-                and structured.availability not in self._NON_NARRATIVE_AVAILABILITY
-            )
-            if use_provider:
-                prompt = self.prompts.build(
-                    targeted_question,
-                    WorkspaceSemanticContext({
-                        "structured_explanation": structured.to_dict(),
-                    }),
-                    template="atlas-explain-anything-v1",
-                    variables={"subject": subject},
-                    model="",
-                    maximum_input_tokens=self.MAXIMUM_INPUT_TOKENS,
+            with self.measurement.scope(
+                MeasurementPhase.EXPLAIN_PROJECTION,
+                consumer="explain-engine",
+                sample_key=snapshot.snapshot_id,
+            ) as scope:
+                structured = StructuredExplanationService(snapshot).explain(
+                    self._structured_request(selected, subject),
+                    token_budget=self.MAXIMUM_INPUT_TOKENS,
                 )
+                scope.add_units(len(structured.citations))
+                scope.add_objects_produced(1)
+        else:
+            with self.measurement.scope(
+                MeasurementPhase.EXPLAIN_PROJECTION,
+                consumer="explain-engine",
+                sample_key=snapshot.snapshot_id,
+            ) as scope:
+                targeted_question = self._targeted_question(selected, subject)
+                token_budget = self._structured_context_budget(
+                    targeted_question,
+                    subject,
+                )
+                structured = StructuredExplanationService(snapshot).explain(
+                    self._structured_request(selected, subject),
+                    token_budget=token_budget,
+                )
+                use_provider = (
+                    selected.narrative
+                    and structured.availability not in self._NON_NARRATIVE_AVAILABILITY
+                )
+                if use_provider:
+                    prompt = self.prompts.build(
+                        targeted_question,
+                        WorkspaceSemanticContext({
+                            "structured_explanation": structured.to_dict(),
+                        }),
+                        template="atlas-explain-anything-v1",
+                        variables={"subject": subject},
+                        model="",
+                        maximum_input_tokens=self.MAXIMUM_INPUT_TOKENS,
+                    )
+                scope.add_units(len(structured.citations))
+                scope.add_objects_produced(1)
 
         conversation_id = selected.conversation_id
         if self.memory is not None:
@@ -131,8 +148,17 @@ class ExplainEngine:
             )
 
         if repository_default:
-            context = self._repository_context(snapshot)
-            markdown = RepositoryReportRenderer().render(context.to_dict())
+            with self.measurement.scope(
+                MeasurementPhase.EXPLAIN_PROJECTION,
+                consumer="explain-engine",
+                sample_key=snapshot.snapshot_id,
+            ) as scope:
+                context = self._repository_context(snapshot)
+                markdown = RepositoryReportRenderer().render(context.to_dict())
+                scope.add_units(1)
+                if self.measurement.config.enabled:
+                    scope.add_bytes(len(markdown.encode("utf-8")))
+                scope.add_objects_produced(1)
             # No provider input is sent for the deterministic default report.
             estimated_input_tokens = 0
         elif use_provider:
@@ -144,7 +170,16 @@ class ExplainEngine:
                 raise ValueError("explanation provider returned empty output")
             if structured is None:
                 raise RuntimeError("structured explanation state is incomplete")
-            deterministic = StructuredExplanationRenderer().render(structured)
+            with self.measurement.scope(
+                MeasurementPhase.EXPLAIN_PROJECTION,
+                consumer="explain-engine",
+                sample_key=snapshot.snapshot_id,
+            ) as scope:
+                deterministic = StructuredExplanationRenderer().render(structured)
+                scope.add_units(1)
+                if self.measurement.config.enabled:
+                    scope.add_bytes(len(deterministic.encode("utf-8")))
+                scope.add_objects_produced(1)
             markdown = (
                 f"{deterministic}\n\n"
                 "## Optional provider narrative\n\n"
@@ -157,7 +192,16 @@ class ExplainEngine:
         else:
             if structured is None:
                 raise RuntimeError("structured explanation state is incomplete")
-            markdown = StructuredExplanationRenderer().render(structured)
+            with self.measurement.scope(
+                MeasurementPhase.EXPLAIN_PROJECTION,
+                consumer="explain-engine",
+                sample_key=snapshot.snapshot_id,
+            ) as scope:
+                markdown = StructuredExplanationRenderer().render(structured)
+                scope.add_units(1)
+                if self.measurement.config.enabled:
+                    scope.add_bytes(len(markdown.encode("utf-8")))
+                scope.add_objects_produced(1)
             estimated_input_tokens = 0
 
         if self.memory is not None and conversation_id is not None:

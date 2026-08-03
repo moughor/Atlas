@@ -15,6 +15,7 @@ from moughorai.semantic.types.serialization import type_to_dict
 from moughorai.workspace import Project, Workspace
 from moughorai.dependency_intelligence import DeclaredDependency
 from moughorai.knowledge_graph import KnowledgeGraphBuilder
+from moughorai.measurement import MeasurementPhase, MeasurementSession
 
 from .models import WorkspaceSemanticContext
 
@@ -23,6 +24,9 @@ class WorkspaceContextBuilder:
     """Build stable semantic JSON while keeping Atlas analysis authoritative."""
 
     SCHEMA_VERSION = 1
+
+    def __init__(self, *, measurement: MeasurementSession | None = None) -> None:
+        self.measurement = measurement or MeasurementSession()
 
     @staticmethod
     def from_snapshot(snapshot: object) -> WorkspaceSemanticContext:
@@ -97,7 +101,16 @@ class WorkspaceContextBuilder:
                 else self._value(repository_summary.to_dict())
             ),
         }
-        payload["semantic_graph"] = KnowledgeGraphBuilder().build_context(payload).to_dict()
+        with self.measurement.scope(
+            MeasurementPhase.KNOWLEDGE_GRAPH,
+            consumer="workspace-context",
+            sample_key="workspace",
+        ) as scope:
+            graph = KnowledgeGraphBuilder().build_context(payload)
+            scope.add_units(len(semantic_symbols))
+            scope.add_objects_produced(len(graph.nodes) + len(graph.edges))
+            scope.set_objects_retained(len(graph.nodes) + len(graph.edges))
+            payload["semantic_graph"] = graph.to_dict()
         return WorkspaceSemanticContext(payload)
 
     @staticmethod
