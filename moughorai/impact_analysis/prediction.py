@@ -15,7 +15,10 @@ from moughorai.knowledge_graph import (
     KnowledgeKind,
     KnowledgeRelation,
 )
-from moughorai.knowledge_graph.evidence import safe_edge_evidence_refs
+from moughorai.knowledge_graph.evidence import (
+    has_authoritative_edge_evidence,
+    safe_edge_evidence_refs,
+)
 from moughorai.measurement import MeasurementSession
 from moughorai.project_inventory import is_test_source_path
 from moughorai.repository_report.safety import contains_absolute_path
@@ -62,7 +65,6 @@ from .models import (
 _PRODUCER = "atlas-pr136/1"
 _GRAPH_PRODUCER = "atlas-pr129/1"
 _CALL_GRAPH_PRODUCER = "moughorai.call_graph.v1"
-_CALL_GRAPH_EVIDENCE = f"{_CALL_GRAPH_PRODUCER}:calls"
 _MAXIMUM_VISITED_NODES = 1_000_000
 _MAXIMUM_EDGES_PER_RELATION = 4_096
 _MAXIMUM_AGGREGATION_BASES = 4_096
@@ -1715,80 +1717,45 @@ def _edge_policy(edge: KnowledgeEdge) -> _EdgePolicy | None:
     if not evidence or contains_absolute_path(evidence):
         return None
     relation = edge.relation
-    authoritative = False
     if relation is KnowledgeRelation.CALLS:
-        authoritative = any(item == _CALL_GRAPH_EVIDENCE for item in evidence)
         policy = _EdgePolicy(
             0.90, 0.90, 0.70, ImpactStrength.PROVEN_DIRECT,
             "Producer-bound call evidence is optional and may cover only a specialized scope.",
             _CALL_GRAPH_PRODUCER,
         )
     elif relation is KnowledgeRelation.IMPORTS:
-        authoritative = any(
-            item == "imports" or item.startswith("global_symbol.metadata:imports:")
-            for item in evidence
-        )
         policy = _EdgePolicy(
             0.90, 0.90, 0.80, ImpactStrength.PROVEN_DIRECT,
             "Import evidence proves a resolved structural consumer, not runtime behavior."
         )
     elif relation is KnowledgeRelation.INHERITS:
-        authoritative = any(
-            item in {"extends", "implements"}
-            or item.startswith("global_symbol.metadata:inherits:")
-            or item.startswith("global_symbol.metadata:bases:")
-            for item in evidence
-        )
         policy = _EdgePolicy(
             0.90, 0.95, 0.85, ImpactStrength.PROVEN_DIRECT,
             "Inheritance coverage excludes unresolved, ambiguous, and external bases."
         )
     elif relation is KnowledgeRelation.OVERRIDES:
-        authoritative = any(
-            item.startswith("global_symbol.metadata:overrides:")
-            for item in evidence
-        )
         policy = _EdgePolicy(
             0.95, 0.95, 0.85, ImpactStrength.PROVEN_DIRECT,
             "Override coverage is conservative and does not include unannotated or external methods."
         )
     elif relation is KnowledgeRelation.DEPENDS_ON:
-        authoritative = any(
-            item.startswith("workspace.projects:")
-            or item.startswith("declared_dependency:")
-            or item == "repository_summary.frameworks"
-            or item.partition(":")[0] in {
-                "project-local", "test-only", "test-or-sample", "documentation",
-                "build-tooling", "optional", "optional-integration",
-            }
-            or item in {"calls", "uses", "imports", "extends", "implements"}
-            for item in evidence
-        )
         policy = _EdgePolicy(
             0.82, 0.88, 0.75, ImpactStrength.PROVEN_DIRECT,
             "A dependency declaration proves potential consumption, not runtime linkage."
         )
     elif relation is KnowledgeRelation.MEMBER_OF:
-        authoritative = any(
-            item == "global_symbol.owner_id" for item in evidence
-        )
         policy = _EdgePolicy(
             0.90, 0.95, 0.80, ImpactStrength.STRUCTURAL_CONTEXT,
             "Membership is containment evidence only."
         )
     elif relation is KnowledgeRelation.OWNS:
-        authoritative = any(item in {
-            "workspace.root", "workspace.projects",
-            "repository_summary.projects", "repository_summary.module_hierarchy",
-            "semantic_graph.project_id", "global_symbol.owner_id",
-        } for item in evidence)
         policy = _EdgePolicy(
             0.90, 0.95, 0.80, ImpactStrength.STRUCTURAL_CONTEXT,
             "Ownership is containment evidence only."
         )
     else:
         return None
-    if not authoritative or not safe_edge_evidence_refs(evidence):
+    if not has_authoritative_edge_evidence(relation, evidence):
         return None
     return policy
 

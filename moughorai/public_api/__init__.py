@@ -15,6 +15,11 @@ from moughorai.impact_analysis import (
     ImpactPredictionResponse,
     ImpactPredictionService,
 )
+from moughorai.refactoring_advisor import (
+    RefactoringAdvisorService,
+    RefactoringRequest,
+    RefactoringResponse,
+)
 from moughorai.plugin_sdk import PluginContext, PluginManifest, PluginRegistry
 from moughorai.project_index import PersistentProjectIndex, ProjectFileIndexer
 from moughorai.rule_sdk import RuleContext, RuleFinding, RuleRegistry, RuleRunner
@@ -47,6 +52,9 @@ PUBLIC_API_SIGNATURES: Mapping[str, str] = {
     "PluginRegistry": "(*, api_version: 'str' = '1.0.0') -> 'None'",
     "Project": "(name: 'str', path: 'Path', dependencies: 'tuple[str, ...]' = (), include: 'tuple[str, ...]' = ('**/*',), exclude: 'tuple[str, ...]' = (), options: 'tuple[tuple[str, str], ...]' = ()) -> None",
     "ProjectFileIndexer": "(scanner: 'ProjectScanner | None' = None, *, chunk_size: 'int' = 1048576) -> 'None'",
+    "RefactoringAdvisorService": "(resolver: 'CanonicalSubjectResolver', *, snapshot_id: 'str', analyzer_version: 'str', semantic_context: 'Mapping[str, object]', measurement: 'MeasurementSession | None' = None, confidence: 'ConfidenceCalculator | None' = None) -> 'None'",
+    "RefactoringRequest": "(subject: 'SubjectQuery' = <factory>, families: 'tuple[RefactoringFamily, ...]' = (), limit: 'int' = 20, include_impact: 'bool' = True, impact_depth: 'int' = 4) -> None",
+    "RefactoringResponse": "(request: 'RefactoringRequest', resolution: 'SubjectResolution', advice: 'tuple[RefactoringAdvice, ...]', capabilities: 'tuple[RefactoringCapability, ...]', evidence_index: 'EvidenceIndex', input_fingerprint: 'str', graph_digest: 'str', lineage: 'str', total_candidate_count: 'int' = 0, omitted_count: 'int' = 0, truncated: 'bool' = False, limitations: 'tuple[str, ...]' = (), visited_node_count: 'int' = 0, visited_edge_count: 'int' = 0, producer_version: 'str' = 'atlas-pr137/1', schema_version: 'int' = 1) -> None",
     "ResolvedConfiguration": "(values: 'Mapping[str, Any]', provenance: 'Mapping[str, str]', layers: 'tuple[str, ...]') -> None",
     "RuleContext": "(path: 'Path', source: 'str', language: 'str', configuration: 'Mapping[str, Any]') -> None",
     "RuleFinding": "(rule_id: 'str', message: 'str', severity: 'RuleSeverity', location: 'RuleLocation', data: 'tuple[tuple[str, Any], ...]' = ()) -> None",
@@ -99,6 +107,9 @@ __all__ = [
     "PluginRegistry",
     "Project",
     "ProjectFileIndexer",
+    "RefactoringAdvisorService",
+    "RefactoringRequest",
+    "RefactoringResponse",
     "ResolvedConfiguration",
     "RuleContext",
     "RuleFinding",

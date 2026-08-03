@@ -12,6 +12,11 @@ from moughorai.impact_analysis import (
     ImpactPredictionService,
 )
 from moughorai.knowledge_graph import KnowledgeGraph, KnowledgeKind, KnowledgeNode
+from moughorai.refactoring_advisor import (
+    RefactoringAdvisorService,
+    RefactoringRequest,
+    RefactoringResponse,
+)
 from moughorai.semantic_search import (
     SemanticSearchRequest,
     SemanticSearchResponse,
@@ -31,6 +36,9 @@ def test_public_facade_preserves_existing_type_identity() -> None:
     assert public_api.ImpactPredictionRequest is ImpactPredictionRequest
     assert public_api.ImpactPredictionResponse is ImpactPredictionResponse
     assert public_api.ImpactPredictionService is ImpactPredictionService
+    assert public_api.RefactoringAdvisorService is RefactoringAdvisorService
+    assert public_api.RefactoringRequest is RefactoringRequest
+    assert public_api.RefactoringResponse is RefactoringResponse
     assert public_api.SubjectQuery is SubjectQuery
 
 

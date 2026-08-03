@@ -59,7 +59,17 @@ transitive exposure, capability coverage, conservative breaking-change state, an
 explicit uncertainty without source text or an LLM. See
 [`docs/PR136_IMPACT_PREDICTION.md`](docs/PR136_IMPACT_PREDICTION.md).
 
-The current repository includes completed work through PR136. Recent repository
+PR137 adds a conservative deterministic refactoring advisor. Its first safe slice
+uses only dependency cycles already reported by PR128 and fully revalidated against
+authoritative PR129 relationships. `atlas refactor` identifies review seams with
+traceable evidence, confidence, explicitly unknown gain and effort where evidence
+cannot quantify them, optional bounded PR136 impact context, and explicit
+unsupported capabilities. It
+does not generate patches or infer recommendations from names or an LLM. See
+[`docs/PR137_REFACTORING_ADVISOR.md`](docs/PR137_REFACTORING_ADVISOR.md).
+
+The current repository includes completed work through the safe first slice of
+PR137. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
 reachability, deterministic risk/hotspot indicators, bounded executive reports, and
@@ -77,6 +87,8 @@ atlas search "REST endpoint" .
 atlas search "depends on spring-web" . --json
 atlas impact "com.example.UserService" . --change signature
 atlas impact "dependency:maven:example" . --json
+atlas refactor . --subject repository --no-impact
+atlas refactor . --subject project:example --family cycle-breaking --json
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from
@@ -109,6 +121,8 @@ from moughorai.public_api import (
     ImpactPredictionRequest,
     ImpactPredictionService,
     Project,
+    RefactoringAdvisorService,
+    RefactoringRequest,
     SemanticSearchRequest,
     SemanticSearchService,
     SubjectQuery,
@@ -133,6 +147,7 @@ atlas analyze . --profile-python-memory
 atlas ai explain . --profile
 atlas search "dependency injection" . --profile
 atlas impact "com.example.UserService" . --profile
+atlas refactor . --profile
 ```
 
 The default sidecar is `.atlas/measurements/latest.json`; a compact summary is written

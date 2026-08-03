@@ -15,6 +15,8 @@ import unicodedata
 
 from moughorai.repository_report.safety import contains_absolute_path_text
 
+from .models import KnowledgeRelation
+
 
 MAXIMUM_EDGE_EVIDENCE_REFS = 64
 _SYMBOL_EVIDENCE = re.compile(
@@ -91,6 +93,75 @@ def safe_edge_evidence_refs(values: Iterable[object]) -> tuple[str, ...]:
             accepted.remove(largest)
             accepted.add(reference)
     return tuple(sorted(accepted))
+
+
+def has_authoritative_edge_evidence(
+    relation: KnowledgeRelation,
+    values: Iterable[object],
+) -> bool:
+    """Return whether evidence establishes one canonical relationship.
+
+    The canonical graph models more relationships than the normal production
+    pipeline can currently prove.  Consumers must therefore bind an edge to a
+    known structured producer before treating it as semantic evidence.  This
+    shared predicate centralizes that producer boundary without assigning any
+    feature-specific score, propagation direction, or interpretation.
+    """
+
+    evidence = tuple(
+        text
+        for item in values
+        if (
+            text := unicodedata.normalize("NFKC", str(item).strip())
+        )
+        and _is_structured_edge_evidence_text(text)
+    )
+    if not evidence:
+        return False
+    if relation is KnowledgeRelation.CALLS:
+        return "moughorai.call_graph.v1:calls" in evidence
+    if relation is KnowledgeRelation.IMPORTS:
+        return any(
+            item == "imports"
+            or item.startswith("global_symbol.metadata:imports:")
+            for item in evidence
+        )
+    if relation is KnowledgeRelation.INHERITS:
+        return any(
+            item in {"extends", "implements"}
+            or item.startswith("global_symbol.metadata:inherits:")
+            or item.startswith("global_symbol.metadata:bases:")
+            for item in evidence
+        )
+    if relation is KnowledgeRelation.OVERRIDES:
+        return any(
+            item.startswith("global_symbol.metadata:overrides:")
+            for item in evidence
+        )
+    if relation is KnowledgeRelation.DEPENDS_ON:
+        return any(
+            item.startswith("workspace.projects:")
+            or item.startswith("declared_dependency:")
+            or item == "repository_summary.frameworks"
+            or item.partition(":")[0] in _FRAMEWORK_SCOPES
+            or item in {"calls", "uses", "imports", "extends", "implements"}
+            for item in evidence
+        )
+    if relation is KnowledgeRelation.MEMBER_OF:
+        return "global_symbol.owner_id" in evidence
+    if relation is KnowledgeRelation.OWNS:
+        return any(
+            item in {
+                "workspace.root",
+                "workspace.projects",
+                "repository_summary.projects",
+                "repository_summary.module_hierarchy",
+                "semantic_graph.project_id",
+                "global_symbol.owner_id",
+            }
+            for item in evidence
+        )
+    return False
 
 
 def _is_structured_edge_evidence_text(text: str) -> bool:

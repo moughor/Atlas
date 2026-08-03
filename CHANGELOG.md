@@ -1,5 +1,21 @@
 # Changelog
 
+## PR137 deterministic refactoring advisor
+
+- Added a conservative first PR137 slice that turns only fully revalidated PR128
+  dependency cycles into deterministic project-seam review advice over the PR129
+  canonical graph; it never discovers a second cycle graph or changes source.
+- Added exact canonical participants and direction, shared evidence/confidence,
+  explicitly unknown gain and effort, optional bounded PR136 impact context,
+  limitations, verification steps, strict serialization, and source-free lineage.
+- Added provider-free `atlas refactor` human and canonical JSON output with bounded
+  family/scope/result controls and opt-in M2 measurement.
+- Reported duplicate consolidation, extraction, package restructuring, dependency
+  cleanup, and layer repair as unavailable or insufficient until authoritative
+  upstream producers exist; names, risk, search, Git, and LLMs cannot create advice.
+- Kept advice request-local so analysis snapshots, accepted benchmark artifacts,
+  recovery, persistence, and pre-PR137 behavior remain unchanged.
+
 ## PR136 deterministic impact prediction
 
 - Added bounded, deterministic impact prediction over PR129 canonical relationships

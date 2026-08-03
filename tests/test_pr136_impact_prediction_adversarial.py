@@ -114,6 +114,23 @@ def test_generic_semantic_graph_calls_are_not_authoritative(
     )
 
 
+def test_unsafe_authority_token_cannot_borrow_an_unrelated_safe_reference() -> None:
+    response = _predict(_snapshot(
+        (_node(TARGET), _node(CALLER)),
+        (KnowledgeEdge(
+            CALLER,
+            TARGET,
+            KnowledgeRelation.IMPORTS,
+            (
+                "calls",
+                "global_symbol.metadata:imports:C:\\private\\Secret.java",
+            ),
+        ),),
+    ))
+
+    assert response.findings == ()
+
+
 def test_missing_call_evidence_is_explicitly_unavailable() -> None:
     response = _predict(_snapshot((_node(TARGET),)))
 
