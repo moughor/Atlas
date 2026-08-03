@@ -8,6 +8,10 @@ import unicodedata
 from moughorai.dependency_graph import DependencyGraph
 from moughorai.global_symbols import GlobalSymbolDatabase
 from moughorai.knowledge_graph import KnowledgeKind, KnowledgeRelation
+from moughorai.knowledge_graph.evidence import (
+    is_structured_edge_evidence,
+    safe_edge_evidence_refs,
+)
 from moughorai.measurement import MeasurementSession
 from moughorai.semantic_evidence import ConfidenceCalculator, EvidenceIndex, EvidenceKind, EvidenceRecord, EvidenceRole
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
@@ -20,8 +24,6 @@ from .index import (
     SEARCH_INDEX_PRODUCER,
     SemanticIndexEntry,
     SemanticSearchIndex,
-    is_structured_edge_evidence,
-    safe_edge_evidence_refs,
 )
 from .interpreter import interpret_query, query_terms
 from .models import (

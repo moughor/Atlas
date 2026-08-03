@@ -53,11 +53,17 @@ confidence, capability sources, and limitations; the response reports capability
 states. See
 [`docs/PR135_SEMANTIC_SEARCH.md`](docs/PR135_SEMANTIC_SEARCH.md).
 
-The current repository includes completed work through PR135. Recent repository
+PR136 adds deterministic, evidence-backed impact prediction over the existing PR129
+graph and PR134 subject resolver. `atlas impact` reports bounded direct and
+transitive exposure, capability coverage, conservative breaking-change state, and
+explicit uncertainty without source text or an LLM. See
+[`docs/PR136_IMPACT_PREDICTION.md`](docs/PR136_IMPACT_PREDICTION.md).
+
+The current repository includes completed work through PR136. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
 reachability, deterministic risk/hotspot indicators, bounded executive reports, and
-canonical subject explanations.
+canonical subject explanations, search, and impact prediction.
 
 ## Install
 
@@ -69,6 +75,8 @@ atlas check . --adaptive --workers 4
 atlas dashboard .
 atlas search "REST endpoint" .
 atlas search "depends on spring-web" . --json
+atlas impact "com.example.UserService" . --change signature
+atlas impact "dependency:maven:example" . --json
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from
@@ -98,9 +106,12 @@ External Python consumers should use the versioned compatibility facade:
 ```python
 from moughorai.public_api import (
     AnalysisRequest,
+    ImpactPredictionRequest,
+    ImpactPredictionService,
     Project,
     SemanticSearchRequest,
     SemanticSearchService,
+    SubjectQuery,
     Workspace,
 )
 ```
@@ -121,6 +132,7 @@ atlas analyze . --profile --profile-memory
 atlas analyze . --profile-python-memory
 atlas ai explain . --profile
 atlas search "dependency injection" . --profile
+atlas impact "com.example.UserService" . --profile
 ```
 
 The default sidecar is `.atlas/measurements/latest.json`; a compact summary is written

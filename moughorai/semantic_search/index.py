@@ -6,13 +6,20 @@ from dataclasses import dataclass
 import heapq
 import hashlib
 import json
-from pathlib import PurePosixPath
 import re
 from types import MappingProxyType
 import unicodedata
 
 from moughorai.design_patterns import PatternDetectionReport
-from moughorai.knowledge_graph import KnowledgeGraph, KnowledgeKind, KnowledgeRelation
+from moughorai.knowledge_graph import (
+    KnowledgeGraph,
+    KnowledgeKind,
+    KnowledgeRelation,
+)
+from moughorai.knowledge_graph.evidence import (
+    is_structured_edge_evidence,
+    safe_edge_evidence_refs,
+)
 from moughorai.measurement import MeasurementSession
 from moughorai.reachability import DeadCodeReport
 from moughorai.repository_report.safety import contains_absolute_path, contains_absolute_path_text
@@ -33,51 +40,10 @@ SEARCH_INDEX_SCHEMA_VERSION = 1
 SEARCH_INDEX_PRODUCER = "atlas-pr135-index/1"
 MAXIMUM_METADATA_TEXT = 2_048
 MAXIMUM_ANNOTATION_FACTS = 128
-MAXIMUM_EDGE_EVIDENCE_REFS = 64
 _WORD = re.compile(r"[\w+:#@/-]+", re.UNICODE)
 _EVIDENCE_ID = re.compile(r"evidence:[0-9a-f]{64}\Z")
 _LANGUAGE_ID = re.compile(r"[a-z][a-z0-9+.#_-]{0,31}\Z")
 _SCOPE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@%+-]{0,255}\Z")
-_SYMBOL_EVIDENCE = re.compile(
-    r"global_symbol\.metadata:(?:imports|inherits|bases|overrides):"
-    r"[A-Za-z_$][A-Za-z0-9_.$#()*\[\],?<>+-]{0,255}\Z"
-)
-_WORKSPACE_DEPENDENCY_EVIDENCE = re.compile(
-    r"workspace\.projects:[A-Za-z0-9_.@%+-]{1,128}:dependencies:"
-    r"[A-Za-z0-9_.@%+-]{1,128}\Z"
-)
-_SEMANTIC_GRAPH_EVIDENCE = re.compile(
-    r"semantic_graph:(?:imports|member_of|extends|implements|inheritance|"
-    r"composition|calls|overrides|dependencies|depends_on|ownership)\Z"
-)
-_DEPENDENCY_EVIDENCE = re.compile(
-    r"declared_dependency:[A-Za-z0-9_.@%+~:/-]{1,512}\Z"
-)
-_EVIDENCE_REFERENCE_ID = re.compile(
-    r"(?:evidence|report-item|repository-report):[0-9a-f]{64}\Z"
-)
-_FIXED_EDGE_EVIDENCE = frozenset({
-    "global_symbol.owner_id",
-    "workspace.root",
-    "workspace.projects",
-    "repository_summary.projects",
-    "repository_summary.module_hierarchy",
-    "repository_summary.build_systems",
-    "repository_summary.frameworks",
-    "semantic_graph.project_id",
-    "metadata:domain",
-    "metadata:capability",
-    "calls",
-    "extends",
-    "implements",
-    "uses",
-    "imports",
-    "annotated_by",
-})
-_FRAMEWORK_SCOPES = frozenset({
-    "project-local", "test-only", "test-or-sample", "documentation",
-    "build-tooling", "optional", "optional-integration",
-})
 _SAFE_METADATA = frozenset({
     "annotations", "decorators", "inherits", "bases", "overrides",
     "visibility", "entry_point", "generated", "source_set",
@@ -1786,77 +1752,6 @@ def _entry_point_role(value: object) -> bool:
     return str(value).strip().casefold() in {
         "1", "true", "yes", "java-main", "application", "command", "entry-point",
     }
-
-
-def is_structured_edge_evidence(value: object) -> bool:
-    """Accept only established, source-free canonical evidence references."""
-
-    text = unicodedata.normalize("NFKC", str(value).strip())
-    return _is_structured_edge_evidence_text(text)
-
-
-def _is_structured_edge_evidence_text(text: str) -> bool:
-    if (
-        not text
-        or len(text) > 512
-        or any(character.isspace() or ord(character) < 32 for character in text)
-        or "://" in text
-    ):
-        return False
-    if text in _FIXED_EDGE_EVIDENCE:
-        return True
-    if contains_absolute_path_text(text):
-        return False
-    if (
-        _SYMBOL_EVIDENCE.fullmatch(text)
-        or _WORKSPACE_DEPENDENCY_EVIDENCE.fullmatch(text)
-        or _SEMANTIC_GRAPH_EVIDENCE.fullmatch(text)
-        or _EVIDENCE_REFERENCE_ID.fullmatch(text)
-    ):
-        return True
-    if text.startswith("declared_dependency.source:"):
-        raw_path = text.removeprefix("declared_dependency.source:")
-        path = PurePosixPath(raw_path)
-        return bool(
-            raw_path
-            and "\\" not in raw_path
-            and not path.is_absolute()
-            and all(part not in {"", ".", ".."} for part in path.parts)
-            and re.fullmatch(r"[A-Za-z0-9_.@%+~#=/,-]+", raw_path)
-        )
-    if text.startswith("declared_dependency:"):
-        payload = text.removeprefix("declared_dependency:")
-        return bool(
-            _DEPENDENCY_EVIDENCE.fullmatch(text)
-            and len(payload.split(":")) >= 4
-            and ".." not in payload
-        )
-    scope, separator, reference = text.partition(":")
-    return bool(
-        separator
-        and scope in _FRAMEWORK_SCOPES
-        and reference
-        and len(reference) <= 384
-        and re.fullmatch(r"[A-Za-z0-9_.@%+~#=/,:()-]+", reference)
-        and ".." not in reference
-    )
-
-
-def safe_edge_evidence_refs(values: Iterable[object]) -> tuple[str, ...]:
-    """Project accepted evidence into fixed, traceable, non-reversible IDs."""
-
-    accepted = set()
-    for value in values:
-        text = unicodedata.normalize("NFKC", str(value).strip())
-        if _is_structured_edge_evidence_text(text):
-            accepted.add(_edge_evidence_reference_id(text))
-    return tuple(sorted(accepted))[:MAXIMUM_EDGE_EVIDENCE_REFS]
-
-
-def _edge_evidence_reference_id(value: str) -> str:
-    return "semantic_graph.edge_ref:" + hashlib.sha256(
-        value.encode("utf-8")
-    ).hexdigest()
 
 
 def _package_name(subject: SubjectCandidate) -> str | None:

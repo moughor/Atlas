@@ -10,6 +10,11 @@ import inspect
 from collections.abc import Mapping
 
 from moughorai.api import AnalysisApiService, AnalysisRequest, AnalysisResult
+from moughorai.impact_analysis import (
+    ImpactPredictionRequest,
+    ImpactPredictionResponse,
+    ImpactPredictionService,
+)
 from moughorai.plugin_sdk import PluginContext, PluginManifest, PluginRegistry
 from moughorai.project_index import PersistentProjectIndex, ProjectFileIndexer
 from moughorai.rule_sdk import RuleContext, RuleFinding, RuleRegistry, RuleRunner
@@ -18,6 +23,7 @@ from moughorai.semantic_search import (
     SemanticSearchResponse,
     SemanticSearchService,
 )
+from moughorai.subject_resolution import SubjectQuery
 from moughorai.workspace import (
     Project,
     ResolvedConfiguration,
@@ -32,6 +38,9 @@ PUBLIC_API_SIGNATURES: Mapping[str, str] = {
     "AnalysisApiService": "(analyzer: 'Callable[[AnalysisRequest], Any]', *, id_factory: 'Callable[[], str] | None' = None) -> 'None'",
     "AnalysisRequest": "(project: 'str', targets: 'tuple[str, ...]' = (), options: 'tuple[tuple[str, str], ...]' = (), request_id: 'str' = '') -> None",
     "AnalysisResult": "(findings: 'tuple[Mapping[str, Any], ...]' = (), metrics: 'tuple[tuple[str, int | float | str], ...]' = ()) -> None",
+    "ImpactPredictionRequest": "(subject: 'SubjectQuery', change_kind: 'ImpactChangeKind' = <ImpactChangeKind.UNKNOWN: 'unknown'>, changed_members: 'tuple[str, ...]' = (), changed_api_surface: 'tuple[str, ...]' = (), relations: 'tuple[KnowledgeRelation, ...]' = (), module: 'str | None' = None, package: 'str | None' = None, max_depth: 'int' = 4, limit: 'int' = 50, include_tests: 'bool' = False, include_dependencies: 'bool' = True, include_risk: 'bool' = True, include_git_context: 'bool' = False, include_search_enrichment: 'bool' = False, additional_subjects: 'tuple[SubjectQuery, ...]' = ()) -> None",
+    "ImpactPredictionResponse": "(request: 'ImpactPredictionRequest', resolution: 'SubjectResolution', findings: 'tuple[ImpactFinding, ...]', capabilities: 'tuple[ImpactCapability, ...]', breaking_change: 'BreakingChangeAssessment', evidence_index: 'EvidenceIndex' = <factory>, input_fingerprint: 'str' = 'unavailable', graph_digest: 'str' = 'unavailable', lineage: 'str' = 'unavailable', total_candidate_count: 'int' = 0, omitted_count: 'int' = 0, visited_node_count: 'int' = 0, visited_edge_count: 'int' = 0, truncated: 'bool' = False, limitations: 'tuple[str, ...]' = (), producer_version: 'str' = 'atlas-pr136/1', schema_version: 'int' = 1, additional_resolutions: 'tuple[SubjectResolution, ...]' = ()) -> None",
+    "ImpactPredictionService": "(resolver: 'CanonicalSubjectResolver', *, snapshot_id: 'str', analyzer_version: 'str', semantic_context: 'Mapping[str, object]', measurement: 'MeasurementSession | None' = None) -> 'None'",
     "PersistentProjectIndex": "(indexer: 'ProjectFileIndexer | None' = None, store: 'ProjectIndexStore | None' = None) -> 'None'",
     "PluginContext": "(services: 'Mapping[str, Any] | None' = None) -> 'None'",
     "PluginManifest": "(plugin_id: 'str', version: 'str', api_version: 'str', name: 'str', extensions: 'tuple[PluginExtension, ...]', description: 'str' = '', requires: 'tuple[str, ...]' = (), permissions: 'tuple[str, ...]' = (), metadata: 'Mapping[str, Any]' = <factory>) -> None",
@@ -46,6 +55,7 @@ PUBLIC_API_SIGNATURES: Mapping[str, str] = {
     "SemanticSearchRequest": "(text: 'str', kinds: 'tuple[KnowledgeKind, ...]' = (), project: 'str | None' = None, module: 'str | None' = None, package: 'str | None' = None, language: 'str | None' = None, relation: 'KnowledgeRelation | None' = None, minimum_confidence: 'float' = 0.0, limit: 'int' = 20) -> None",
     "SemanticSearchResponse": "(request: 'SemanticSearchRequest', interpretation: 'QueryInterpretation', hits: 'tuple[StructuredSearchHit, ...]', total_candidate_count: 'int', omitted_count: 'int', capabilities: 'tuple[SearchCapability, ...]', index_id: 'str', evidence_index: 'EvidenceIndex' = <factory>, limitations: 'tuple[str, ...]' = (), producer: 'str' = 'atlas-pr135/1', schema_version: 'int' = 1) -> None",
     "SemanticSearchService": "(symbols: 'GlobalSymbolDatabase', graph: 'DependencyGraph | None' = None) -> 'None'",
+    "SubjectQuery": "(identifier: 'str', kind: 'KnowledgeKind | None' = None, project: 'str | None' = None, language: 'str | None' = None, path: 'str | None' = None) -> None",
     "Workspace": "(root: 'Path', projects: 'tuple[Project, ...]', config_path: 'Path | None' = None, options: 'tuple[tuple[str, str], ...]' = ()) -> None",
     "WorkspaceAnalysisOrchestrator": "(service: 'WorkspaceService', *, planner: 'IncrementalWorkspacePlanner | None' = None) -> 'None'",
     "WorkspaceEventBus": "(*, history_limit: 'int' = 100, correlation_id: 'str | None' = None) -> 'None'",
@@ -78,6 +88,9 @@ __all__ = [
     "AnalysisApiService",
     "AnalysisRequest",
     "AnalysisResult",
+    "ImpactPredictionRequest",
+    "ImpactPredictionResponse",
+    "ImpactPredictionService",
     "PUBLIC_API_SIGNATURES",
     "PUBLIC_API_VERSION",
     "PersistentProjectIndex",
@@ -94,6 +107,7 @@ __all__ = [
     "SemanticSearchRequest",
     "SemanticSearchResponse",
     "SemanticSearchService",
+    "SubjectQuery",
     "Workspace",
     "WorkspaceAnalysisOrchestrator",
     "WorkspaceEventBus",

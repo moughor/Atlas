@@ -51,6 +51,19 @@ is process CPU divided by wall time, is not CPU-count normalized, and may exceed
 | `semantic_search.sort` | PR135 deterministic ranker | Scored candidates are ordered and bounded. |
 | `semantic_search.evidence` | PR135 evidence projection | Search hits are enriched from structured evidence. |
 | `semantic_search.render` | PR135 CLI | `atlas search --profile` renders human or JSON output. |
+| `impact_prediction.resolver_index` | PR134 resolver through PR136 | The canonical snapshot graph and resolver indexes are restored once per service. |
+| `impact_prediction.index` | PR136 snapshot-backed service | A compatible canonical graph is indexed for relation capability counts. |
+| `impact_prediction.query` | PR136 snapshot-backed service | One complete warm impact request is measured as an inclusive boundary. |
+| `impact_prediction.resolve` | PR134 resolver through PR136 | An opt-in impact request resolves its canonical subject. |
+| `impact_prediction.neighbors` | PR136 bounded adjacency | A traversed subject evaluates a bounded canonical incoming-edge prefix. |
+| `impact_prediction.traverse` | PR136 traversal | An impact request performs bounded, cycle-safe propagation. |
+| `impact_prediction.cycle_check` | PR136 traversal | Traversal records deterministic cycle observations. |
+| `impact_prediction.direct` | PR136 finding planner | Evidence-backed findings and owning-scope aggregation are planned. |
+| `impact_prediction.sort` | PR136 deterministic selector | Bounded top-k impact classifications are selected with canonical tie-breaking. |
+| `impact_prediction.score` | PR136 deterministic ranker | Retained impact findings are scored. |
+| `impact_prediction.evidence` | PR136 evidence projection | Accepted graph and compatible analyzer evidence is projected. |
+| `impact_prediction.serialize` | PR136 response model | Canonical response JSON size is measured. |
+| `impact_prediction.render` | PR136 CLI | `atlas impact --profile` renders human or JSON output. |
 | `semantic_snapshot.build` | ASS store | Successful analysis proceeds to snapshot capture. |
 | `serialization` | State and ASS stores | A measured serialization/load boundary executes. |
 | `persistence` | State and ASS stores | A measured durable read/write boundary executes. |
@@ -66,6 +79,10 @@ semantic snapshot schema.
 PR135 measurements are request-local and never enter semantic snapshots or search
 ranking. Normal `atlas analyze` runs do not build the search index, so the seven
 semantic-search phases are absent unless snapshot search is explicitly invoked.
+
+PR136 measurements are also request-local and never enter semantic snapshots,
+impact ordering, or confidence. Normal `atlas analyze` runs do not execute impact
+queries, so impact phases are absent unless `atlas impact` is explicitly invoked.
 
 Filesystem coverage is separately `partial/explicit-instrumentation-boundaries` when
 enabled. Therefore phase wall/CPU observations and explicit filesystem counters do

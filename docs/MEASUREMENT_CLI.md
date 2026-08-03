@@ -53,6 +53,8 @@ atlas ai explain . --profile
 atlas ai explain . --profile-output .atlas/measurements/atlas-explain-profile.json
 atlas search "REST endpoint" . --profile
 atlas search "dependency injection" . --profile-output .atlas/measurements/atlas-search-profile.json
+atlas impact "com.example.UserService" . --profile
+atlas impact "com.example.UserService" . --profile-output .atlas/measurements/atlas-impact-profile.json
 ```
 
 The default Explain sidecar is
@@ -64,6 +66,12 @@ The default Semantic Search sidecar is
 `<workspace>/.atlas/measurements/latest-search.json`. Search profiling measures
 snapshot index construction and deterministic local query phases; no provider is
 invoked.
+
+The default Impact Prediction sidecar is
+`<workspace>/.atlas/measurements/latest-impact.json`. Impact profiling separates
+snapshot loading from deterministic resolver/index construction, bounded graph
+traversal, evidence/scoring/serialization, and CLI rendering. It does not run a
+provider, semantic search, Git history scan, or repository analysis.
 
 The normal analysis report continues to use stdout. A compact human summary is sent
 to stderr and identifies the sidecar kind, sample and phase counts, unavailable and

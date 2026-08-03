@@ -43,6 +43,13 @@ from .semantic_search import (
     SemanticSearchService,
     render_semantic_search,
 )
+from .impact_analysis import (
+    ImpactChangeKind,
+    ImpactPredictionRequest,
+    ImpactPredictionService,
+    render_impact_prediction,
+)
+from .subject_resolution import SubjectQuery
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
 from .ai_review import ReviewEngine, ReviewRequest
@@ -616,6 +623,142 @@ def semantic_search_command(
                         )
                     )
                     rendering.add_units(len(response.hits))
+                    rendering.add_bytes(len(output.encode("utf-8")))
+                    rendering.add_objects_produced(1)
+                    typer.echo(output, nl=False)
+            finally:
+                if profile_target is not None:
+                    _publish_measurement_report(
+                        profile_target,
+                        measurement,
+                        output_kind=(
+                            "default" if profile_output is None else "custom"
+                        ),
+                        memory_requested=profile_memory,
+                        python_memory_requested=profile_python_memory,
+                    )
+
+    _run_command(operation)
+
+
+@app.command("impact")
+def impact_prediction_command(
+    subject: Annotated[str, typer.Argument(help="Canonical subject ID or exact repository subject name.")],
+    root: Annotated[Path, typer.Argument(help="Workspace root containing the semantic snapshot.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Read a specific .ass snapshot instead of latest.ass.")] = None,
+    additional_subject: Annotated[list[str] | None, typer.Option("--additional-subject", help="Add another deterministic impact root; repeat as needed.")] = None,
+    kind: Annotated[str | None, typer.Option("--kind", help="Constrain the canonical subject kind.")] = None,
+    project: Annotated[str | None, typer.Option("--project", help="Constrain the owning project.")] = None,
+    language: Annotated[str | None, typer.Option("--language", help="Constrain the analyzer language.")] = None,
+    path_constraint: Annotated[str | None, typer.Option("--path", help="Constrain a workspace-relative subject path.")] = None,
+    module: Annotated[str | None, typer.Option("--module", help="Constrain the represented module scope.")] = None,
+    package: Annotated[str | None, typer.Option("--package", help="Constrain the represented package scope.")] = None,
+    change: Annotated[ImpactChangeKind, typer.Option("--change", help="Structured change scenario.")] = ImpactChangeKind.UNKNOWN,
+    relation: Annotated[list[str] | None, typer.Option("--relation", help="Restrict canonical propagation relations; repeat as needed.")] = None,
+    tests: Annotated[bool, typer.Option("--tests", help="Include compatible evidence-backed test impact.")] = False,
+    dependencies: Annotated[bool, typer.Option("--dependencies/--no-dependencies", help="Include declared dependency impact.")] = True,
+    risk: Annotated[bool, typer.Option("--risk/--no-risk", help="Attach compatible PR132 risk context.")] = True,
+    git_context: Annotated[bool, typer.Option("--git-context", help="Request compatible source-free Git enrichment when available.")] = False,
+    search_enrichment: Annotated[bool, typer.Option("--search-enrichment", help="Request optional PR135 discovery context; never impact proof.")] = False,
+    depth: Annotated[int, typer.Option("--depth", min=1, max=64, help="Maximum relationship depth.")] = 4,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=1000, help="Maximum returned impact classifications.")] = 50,
+    json_output: Annotated[bool, typer.Option("--json", help="Print canonical deterministic JSON.")] = False,
+    explain_score: Annotated[bool, typer.Option("--explain-score", help="Show deterministic score components in human output.")] = False,
+    profile: Annotated[bool, typer.Option("--profile", help="Write an opt-in M2 impact measurement sidecar.")] = False,
+    profile_output: Annotated[Path | None, typer.Option("--profile-output", help="Impact measurement JSON path; implies --profile.")] = None,
+    profile_memory: Annotated[bool, typer.Option("--profile-memory", help="Collect best-effort process memory counters; implies --profile.")] = False,
+    profile_python_memory: Annotated[bool, typer.Option("--profile-python-memory", help="Collect Python allocation samples; implies --profile.")] = False,
+) -> None:
+    """Predict evidence-backed change impact without an LLM."""
+
+    def operation() -> None:
+        profile_enabled = (
+            profile
+            or profile_output is not None
+            or profile_memory
+            or profile_python_memory
+        )
+        profile_target = (
+            _measurement_output_path(
+                root.expanduser().resolve(),
+                profile_output,
+                default_name="latest-impact.json",
+            )
+            if profile_enabled else None
+        )
+        with _python_memory_collection(profile_python_memory):
+            measurement = MeasurementSession(MeasurementConfig(
+                enabled=profile_enabled,
+                capture_process_memory=profile_memory,
+                capture_python_memory=profile_python_memory,
+            ))
+            try:
+                selected_kind = (
+                    KnowledgeKind(kind.strip().casefold().replace("-", "_"))
+                    if kind is not None else None
+                )
+                selected_relations = tuple(
+                    KnowledgeRelation(item.strip().casefold().replace("-", "_"))
+                    for item in (relation or ())
+                )
+                request = ImpactPredictionRequest(
+                    SubjectQuery(
+                        subject,
+                        selected_kind,
+                        project,
+                        language,
+                        path_constraint,
+                    ),
+                    change,
+                    relations=selected_relations,
+                    module=module,
+                    package=package,
+                    max_depth=depth,
+                    limit=limit,
+                    include_tests=tests,
+                    include_dependencies=dependencies,
+                    include_risk=risk,
+                    include_git_context=git_context,
+                    include_search_enrichment=search_enrichment,
+                    additional_subjects=tuple(
+                        SubjectQuery(
+                            item,
+                            selected_kind,
+                            project,
+                            language,
+                            path_constraint,
+                        )
+                        for item in (additional_subject or ())
+                    ),
+                )
+                try:
+                    loaded = _load_ai_snapshot(
+                        root, snapshot, measurement=measurement,
+                    )
+                except SemanticSnapshotError as exc:
+                    if str(exc).startswith("semantic snapshot not found:"):
+                        raise SemanticSnapshotError(
+                            "semantic snapshot not found; run analysis snapshot creation first"
+                        ) from exc
+                    raise SemanticSnapshotError(
+                        "semantic snapshot could not be loaded or verified"
+                    ) from exc
+                response = ImpactPredictionService.from_snapshot(
+                    loaded, measurement=measurement,
+                ).predict(request)
+                with measurement.scope(
+                    "impact_prediction.render",
+                    consumer="impact-prediction",
+                    sample_key=response.input_fingerprint,
+                ) as rendering:
+                    output = (
+                        response.to_json() + "\n"
+                        if json_output
+                        else render_impact_prediction(
+                            response, explain_score=explain_score,
+                        )
+                    )
+                    rendering.add_units(len(response.findings))
                     rendering.add_bytes(len(output.encode("utf-8")))
                     rendering.add_objects_produced(1)
                     typer.echo(output, nl=False)

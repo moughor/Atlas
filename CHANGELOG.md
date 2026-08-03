@@ -1,5 +1,24 @@
 # Changelog
 
+## PR136 deterministic impact prediction
+
+- Added bounded, deterministic impact prediction over PR129 canonical relationships
+  with PR134 subject resolution, explicit direct/transitive paths, conservative
+  breaking-change states, and exact source-free response serialization.
+- Reused shared semantic evidence and confidence contracts, compatible PR131
+  reachability and PR132 risk context, and existing graph adjacency without creating
+  another graph, resolver, cache, or semantic pass.
+- Added provider-free `atlas impact` human and JSON output with scope/relation/change
+  filters, explicit capability degradation, zero-result success, score explanations,
+  and opt-in M2 measurement.
+- Added the immutable request/response/service contract and required `SubjectQuery`
+  dependency to the version-1 public facade while preserving legacy PR26 behavior.
+- Kept missing calls, composition, external consumers, module identity, and optional
+  Git/search enrichment explicit as unavailable, unsupported, or partial rather than
+  treating missing evidence as proof of no impact.
+- Require producer-bound `moughorai.call_graph.v1:calls` evidence before a canonical
+  call edge can create impact; generic call labels remain non-authoritative.
+
 ## PR135 deterministic semantic search
 
 - Added source-free, deterministic intent search over PR129 canonical subjects,

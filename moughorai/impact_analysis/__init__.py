@@ -1,3 +1,57 @@
-from .models import ImpactPath, ImpactedSymbol, ImpactAnalysisReport
+"""Backward-compatible and canonical impact-analysis APIs."""
+
+from .models import (
+    EXTERNAL_CONSUMER_LIMITATION,
+    EXTERNAL_SCOPE_LIMITATION,
+    IMPACT_PREDICTION_PRODUCER,
+    IMPACT_PREDICTION_SCHEMA_VERSION,
+    BreakingChangeAssessment,
+    BreakingChangeState,
+    ImpactAnalysisReport,
+    ImpactCapability,
+    ImpactCapabilityState,
+    ImpactCategory,
+    ImpactChangeKind,
+    ImpactFinding,
+    ImpactPath,
+    ImpactPathStep,
+    ImpactPredictionPath,
+    ImpactPredictionRequest,
+    ImpactPredictionResponse,
+    ImpactRiskContext,
+    ImpactScore,
+    ImpactScoreComponent,
+    ImpactStrength,
+    ImpactedSymbol,
+)
+from .prediction import ImpactPredictionService
+from .renderer import render_impact_prediction
 from .service import ImpactAnalysisService
-__all__=['ImpactPath','ImpactedSymbol','ImpactAnalysisReport','ImpactAnalysisService']
+
+__all__ = [
+    "EXTERNAL_CONSUMER_LIMITATION",
+    "EXTERNAL_SCOPE_LIMITATION",
+    "IMPACT_PREDICTION_PRODUCER",
+    "IMPACT_PREDICTION_SCHEMA_VERSION",
+    "BreakingChangeAssessment",
+    "BreakingChangeState",
+    "ImpactAnalysisReport",
+    "ImpactAnalysisService",
+    "ImpactCapability",
+    "ImpactCapabilityState",
+    "ImpactCategory",
+    "ImpactChangeKind",
+    "ImpactFinding",
+    "ImpactPath",
+    "ImpactPathStep",
+    "ImpactPredictionPath",
+    "ImpactPredictionRequest",
+    "ImpactPredictionResponse",
+    "ImpactPredictionService",
+    "ImpactRiskContext",
+    "ImpactScore",
+    "ImpactScoreComponent",
+    "ImpactStrength",
+    "ImpactedSymbol",
+    "render_impact_prediction",
+]

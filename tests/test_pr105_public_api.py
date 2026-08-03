@@ -6,12 +6,18 @@ from pathlib import Path
 from moughorai import public_api
 from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.api import AnalysisRequest
+from moughorai.impact_analysis import (
+    ImpactPredictionRequest,
+    ImpactPredictionResponse,
+    ImpactPredictionService,
+)
 from moughorai.knowledge_graph import KnowledgeGraph, KnowledgeKind, KnowledgeNode
 from moughorai.semantic_search import (
     SemanticSearchRequest,
     SemanticSearchResponse,
     SemanticSearchService,
 )
+from moughorai.subject_resolution import SubjectQuery
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 from moughorai.workspace import Project
 
@@ -22,6 +28,10 @@ def test_public_facade_preserves_existing_type_identity() -> None:
     assert public_api.SemanticSearchRequest is SemanticSearchRequest
     assert public_api.SemanticSearchResponse is SemanticSearchResponse
     assert public_api.SemanticSearchService is SemanticSearchService
+    assert public_api.ImpactPredictionRequest is ImpactPredictionRequest
+    assert public_api.ImpactPredictionResponse is ImpactPredictionResponse
+    assert public_api.ImpactPredictionService is ImpactPredictionService
+    assert public_api.SubjectQuery is SubjectQuery
 
 
 def test_public_semantic_search_facade_uses_snapshot_contract() -> None:
@@ -48,6 +58,33 @@ def test_public_semantic_search_facade_uses_snapshot_contract() -> None:
 
     assert isinstance(response, public_api.SemanticSearchResponse)
     assert [item.canonical_subject_id for item in response.hits] == ["type:demo"]
+
+
+def test_public_impact_facade_uses_snapshot_contract() -> None:
+    graph = KnowledgeGraph((KnowledgeNode(
+        "type:demo",
+        KnowledgeKind.TYPE,
+        "Demo",
+        qualified_name="example.Demo",
+        language="python",
+    ),))
+    snapshot = AtlasSemanticSnapshot.create(
+        WorkspaceSemanticContext({
+            "schema_version": 1,
+            "semantic_graph": graph.to_dict(),
+            "symbols": [],
+        }),
+        workspace_fingerprint="public-impact-fixture",
+        analyzer_version="test/1",
+    )
+
+    response = public_api.ImpactPredictionService.from_snapshot(snapshot).predict(
+        public_api.ImpactPredictionRequest(public_api.SubjectQuery("type:demo"))
+    )
+
+    assert isinstance(response, public_api.ImpactPredictionResponse)
+    assert response.resolution.subject is not None
+    assert response.resolution.subject.canonical_id == "type:demo"
 
 
 def test_public_manifest_matches_frozen_signatures() -> None:
