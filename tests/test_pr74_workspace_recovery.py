@@ -15,15 +15,18 @@ from moughorai.ai_context.persistence import (
 )
 from moughorai.semantic import SemanticDocument
 from moughorai.workspace import (
+    ANALYSIS_RESULT_PRODUCER_FINGERPRINT,
     ConfigurationLayer,
     RecoveryProjectStatus,
     WorkspaceAnalysisOrchestrator,
+    WorkspaceCache,
     WorkspaceConfigurationResolver,
     WorkspaceEventKind,
     WorkspaceRecoveryError,
     WorkspaceRecoveryJournal,
     WorkspaceRecoveryManager,
     WorkspaceService,
+    WorkspaceStateStore,
 )
 
 
@@ -243,6 +246,31 @@ def test_analysis_producer_change_invalidates_journal(tmp_path: Path) -> None:
     assert report.invalidation_reason == "analysis producer changed"
 
 
+def test_pre_m21_semantic_checkpoint_producer_is_invalidated(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path)
+    previous = ANALYSIS_RESULT_PRODUCER_FINGERPRINT.replace(
+        "workspace-analysis-result-v5",
+        "workspace-analysis-result-v4",
+    )
+    WorkspaceRecoveryManager(
+        service,
+        producer_fingerprint=previous,
+    ).execute(
+        WorkspaceAnalysisOrchestrator(service),
+        lambda project, dependencies: project.name,
+    )
+
+    report = WorkspaceRecoveryManager(service).inspect()
+
+    assert ANALYSIS_RESULT_PRODUCER_FINGERPRINT.endswith(
+        "workspace-analysis-result-v5"
+    )
+    assert report.invalidated
+    assert report.invalidation_reason == "analysis producer changed"
+
+
 def test_unversioned_legacy_journal_is_read_then_invalidated(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     manager = WorkspaceRecoveryManager(service)
@@ -311,6 +339,123 @@ def test_pr70_state_is_saved_during_recoverable_run(tmp_path: Path) -> None:
     manager.execute(WorkspaceAnalysisOrchestrator(service), lambda project, dependencies: project.name)
     state = manager.state_store.load()
     assert state is not None and state.valid_projects == ("api", "core", "docs")
+
+
+@pytest.mark.parametrize("max_workers", [1, 3])
+def test_recovery_snapshots_workspace_once_and_saves_state_after_each_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    max_workers: int,
+) -> None:
+    service = make_service(tmp_path)
+    cache = WorkspaceCache()
+    snapshot_calls = 0
+    fingerprint_calls = 0
+    original_snapshot = cache.snapshot
+    original_fingerprint = cache.fingerprint
+
+    def counted_snapshot(workspace):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot(workspace)
+
+    def counted_fingerprint(project):
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        return original_fingerprint(project)
+
+    monkeypatch.setattr(cache, "snapshot", counted_snapshot)
+    monkeypatch.setattr(cache, "fingerprint", counted_fingerprint)
+    state_store = WorkspaceStateStore(service, cache=cache)
+    manager = WorkspaceRecoveryManager(service, state_store=state_store)
+
+    report = manager.execute(
+        WorkspaceAnalysisOrchestrator(service),
+        lambda project, dependencies: project.name,
+        max_workers=max_workers,
+    )
+
+    assert report.succeeded
+    assert snapshot_calls == 1
+    assert fingerprint_calls == len(report.runs) * 2
+    assert sum(
+        event.kind is WorkspaceEventKind.STATE_SAVED
+        for event in service.events.history
+    ) == len(report.runs)
+    state = state_store.load()
+    assert state is not None
+    assert state.valid_projects == ("api", "core", "docs")
+
+
+def test_resume_reuses_its_single_verified_workspace_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service(tmp_path)
+    interrupt_after_core(
+        WorkspaceRecoveryManager(service),
+        WorkspaceAnalysisOrchestrator(service),
+    )
+    cache = WorkspaceCache()
+    snapshot_calls = 0
+    original_snapshot = cache.snapshot
+
+    def counted_snapshot(workspace):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot(workspace)
+
+    monkeypatch.setattr(cache, "snapshot", counted_snapshot)
+    manager = WorkspaceRecoveryManager(
+        service,
+        state_store=WorkspaceStateStore(service, cache=cache),
+    )
+
+    report, recovery = manager.resume(
+        WorkspaceAnalysisOrchestrator(service),
+        lambda project, dependencies: project.name,
+    )
+
+    assert report is not None and report.succeeded
+    assert recovery.resumed == ("api", "docs")
+    assert snapshot_calls == 1
+
+
+def test_completion_fingerprint_tracks_source_mutation_without_stale_reuse(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path)
+    state_store = WorkspaceStateStore(service)
+    manager = WorkspaceRecoveryManager(service, state_store=state_store)
+
+    def mutate_core(project, dependencies):
+        if project.name == "core":
+            (project.path / "main.py").write_text("changed", encoding="utf-8")
+        return project.name
+
+    report = manager.execute(
+        WorkspaceAnalysisOrchestrator(service),
+        mutate_core,
+    )
+    assert report.succeeded
+    state = state_store.load()
+    assert state is not None
+
+    recovery = manager.inspect()
+    restored, restore_report = state_store.restore(state)
+
+    assert not recovery.invalidated
+    assert "core" in restored
+    assert restore_report.invalidated == ()
+
+    (tmp_path / "core" / "main.py").write_text("core", encoding="utf-8")
+    recovery = manager.inspect()
+    restored, restore_report = state_store.restore(state)
+
+    assert recovery.invalidated
+    assert recovery.invalidation_reason == "workspace fingerprint changed"
+    assert "core" not in restored
+    assert restore_report.invalidated == ("core",)
 
 
 def test_recovery_configuration_controls_path_and_enabled(tmp_path: Path) -> None:

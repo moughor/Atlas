@@ -20,6 +20,12 @@ are marked `completed` and are also captured by the PR70
 `WorkspaceStateStore`. Failed projects remain retryable. Blocked and cancelled
 projects return to `pending`.
 
+The recovery manager obtains one strong content-fingerprint snapshot when it creates
+a journal. It retains that verified set for the execution and refreshes only the
+project that just completed before checkpointing its result. This avoids re-reading
+and re-hashing every other project after each completion without reducing journal
+save frequency, state-save durability, or result-to-content invalidation.
+
 ## Usage
 
 ```python
@@ -88,6 +94,40 @@ The manager deletes a journal and emits `recovery_invalidated` when it detects:
 
 Invalid journals are never partially reused. `WorkspaceRecoveryReport` records
 the exact invalidation reason.
+
+M2.1 advances the analysis-result producer fingerprint to v5. Schema-v1 journals
+and PR70 state remain readable, but v4 payloads are deliberately invalidated because
+an interrupted semantic checkpoint could contain report metadata instead of the full
+encoded analysis result.
+
+## Run-scoped verification snapshot
+
+Recovery freshness is still verified with content hashes, never with filenames,
+timestamps, or metadata heuristics. A new recovery run computes the complete
+workspace snapshot before writing its journal. A resumed run computes a fresh
+snapshot and makes it available to state persistence only after the journal's stored
+workspace fingerprint matches.
+
+The verified fingerprint set is run-local evidence rather than a persistent cache:
+
+- it is retained only during one `execute()` or `resume()` operation;
+- each completed project receives one current content fingerprint before its result
+  is published to the journal and PR70 state;
+- it is cleared at the operation boundary, including exceptional exits;
+- it is not shared between processes or recovery managers;
+- it introduces no new on-disk format;
+- the PR70 state and PR74 journal schemas remain unchanged.
+
+The integration remains private to the recovery/persistence package and rejects a
+verified snapshot unless its project set and order exactly match the current
+deterministic workspace. The public `WorkspaceStateStore.capture()` signature and
+its fresh-fingerprint behavior remain unchanged.
+
+The journal workspace fingerprint evolves with completion-time project fingerprints.
+A content change that remains present can therefore be resumed under matching
+evidence, while a later change is rejected by resume or state restore. See
+`docs/stability/M2_1_RECOVERY_CHECKPOINT_INVESTIGATION.md` for measurements,
+correctness boundaries, and limitations.
 
 ## Events
 

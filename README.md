@@ -115,6 +115,12 @@ instrumentation maintainers should also use
 [`docs/MEASUREMENT_API.md`](docs/MEASUREMENT_API.md) and the
 [`docs/MEASUREMENT_PLATFORM_MATRIX.md`](docs/MEASUREMENT_PLATFORM_MATRIX.md).
 
+M2.1 removes repeated whole-workspace fingerprinting from recoverable project
+checkpoints while retaining every durable PR70 state save and PR74 journal
+transition. Its run-local verified fingerprint set refreshes each completed project
+once and never becomes a persistent cache. See
+[`docs/stability/M2_1_RECOVERY_CHECKPOINT_INVESTIGATION.md`](docs/stability/M2_1_RECOVERY_CHECKPOINT_INVESTIGATION.md).
+
 M1.1 adds pinned repository definitions and a canonical orchestration layer around
 the repository-neutral M1 runner. It records exact provenance, project results,
 portable deterministic hashes, environment identity, and timing samples without

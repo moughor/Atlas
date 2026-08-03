@@ -18,6 +18,7 @@ from .configuration import ResolvedConfiguration
 from .event_bus import WorkspaceEvent, WorkspaceEventKind
 from .execution import ProjectRunStatus, WorkspaceAnalysisOrchestrator, WorkspaceRunReport
 from .models import Project
+from .cache import WorkspaceSnapshot
 from .persistence import (
     ANALYSIS_RESULT_PRODUCER_FINGERPRINT,
     WorkspaceStateError,
@@ -241,13 +242,14 @@ class WorkspaceRecoveryManager:
         self._journal: WorkspaceRecoveryJournal | None = None
         self._orchestrator: WorkspaceAnalysisOrchestrator | None = None
         self._subscription: str | None = None
+        self._verification_snapshot: WorkspaceSnapshot | None = None
 
     @property
     def enabled(self) -> bool:
         return bool(self.configuration.get("recovery.enabled", True)) if self.configuration is not None else True
 
     def inspect(self) -> WorkspaceRecoveryReport:
-        journal, report = self._load_valid()
+        journal, report, _ = self._load_valid()
         return report if journal is None else self._report(journal, journal_found=True)
 
     def execute(
@@ -269,21 +271,47 @@ class WorkspaceRecoveryManager:
             )
         requested = tuple(sorted(set(projects or self.service.workspace.names())))
         order = self.service.analysis_order(requested, include_dependencies=include_dependencies)
-        now = self._now()
-        self._journal = WorkspaceRecoveryJournal(
-            RECOVERY_SCHEMA_VERSION,
-            self._workspace_fingerprint(),
-            self._configuration_fingerprint(),
-            requested,
-            tuple(project.name for project in order),
-            tuple(RecoveryProject(project.name, RecoveryProjectStatus.PENDING) for project in order),
-            now,
-            now,
-            self.producer_fingerprint,
+        baseline = self.state_store.capture({}, ())
+        self._verification_snapshot = WorkspaceSnapshot(
+            baseline.project_fingerprints
         )
-        self._save(self._journal)
-        self.service.events.emit(WorkspaceEventKind.RECOVERY_STARTED, source="workspace.recovery", payload=self._report(self._journal, True).to_dict())
-        return self._run(orchestrator, analyzer, requested, include_dependencies, force, cancelled, max_workers, fail_fast)
+        try:
+            now = self._now()
+            self._journal = WorkspaceRecoveryJournal(
+                RECOVERY_SCHEMA_VERSION,
+                baseline.workspace_fingerprint,
+                self._configuration_fingerprint(),
+                requested,
+                tuple(project.name for project in order),
+                tuple(
+                    RecoveryProject(
+                        project.name,
+                        RecoveryProjectStatus.PENDING,
+                    )
+                    for project in order
+                ),
+                now,
+                now,
+                self.producer_fingerprint,
+            )
+            self._save(self._journal)
+            self.service.events.emit(
+                WorkspaceEventKind.RECOVERY_STARTED,
+                source="workspace.recovery",
+                payload=self._report(self._journal, True).to_dict(),
+            )
+            return self._run(
+                orchestrator,
+                analyzer,
+                requested,
+                include_dependencies,
+                force,
+                cancelled,
+                max_workers,
+                fail_fast,
+            )
+        finally:
+            self._verification_snapshot = None
 
     def resume(
         self,
@@ -296,34 +324,70 @@ class WorkspaceRecoveryManager:
     ) -> tuple[WorkspaceRunReport | None, WorkspaceRecoveryReport]:
         if not self.enabled:
             return None, WorkspaceRecoveryReport(False)
-        journal, report = self._load_valid()
+        journal, report, verification_snapshot = self._load_valid()
         if journal is None:
             return None, report
-        completed = [project for project in journal.projects if project.status is RecoveryProjectStatus.COMPLETED]
         try:
-            restored = {project.name: self.decoder(project.value) for project in completed}
-        except Exception as exc:
-            return None, self._invalidate(f"cannot decode recovery result: {type(exc).__name__}: {exc}")
-        orchestrator._results.update(restored)
-        for name in restored:
-            orchestrator.planner.mark_valid(name)
-        unfinished = tuple(project.name for project in journal.projects if project.status is not RecoveryProjectStatus.COMPLETED)
-        self._journal = journal
-        self.service.events.emit(
-            WorkspaceEventKind.RECOVERY_RESUMED,
-            source="workspace.recovery",
-            payload={"resumed": list(unfinished), "completed": sorted(restored)},
-        )
-        if not unfinished:
-            run_report = orchestrator.execute(
-                analyzer, projects=journal.requested, include_dependencies=True, force=False,
-                cancelled=cancelled, max_workers=max_workers, fail_fast=fail_fast,
+            self._verification_snapshot = verification_snapshot
+            completed = [
+                project
+                for project in journal.projects
+                if project.status is RecoveryProjectStatus.COMPLETED
+            ]
+            try:
+                restored = {
+                    project.name: self.decoder(project.value)
+                    for project in completed
+                }
+            except Exception as exc:
+                return None, self._invalidate(
+                    "cannot decode recovery result: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            orchestrator._results.update(restored)
+            for name in restored:
+                orchestrator.planner.mark_valid(name)
+            unfinished = tuple(
+                project.name
+                for project in journal.projects
+                if project.status is not RecoveryProjectStatus.COMPLETED
             )
-        else:
-            run_report = self._run(
-                orchestrator, analyzer, unfinished, True, False, cancelled, max_workers, fail_fast
+            self._journal = journal
+            self.service.events.emit(
+                WorkspaceEventKind.RECOVERY_RESUMED,
+                source="workspace.recovery",
+                payload={
+                    "resumed": list(unfinished),
+                    "completed": sorted(restored),
+                },
             )
-        return run_report, replace(self._report(self._journal or journal, True), resumed=unfinished)
+            if not unfinished:
+                run_report = orchestrator.execute(
+                    analyzer,
+                    projects=journal.requested,
+                    include_dependencies=True,
+                    force=False,
+                    cancelled=cancelled,
+                    max_workers=max_workers,
+                    fail_fast=fail_fast,
+                )
+            else:
+                run_report = self._run(
+                    orchestrator,
+                    analyzer,
+                    unfinished,
+                    True,
+                    False,
+                    cancelled,
+                    max_workers,
+                    fail_fast,
+                )
+            return run_report, replace(
+                self._report(self._journal or journal, True),
+                resumed=unfinished,
+            )
+        finally:
+            self._verification_snapshot = None
 
     def delete(self) -> bool:
         if not self.path.exists():
@@ -386,10 +450,57 @@ class WorkspaceRecoveryManager:
                 status, value, error = RecoveryProjectStatus.FAILED, None, _optional_string(event.payload.get("error"))
             else:
                 status, value, error = RecoveryProjectStatus.PENDING, None, _optional_string(event.payload.get("error"))
-            self._journal = journal.with_project(event.project, status, value=value, error=error, updated_at=self._now())
+            checkpoint_snapshot: WorkspaceSnapshot | None = None
+            if status is RecoveryProjectStatus.COMPLETED:
+                checkpoint_snapshot = self._refresh_project_fingerprint(
+                    event.project
+                )
+                journal = replace(
+                    journal,
+                    workspace_fingerprint=(
+                        self.state_store._workspace_fingerprint(
+                            checkpoint_snapshot
+                        )
+                    ),
+                )
+            self._journal = journal.with_project(
+                event.project,
+                status,
+                value=value,
+                error=error,
+                updated_at=self._now(),
+            )
             self._save(self._journal)
             if status is RecoveryProjectStatus.COMPLETED and self._orchestrator is not None:
-                self.state_store.save(self.state_store.capture(self._orchestrator._results, self._orchestrator.planner.valid_projects))
+                if checkpoint_snapshot is None:
+                    raise WorkspaceRecoveryError(
+                        "recovery verification snapshot is unavailable"
+                    )
+                self.state_store.save(self.state_store._capture_verified(
+                    self._orchestrator._results,
+                    self._orchestrator.planner.valid_projects,
+                    checkpoint_snapshot,
+                ))
+
+    def _refresh_project_fingerprint(
+        self,
+        project_name: str,
+    ) -> WorkspaceSnapshot:
+        snapshot = self._verification_snapshot
+        if snapshot is None:
+            raise WorkspaceRecoveryError(
+                "recovery verification snapshot is unavailable"
+            )
+        fingerprints = snapshot.to_dict()
+        fingerprints[project_name] = self.state_store.cache.fingerprint(
+            self.service.workspace.get(project_name)
+        )
+        refreshed = WorkspaceSnapshot(tuple(
+            (name, fingerprints[name])
+            for name in self.service.workspace.names()
+        ))
+        self._verification_snapshot = refreshed
+        return refreshed
 
     def _finalize(self, report: WorkspaceRunReport) -> None:
         with self._lock:
@@ -409,7 +520,13 @@ class WorkspaceRecoveryManager:
             self._save(journal)
             self.service.events.emit(WorkspaceEventKind.RECOVERY_COMPLETED, source="workspace.recovery", payload=self._report(journal, True).to_dict())
 
-    def _load_valid(self) -> tuple[WorkspaceRecoveryJournal | None, WorkspaceRecoveryReport]:
+    def _load_valid(
+        self,
+    ) -> tuple[
+        WorkspaceRecoveryJournal | None,
+        WorkspaceRecoveryReport,
+        WorkspaceSnapshot | None,
+    ]:
         with self.measurement.scope(
             MeasurementPhase.RECOVERY,
             consumer="workspace-recovery",
@@ -419,9 +536,15 @@ class WorkspaceRecoveryManager:
             scope.add_units(1)
             return result
 
-    def _load_valid_unmeasured(self) -> tuple[WorkspaceRecoveryJournal | None, WorkspaceRecoveryReport]:
+    def _load_valid_unmeasured(
+        self,
+    ) -> tuple[
+        WorkspaceRecoveryJournal | None,
+        WorkspaceRecoveryReport,
+        WorkspaceSnapshot | None,
+    ]:
         if not self.path.exists():
-            return None, WorkspaceRecoveryReport(False)
+            return None, WorkspaceRecoveryReport(False), None
         try:
             text = self.path.read_text(encoding="utf-8")
             if self.measurement.config.enabled:
@@ -439,21 +562,28 @@ class WorkspaceRecoveryManager:
                 raise WorkspaceRecoveryError("recovery journal checksum mismatch")
             journal = WorkspaceRecoveryJournal.from_dict(raw)
         except (OSError, json.JSONDecodeError, WorkspaceRecoveryError) as exc:
-            return None, self._invalidate(str(exc))
-        if journal.workspace_fingerprint != self._workspace_fingerprint():
-            return None, self._invalidate("workspace fingerprint changed")
+            return None, self._invalidate(str(exc)), None
+        baseline = self.state_store.capture({}, ())
+        if journal.workspace_fingerprint != baseline.workspace_fingerprint:
+            return None, self._invalidate("workspace fingerprint changed"), None
         if journal.configuration_fingerprint != self._configuration_fingerprint():
-            return None, self._invalidate("recovery configuration changed")
+            return None, self._invalidate("recovery configuration changed"), None
         if journal.producer_fingerprint != self.producer_fingerprint:
-            return None, self._invalidate("analysis producer changed")
+            return None, self._invalidate("analysis producer changed"), None
         current = set(self.service.workspace.names())
         if set(journal.analysis_order) != current.intersection(journal.analysis_order) or not set(journal.requested).issubset(current):
-            return None, self._invalidate("workspace project set changed")
+            return None, self._invalidate("workspace project set changed"), None
         if self.max_age_seconds is not None:
             age = (self.clock() - _parse_time(journal.updated_at)).total_seconds()
             if age > self.max_age_seconds:
-                return None, self._invalidate(f"recovery journal is stale ({age:.3f}s old)")
-        return journal, self._report(journal, True)
+                return None, self._invalidate(
+                    f"recovery journal is stale ({age:.3f}s old)"
+                ), None
+        return (
+            journal,
+            self._report(journal, True),
+            WorkspaceSnapshot(baseline.project_fingerprints),
+        )
 
     def _invalidate(self, reason: str) -> WorkspaceRecoveryReport:
         try:
@@ -514,9 +644,6 @@ class WorkspaceRecoveryManager:
             failed=by_status[RecoveryProjectStatus.FAILED],
             pending=by_status[RecoveryProjectStatus.PENDING],
         )
-
-    def _workspace_fingerprint(self) -> str:
-        return self.state_store.capture({}, ()).workspace_fingerprint
 
     def _configuration_fingerprint(self) -> str:
         values = self.configuration.to_dict() if self.configuration is not None else {}

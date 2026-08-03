@@ -1,5 +1,24 @@
 # Changelog
 
+## M2.1 recovery checkpoint amplification
+
+- Proved that PR74 recovery caused one complete PR70 workspace fingerprint after
+  every successful project: Maven performed 940,470 hashes and 950,338 reads with
+  recovery, versus 10,005 hashes and 19,873 reads without it.
+- Retained the verified fingerprint set for one recovery operation and refreshed
+  only each completed project; no persistent cache, schema change, checkpoint
+  batching, or reduced journal/state-save frequency was introduced.
+- Preserved full encoded semantic results in interrupted journals so resumed
+  dependency values cannot degrade to report-only metadata.
+- Added an isolated, source-free recovery diagnostic and regression coverage for
+  sequential/concurrent checkpoint counts, snapshot validation, mutation
+  invalidation, deterministic evidence, and production resume boundaries.
+- Advanced the result producer fingerprint to v5 so pre-M2.1 report-only semantic
+  journals and PR70 state are invalidated rather than silently reused.
+- Measured Maven recovery at 248.292 seconds before and 97.033 seconds after under
+  an isolated unprofiled protocol, a 60.92 percent reduction with identical
+  deterministic semantic evidence.
+
 ## M2.0 performance measurement foundation
 
 - Added an opt-in, run-local measurement model with stable phase IDs, explicit

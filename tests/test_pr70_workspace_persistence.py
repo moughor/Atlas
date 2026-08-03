@@ -9,8 +9,10 @@ from moughorai.workspace import (
     ANALYSIS_RESULT_PRODUCER_FINGERPRINT,
     STATE_SCHEMA_VERSION,
     WorkspaceAnalysisOrchestrator,
+    WorkspaceCache,
     WorkspacePersistentState,
     WorkspaceService,
+    WorkspaceSnapshot,
     WorkspaceStateError,
     WorkspaceStateStore,
 )
@@ -66,6 +68,55 @@ def test_capture_requires_result_to_be_valid(tmp_path: Path) -> None:
     service = make_service(tmp_path)
     state = WorkspaceStateStore(service).capture({"core": 1}, ())
     assert state.results == ()
+
+
+def test_capture_reuses_supplied_workspace_snapshot_without_rescanning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service(tmp_path)
+    cache = WorkspaceCache()
+    snapshot = cache.snapshot(service.workspace)
+    store = WorkspaceStateStore(service, cache=cache)
+
+    def unexpected_rescan(_workspace) -> WorkspaceSnapshot:
+        raise AssertionError("supplied workspace snapshot must avoid a rescan")
+
+    monkeypatch.setattr(cache, "snapshot", unexpected_rescan)
+    state = store._capture_verified(
+        {"core": 1},
+        ("core",),
+        snapshot,
+    )
+
+    assert state.project_fingerprints == snapshot.fingerprints
+    assert state.valid_projects == ("core",)
+    assert state.results == (("core", 1),)
+
+
+@pytest.mark.parametrize(
+    "fingerprints",
+    [
+        (("api", "a"), ("core", "c")),
+        (("core", "c"), ("api", "a"), ("ui", "u")),
+        (("api", "a"), ("core", "c"), ("ghost", "g"), ("ui", "u")),
+    ],
+)
+def test_capture_rejects_supplied_snapshot_with_inconsistent_project_set_or_order(
+    tmp_path: Path,
+    fingerprints: tuple[tuple[str, str], ...],
+) -> None:
+    store = WorkspaceStateStore(make_service(tmp_path))
+
+    with pytest.raises(
+        WorkspaceStateError,
+        match="workspace snapshot project set or order is inconsistent",
+    ):
+        store._capture_verified(
+            {},
+            (),
+            WorkspaceSnapshot(fingerprints),
+        )
 
 
 def test_save_creates_parent_directory(tmp_path: Path) -> None:

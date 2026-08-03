@@ -19,7 +19,7 @@ from .service import WorkspaceService
 
 STATE_SCHEMA_VERSION = 1
 ANALYSIS_RESULT_PRODUCER_FINGERPRINT = (
-    f"atlas/{__version__}:workspace-analysis-result-v4"
+    f"atlas/{__version__}:workspace-analysis-result-v5"
 )
 _LEGACY_PRODUCER_FINGERPRINT = "atlas/legacy:unversioned-analysis-result"
 
@@ -121,33 +121,81 @@ class WorkspaceStateStore:
             raise ValueError("producer_fingerprint must be a non-empty string")
         self.producer_fingerprint = producer_fingerprint.strip()
 
-    def capture(self, results: Mapping[str, Any], valid_projects: tuple[str, ...]) -> WorkspacePersistentState:
+    def capture(
+        self,
+        results: Mapping[str, Any],
+        valid_projects: tuple[str, ...],
+    ) -> WorkspacePersistentState:
+        """Capture state against a fresh strong workspace snapshot."""
         with self.measurement.scope(
             MeasurementPhase.PERSISTENCE,
             consumer="workspace-state",
             sample_key="workspace-state",
         ) as scope:
             snapshot = self.cache.snapshot(self.service.workspace)
-            names = set(self.service.workspace.names())
-            valid = tuple(sorted(names.intersection(valid_projects).intersection(results)))
-            encoded: list[tuple[str, Any]] = []
-            for name in valid:
-                try:
-                    encoded.append((name, self.encoder(results[name])))
-                except Exception as exc:
-                    raise WorkspaceStateError(f"cannot encode result for project {name!r}: {exc}") from exc
-            state = WorkspacePersistentState(
-                STATE_SCHEMA_VERSION,
-                self._workspace_fingerprint(snapshot),
-                snapshot.fingerprints,
-                valid,
-                tuple(encoded),
-                datetime.now(timezone.utc).isoformat(),
-                self.producer_fingerprint,
+            return self._capture_verified_unmeasured(
+                results,
+                valid_projects,
+                snapshot,
+                scope,
             )
-            scope.add_units(len(valid))
-            scope.add_objects_produced(1)
-            return state
+
+    def _capture_verified(
+        self,
+        results: Mapping[str, Any],
+        valid_projects: tuple[str, ...],
+        workspace_snapshot: WorkspaceSnapshot,
+    ) -> WorkspacePersistentState:
+        """Capture from run-local evidence already verified by recovery."""
+
+        with self.measurement.scope(
+            MeasurementPhase.PERSISTENCE,
+            consumer="workspace-state",
+            sample_key="workspace-state",
+        ) as scope:
+            return self._capture_verified_unmeasured(
+                results,
+                valid_projects,
+                workspace_snapshot,
+                scope,
+            )
+
+    def _capture_verified_unmeasured(
+        self,
+        results: Mapping[str, Any],
+        valid_projects: tuple[str, ...],
+        snapshot: WorkspaceSnapshot,
+        scope: Any,
+    ) -> WorkspacePersistentState:
+        names_in_order = self.service.workspace.names()
+        if tuple(name for name, _ in snapshot.fingerprints) != names_in_order:
+            raise WorkspaceStateError(
+                "workspace snapshot project set or order is inconsistent"
+            )
+        names = set(names_in_order)
+        valid = tuple(
+            sorted(names.intersection(valid_projects).intersection(results))
+        )
+        encoded: list[tuple[str, Any]] = []
+        for name in valid:
+            try:
+                encoded.append((name, self.encoder(results[name])))
+            except Exception as exc:
+                raise WorkspaceStateError(
+                    f"cannot encode result for project {name!r}: {exc}"
+                ) from exc
+        state = WorkspacePersistentState(
+            STATE_SCHEMA_VERSION,
+            self._workspace_fingerprint(snapshot),
+            snapshot.fingerprints,
+            valid,
+            tuple(encoded),
+            datetime.now(timezone.utc).isoformat(),
+            self.producer_fingerprint,
+        )
+        scope.add_units(len(valid))
+        scope.add_objects_produced(1)
+        return state
 
     def save(self, state: WorkspacePersistentState) -> Path:
         with self.measurement.scope(

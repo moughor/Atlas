@@ -65,6 +65,36 @@ capture log. If an extracted source archive has no Git metadata,
 `--allow-unpinned` permits a clearly provisional record; it cannot become a golden
 baseline.
 
+## Isolated M2.1 recovery diagnostics
+
+`benchmark_m21_recovery.py` compares fresh recovery execution without allowing one
+sample's completed journal or PR70 state to affect another sample. It assigns every
+sample separate state, journal, and optional measurement paths and records source-free
+project counts, status counts, ordering/result hashes, timing, and artifact hashes.
+
+Run unprofiled cohorts for wall and process CPU evidence:
+
+```text
+python -m benchmarks.benchmark_m21_recovery C:\benchmarks\maven benchmarks\results\m2.1-maven --label maven-unprofiled --recovery off --runs 6
+python -m benchmarks.benchmark_m21_recovery C:\benchmarks\maven benchmarks\results\m2.1-maven --label maven-unprofiled --recovery on --runs 6
+```
+
+Use separate labels or output directories for profiled cohorts:
+
+```text
+python -m benchmarks.benchmark_m21_recovery C:\benchmarks\maven benchmarks\results\m2.1-maven-profile --label maven-profile --recovery off --runs 1 --profile
+python -m benchmarks.benchmark_m21_recovery C:\benchmarks\maven benchmarks\results\m2.1-maven-profile --label maven-profile --recovery on --runs 1 --profile
+```
+
+The diagnostic times workspace execution and recovery only. It intentionally excludes
+history and semantic-snapshot publication, so it does not replace the canonical
+repository benchmark or establish a release golden. Samples are labelled
+`filesystem-warm-or-uncontrolled`; the runner does not claim to clear operating-system
+filesystem caches. Existing sample directories and bundle files are never overwritten.
+
+The investigation method, exact M2 ledger evidence, and interpretation limits are in
+`docs/stability/M2_1_RECOVERY_CHECKPOINT_INVESTIGATION.md`.
+
 ## Canonical snapshot replay
 
 Replay verifies persisted snapshot integrity and deterministic derived output. It
