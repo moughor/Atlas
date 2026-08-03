@@ -368,8 +368,17 @@ class WorkspaceRecoveryManager:
                     return
                 status, value, error = RecoveryProjectStatus.RUNNING, None, None
             elif event.kind is WorkspaceEventKind.PROJECT_COMPLETED:
+                orchestrator = self._orchestrator
+                if (
+                    orchestrator is None
+                    or event.project not in orchestrator._results
+                ):
+                    raise WorkspaceRecoveryError(
+                        "completed project result is unavailable for checkpoint: "
+                        f"{event.project!r}"
+                    )
                 try:
-                    value = self.encoder(event.payload.get("value"))
+                    value = self.encoder(orchestrator._results[event.project])
                 except Exception as exc:
                     raise WorkspaceRecoveryError(f"cannot encode result for project {event.project!r}: {exc}") from exc
                 status, error = RecoveryProjectStatus.COMPLETED, None

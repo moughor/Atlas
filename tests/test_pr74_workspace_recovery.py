@@ -9,6 +9,11 @@ from time import sleep
 
 import pytest
 
+from moughorai.ai_context.persistence import (
+    decode_analysis_result,
+    encode_analysis_result,
+)
+from moughorai.semantic import SemanticDocument
 from moughorai.workspace import (
     ConfigurationLayer,
     RecoveryProjectStatus,
@@ -93,6 +98,54 @@ def test_completed_dependency_value_is_available_after_resume(tmp_path: Path) ->
 
     WorkspaceRecoveryManager(service).resume(WorkspaceAnalysisOrchestrator(service), analyze)
     assert seen["api"]["core"]["project"] == "core"
+
+
+def test_interrupted_semantic_result_is_restored_from_full_checkpoint(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path)
+    manager = WorkspaceRecoveryManager(
+        service,
+        encoder=encode_analysis_result,
+        decoder=decode_analysis_result,
+    )
+
+    def interrupt(project, dependencies):
+        if project.name == "api":
+            raise KeyboardInterrupt("crash")
+        return SemanticDocument(
+            language="java",
+            source=f"class {project.name.title()} {{}}",
+            syntax_tree=(),
+            metadata={"project": project.name},
+        )
+
+    with pytest.raises(KeyboardInterrupt, match="crash"):
+        manager.execute(WorkspaceAnalysisOrchestrator(service), interrupt)
+
+    seen: dict[str, object] = {}
+
+    def resume(project, dependencies):
+        if project.name == "api":
+            seen["core"] = dependencies["core"]
+        return SemanticDocument(
+            language="java",
+            source="",
+            syntax_tree=(),
+            metadata={"project": project.name},
+        )
+
+    WorkspaceRecoveryManager(
+        service,
+        encoder=encode_analysis_result,
+        decoder=decode_analysis_result,
+    ).resume(WorkspaceAnalysisOrchestrator(service), resume)
+
+    restored = seen["core"]
+    assert isinstance(restored, SemanticDocument)
+    assert restored.language == "java"
+    assert restored.metadata == {"project": "core"}
+    assert restored.source == ""
 
 
 def test_failed_projects_are_identified_and_retried(tmp_path: Path) -> None:
