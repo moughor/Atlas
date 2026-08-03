@@ -51,12 +51,19 @@ Profile deterministic Explain projection and snapshot loading separately:
 ```text
 atlas ai explain . --profile
 atlas ai explain . --profile-output .atlas/measurements/atlas-explain-profile.json
+atlas search "REST endpoint" . --profile
+atlas search "dependency injection" . --profile-output .atlas/measurements/atlas-search-profile.json
 ```
 
 The default Explain sidecar is
 `<workspace>/.atlas/measurements/latest-explain.json`. Provider latency is outside
 the `explain.projection` phase: M2.0 measures Atlas context selection and rendering,
 not remote or local LLM execution.
+
+The default Semantic Search sidecar is
+`<workspace>/.atlas/measurements/latest-search.json`. Search profiling measures
+snapshot index construction and deterministic local query phases; no provider is
+invoked.
 
 The normal analysis report continues to use stdout. A compact human summary is sent
 to stderr and identifies the sidecar kind, sample and phase counts, unavailable and

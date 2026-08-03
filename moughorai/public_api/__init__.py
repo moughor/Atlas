@@ -13,6 +13,11 @@ from moughorai.api import AnalysisApiService, AnalysisRequest, AnalysisResult
 from moughorai.plugin_sdk import PluginContext, PluginManifest, PluginRegistry
 from moughorai.project_index import PersistentProjectIndex, ProjectFileIndexer
 from moughorai.rule_sdk import RuleContext, RuleFinding, RuleRegistry, RuleRunner
+from moughorai.semantic_search import (
+    SemanticSearchRequest,
+    SemanticSearchResponse,
+    SemanticSearchService,
+)
 from moughorai.workspace import (
     Project,
     ResolvedConfiguration,
@@ -38,6 +43,9 @@ PUBLIC_API_SIGNATURES: Mapping[str, str] = {
     "RuleFinding": "(rule_id: 'str', message: 'str', severity: 'RuleSeverity', location: 'RuleLocation', data: 'tuple[tuple[str, Any], ...]' = ()) -> None",
     "RuleRegistry": "(rules: 'Iterable[Rule]' = ()) -> 'None'",
     "RuleRunner": "()",
+    "SemanticSearchRequest": "(text: 'str', kinds: 'tuple[KnowledgeKind, ...]' = (), project: 'str | None' = None, module: 'str | None' = None, package: 'str | None' = None, language: 'str | None' = None, relation: 'KnowledgeRelation | None' = None, minimum_confidence: 'float' = 0.0, limit: 'int' = 20) -> None",
+    "SemanticSearchResponse": "(request: 'SemanticSearchRequest', interpretation: 'QueryInterpretation', hits: 'tuple[StructuredSearchHit, ...]', total_candidate_count: 'int', omitted_count: 'int', capabilities: 'tuple[SearchCapability, ...]', index_id: 'str', evidence_index: 'EvidenceIndex' = <factory>, limitations: 'tuple[str, ...]' = (), producer: 'str' = 'atlas-pr135/1', schema_version: 'int' = 1) -> None",
+    "SemanticSearchService": "(symbols: 'GlobalSymbolDatabase', graph: 'DependencyGraph | None' = None) -> 'None'",
     "Workspace": "(root: 'Path', projects: 'tuple[Project, ...]', config_path: 'Path | None' = None, options: 'tuple[tuple[str, str], ...]' = ()) -> None",
     "WorkspaceAnalysisOrchestrator": "(service: 'WorkspaceService', *, planner: 'IncrementalWorkspacePlanner | None' = None) -> 'None'",
     "WorkspaceEventBus": "(*, history_limit: 'int' = 100, correlation_id: 'str | None' = None) -> 'None'",
@@ -83,6 +91,9 @@ __all__ = [
     "RuleFinding",
     "RuleRegistry",
     "RuleRunner",
+    "SemanticSearchRequest",
+    "SemanticSearchResponse",
+    "SemanticSearchService",
     "Workspace",
     "WorkspaceAnalysisOrchestrator",
     "WorkspaceEventBus",

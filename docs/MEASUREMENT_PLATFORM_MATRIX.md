@@ -44,6 +44,13 @@ is process CPU divided by wall time, is not CPU-count normalized, and may exceed
 | `repository.summary` | Existing summary service | Successful workspace context collection. |
 | `repository.report` | Existing report service | Successful workspace context collection. |
 | `explain.projection` | Explain engine | `atlas ai explain --profile`, not normal analysis. |
+| `semantic_search.index` | PR135 snapshot index builder | `atlas search --profile` constructs an in-memory index. |
+| `semantic_search.interpret` | PR135 query interpreter | An opt-in measured search executes. |
+| `semantic_search.retrieve` | PR135 candidate retrieval | An opt-in measured search executes. |
+| `semantic_search.score` | PR135 deterministic ranker | Retrieved candidates are scored. |
+| `semantic_search.sort` | PR135 deterministic ranker | Scored candidates are ordered and bounded. |
+| `semantic_search.evidence` | PR135 evidence projection | Search hits are enriched from structured evidence. |
+| `semantic_search.render` | PR135 CLI | `atlas search --profile` renders human or JSON output. |
 | `semantic_snapshot.build` | ASS store | Successful analysis proceeds to snapshot capture. |
 | `serialization` | State and ASS stores | A measured serialization/load boundary executes. |
 | `persistence` | State and ASS stores | A measured durable read/write boundary executes. |
@@ -55,6 +62,10 @@ TypeScript currently uses the source-free extension phase
 `language.other.parsing`. PR130 design-pattern analysis uses
 `design_patterns.analysis`. These operational extensions do not change the stable
 semantic snapshot schema.
+
+PR135 measurements are request-local and never enter semantic snapshots or search
+ranking. Normal `atlas analyze` runs do not build the search index, so the seven
+semantic-search phases are absent unless snapshot search is explicitly invoked.
 
 Filesystem coverage is separately `partial/explicit-instrumentation-boundaries` when
 enabled. Therefore phase wall/CPU observations and explicit filesystem counters do

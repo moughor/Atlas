@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 import heapq
 import hashlib
 import json
@@ -40,6 +40,8 @@ class KnowledgeGraph:
         limit: int,
         relation: KnowledgeRelation | None = None,
         target_id: str | None = None,
+        target_ids: frozenset[str] | None = None,
+        target_predicate: Callable[[str], bool] | None = None,
     ) -> tuple[tuple[KnowledgeEdge, ...], int]:
         """Return the first canonical outgoing edges and the exact match count.
 
@@ -54,6 +56,8 @@ class KnowledgeGraph:
             limit=limit,
             relation=relation,
             endpoint_id=target_id,
+            endpoint_ids=target_ids,
+            endpoint_predicate=target_predicate,
             endpoint="target",
         )
 
@@ -64,6 +68,8 @@ class KnowledgeGraph:
         limit: int,
         relation: KnowledgeRelation | None = None,
         source_id: str | None = None,
+        source_ids: frozenset[str] | None = None,
+        source_predicate: Callable[[str], bool] | None = None,
     ) -> tuple[tuple[KnowledgeEdge, ...], int]:
         """Return the first canonical incoming edges and the exact match count."""
 
@@ -72,6 +78,8 @@ class KnowledgeGraph:
             limit=limit,
             relation=relation,
             endpoint_id=source_id,
+            endpoint_ids=source_ids,
+            endpoint_predicate=source_predicate,
             endpoint="source",
         )
 
@@ -128,6 +136,8 @@ class KnowledgeGraph:
         limit: int,
         relation: KnowledgeRelation | None,
         endpoint_id: str | None,
+        endpoint_ids: frozenset[str] | None,
+        endpoint_predicate: Callable[[str], bool] | None,
         endpoint: str,
     ) -> tuple[tuple[KnowledgeEdge, ...], int]:
         if limit < 1:
@@ -139,6 +149,13 @@ class KnowledgeGraph:
                 if relation is not None and edge.relation is not relation:
                     continue
                 if endpoint_id is not None and getattr(edge, endpoint) != endpoint_id:
+                    continue
+                if endpoint_ids is not None and getattr(edge, endpoint) not in endpoint_ids:
+                    continue
+                if (
+                    endpoint_predicate is not None
+                    and not endpoint_predicate(getattr(edge, endpoint))
+                ):
                     continue
                 total += 1
                 yield edge

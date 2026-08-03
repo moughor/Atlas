@@ -4,13 +4,50 @@ import json
 from pathlib import Path
 
 from moughorai import public_api
+from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.api import AnalysisRequest
+from moughorai.knowledge_graph import KnowledgeGraph, KnowledgeKind, KnowledgeNode
+from moughorai.semantic_search import (
+    SemanticSearchRequest,
+    SemanticSearchResponse,
+    SemanticSearchService,
+)
+from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 from moughorai.workspace import Project
 
 
 def test_public_facade_preserves_existing_type_identity() -> None:
     assert public_api.AnalysisRequest is AnalysisRequest
     assert public_api.Project is Project
+    assert public_api.SemanticSearchRequest is SemanticSearchRequest
+    assert public_api.SemanticSearchResponse is SemanticSearchResponse
+    assert public_api.SemanticSearchService is SemanticSearchService
+
+
+def test_public_semantic_search_facade_uses_snapshot_contract() -> None:
+    graph = KnowledgeGraph((KnowledgeNode(
+        "type:demo",
+        KnowledgeKind.TYPE,
+        "Demo",
+        qualified_name="example.Demo",
+        language="python",
+    ),))
+    snapshot = AtlasSemanticSnapshot.create(
+        WorkspaceSemanticContext({
+            "schema_version": 1,
+            "semantic_graph": graph.to_dict(),
+            "symbols": [],
+        }),
+        workspace_fingerprint="public-search-fixture",
+        analyzer_version="test/1",
+    )
+
+    response = public_api.SemanticSearchService.from_snapshot(
+        snapshot,
+    ).search_semantic(public_api.SemanticSearchRequest("example.Demo"))
+
+    assert isinstance(response, public_api.SemanticSearchResponse)
+    assert [item.canonical_subject_id for item in response.hits] == ["type:demo"]
 
 
 def test_public_manifest_matches_frozen_signatures() -> None:

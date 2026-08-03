@@ -1,5 +1,27 @@
 # Changelog
 
+## PR135 deterministic semantic search
+
+- Added source-free, deterministic intent search over PR129 canonical subjects,
+  structured symbol facts, dependency/framework evidence, and compatible PR130--132
+  findings while preserving the PR25 symbol-search API unchanged.
+- Reused the PR134 canonical subject resolver for exact identities and ambiguity,
+  and reused PR129 bounded adjacency for relational queries without duplicating the
+  graph or treating missing call/composition evidence as absence.
+- Added a compact versioned concept registry, immutable rebuildable in-memory index,
+  central explainable ranking weights, shared evidence/confidence integration,
+  explicit partial capability states, and exact request/response round trips.
+- Added provider-free `atlas search` human and canonical JSON output with bounded
+  filters, score explanations, zero-result success, and opt-in M2 measurement phases.
+- Added the minimal service/request/response contract to the version-1 public facade,
+  strict DTO restoration, bounded posting predicates for large scopes, and explicit
+  unknown-subject/ambiguity retrieval.
+- Restricted canonical edge evidence to established structured producer references
+  and publish only fixed lineage plus deterministic hashes of accepted references.
+- Kept raw source, docstrings, arbitrary metadata, repository/Explain prose,
+  absolute paths, embeddings, vector databases, LLMs, and persistent search caches
+  outside the search boundary.
+
 ## M2.1 recovery checkpoint amplification
 
 - Proved that PR74 recovery caused one complete PR70 workspace fingerprint after

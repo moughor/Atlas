@@ -45,7 +45,15 @@ availability, lineage, limitations, citations, and truncation metadata. Targeted
 selected source-free explanation rather than the complete semantic snapshot. See
 [`docs/PR134_EXPLAIN_ANYTHING.md`](docs/PR134_EXPLAIN_ANYTHING.md).
 
-The current repository includes completed work through PR134. Recent repository
+PR135 adds deterministic intent-based search over those same canonical identities
+and structured findings. `atlas search` builds a bounded, immutable in-memory index
+from a verified semantic snapshot; it uses no source text, report prose, embeddings,
+LLM, or external service. Every ranked hit exposes relevance components, evidence,
+confidence, capability sources, and limitations; the response reports capability
+states. See
+[`docs/PR135_SEMANTIC_SEARCH.md`](docs/PR135_SEMANTIC_SEARCH.md).
+
+The current repository includes completed work through PR135. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
 reachability, deterministic risk/hotspot indicators, bounded executive reports, and
@@ -59,6 +67,8 @@ atlas --version
 atlas analyze .
 atlas check . --adaptive --workers 4
 atlas dashboard .
+atlas search "REST endpoint" .
+atlas search "depends on spring-web" . --json
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from
@@ -86,7 +96,13 @@ atlas --log-level info --log-format json \
 External Python consumers should use the versioned compatibility facade:
 
 ```python
-from moughorai.public_api import AnalysisRequest, Project, Workspace
+from moughorai.public_api import (
+    AnalysisRequest,
+    Project,
+    SemanticSearchRequest,
+    SemanticSearchService,
+    Workspace,
+)
 ```
 
 Legacy imports remain available. See
@@ -104,6 +120,7 @@ atlas analyze . --profile-output .atlas/measurements/atlas-profile.json
 atlas analyze . --profile --profile-memory
 atlas analyze . --profile-python-memory
 atlas ai explain . --profile
+atlas search "dependency injection" . --profile
 ```
 
 The default sidecar is `.atlas/measurements/latest.json`; a compact summary is written

@@ -37,6 +37,12 @@ from .adaptive_scheduler import AdaptiveWorkspaceScheduler
 from .governance import GovernanceAuditLog, GovernanceError
 from .structured_logging import LogFormat, LogLevel, configure_logging, get_logger, log_event
 from .semantic_snapshot import SemanticSnapshotError, SemanticSnapshotStore
+from .knowledge_graph import KnowledgeKind, KnowledgeRelation
+from .semantic_search import (
+    SemanticSearchRequest,
+    SemanticSearchService,
+    render_semantic_search,
+)
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
 from .ai_review import ReviewEngine, ReviewRequest
@@ -517,6 +523,115 @@ def _load_ai_snapshot(
             f"semantic snapshot not found: {target}; run analysis snapshot creation first"
         )
     return loaded
+
+
+@app.command("search")
+def semantic_search_command(
+    query: Annotated[str, typer.Argument(help="Engineering concept, subject, or relationship query.")],
+    root: Annotated[Path, typer.Argument(help="Workspace root containing the semantic snapshot.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Read a specific .ass snapshot instead of latest.ass.")] = None,
+    kind: Annotated[list[str] | None, typer.Option("--kind", help="Constrain a canonical subject kind; repeat as needed.")] = None,
+    project: Annotated[str | None, typer.Option("--project", help="Constrain the owning project.")] = None,
+    module: Annotated[str | None, typer.Option("--module", help="Constrain the module projection.")] = None,
+    package: Annotated[str | None, typer.Option("--package", help="Constrain the package projection.")] = None,
+    language: Annotated[str | None, typer.Option("--language", help="Constrain the analyzer language.")] = None,
+    relation: Annotated[str | None, typer.Option("--relation", help="Constrain a canonical relationship kind.")] = None,
+    minimum_confidence: Annotated[float, typer.Option("--min-confidence", min=0.0, max=1.0, help="Minimum structured evidence confidence.")] = 0.0,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100, help="Maximum returned results.")] = 20,
+    json_output: Annotated[bool, typer.Option("--json", help="Print canonical deterministic JSON.")] = False,
+    explain_score: Annotated[bool, typer.Option("--explain-score", help="Show deterministic score components in human output.")] = False,
+    profile: Annotated[bool, typer.Option("--profile", help="Write an opt-in M2 search measurement sidecar.")] = False,
+    profile_output: Annotated[Path | None, typer.Option("--profile-output", help="Search measurement JSON path; implies --profile.")] = None,
+    profile_memory: Annotated[bool, typer.Option("--profile-memory", help="Collect best-effort process memory counters; implies --profile.")] = False,
+    profile_python_memory: Annotated[bool, typer.Option("--profile-python-memory", help="Collect Python allocation samples; implies --profile.")] = False,
+) -> None:
+    """Search a verified semantic snapshot without an LLM or source text."""
+
+    def operation() -> None:
+        profile_enabled = (
+            profile
+            or profile_output is not None
+            or profile_memory
+            or profile_python_memory
+        )
+        profile_target = (
+            _measurement_output_path(
+                root.expanduser().resolve(),
+                profile_output,
+                default_name="latest-search.json",
+            )
+            if profile_enabled else None
+        )
+        with _python_memory_collection(profile_python_memory):
+            measurement = MeasurementSession(MeasurementConfig(
+                enabled=profile_enabled,
+                capture_process_memory=profile_memory,
+                capture_python_memory=profile_python_memory,
+            ))
+            try:
+                kinds = tuple(
+                    KnowledgeKind(item.strip().casefold().replace("-", "_"))
+                    for item in (kind or ())
+                )
+                selected_relation = (
+                    KnowledgeRelation(relation.strip().casefold().replace("-", "_"))
+                    if relation is not None else None
+                )
+                request = SemanticSearchRequest(
+                    query,
+                    kinds,
+                    project,
+                    module,
+                    package,
+                    language,
+                    selected_relation,
+                    minimum_confidence,
+                    limit,
+                )
+                try:
+                    loaded = _load_ai_snapshot(
+                        root, snapshot, measurement=measurement,
+                    )
+                except SemanticSnapshotError as exc:
+                    if str(exc).startswith("semantic snapshot not found:"):
+                        raise SemanticSnapshotError(
+                            "semantic snapshot not found; run analysis snapshot creation first"
+                        ) from exc
+                    raise SemanticSnapshotError(
+                        "semantic snapshot could not be loaded or verified"
+                    ) from exc
+                response = SemanticSearchService.from_snapshot(
+                    loaded, measurement=measurement,
+                ).search_semantic(request)
+                with measurement.scope(
+                    "semantic_search.render",
+                    consumer="semantic-search",
+                    sample_key=response.index_id,
+                ) as rendering:
+                    output = (
+                        response.to_json() + "\n"
+                        if json_output
+                        else render_semantic_search(
+                            response, explain_score=explain_score,
+                        )
+                    )
+                    rendering.add_units(len(response.hits))
+                    rendering.add_bytes(len(output.encode("utf-8")))
+                    rendering.add_objects_produced(1)
+                    typer.echo(output, nl=False)
+            finally:
+                if profile_target is not None:
+                    _publish_measurement_report(
+                        profile_target,
+                        measurement,
+                        output_kind=(
+                            "default" if profile_output is None else "custom"
+                        ),
+                        memory_requested=profile_memory,
+                        python_memory_requested=profile_python_memory,
+                    )
+
+    _run_command(operation)
 
 
 def _future_ai_engine(command: str, root: Path, snapshot: Path | None) -> None:

@@ -7,7 +7,8 @@ provisional unless separately documented.
 
 The facade starts at `PUBLIC_API_VERSION = "1.0"` and covers core workspace
 models and orchestration, analysis requests/results, persistent indexing, rule
-authoring, and plugin integration primitives. `PUBLIC_API_SIGNATURES` is the
+authoring, plugin integration primitives, and the minimal deterministic semantic
+search service/request/response contract added by PR135. `PUBLIC_API_SIGNATURES` is the
 frozen constructor contract. CI compares it with `public_api_manifest()` so a
 removal or signature change requires an explicit compatibility decision.
 
