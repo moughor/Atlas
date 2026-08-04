@@ -68,6 +68,11 @@ from .change_review import (
     ChangeReviewService,
     render_change_review,
 )
+from .repository_evolution import (
+    RepositoryEvolutionRequest,
+    RepositoryEvolutionService,
+    render_repository_evolution,
+)
 from .subject_resolution import SubjectQuery
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
@@ -652,6 +657,112 @@ def change_review_command(
                     )
                     rendering.add_units(
                         len(response.changed_files) + len(response.sections)
+                    )
+                    rendering.add_bytes(len(output.encode("utf-8")))
+                    rendering.add_objects_produced(1)
+                    typer.echo(output, nl=False)
+            finally:
+                if profile_target is not None:
+                    _publish_measurement_report(
+                        profile_target,
+                        measurement,
+                        output_kind=(
+                            "default" if profile_output is None else "custom"
+                        ),
+                        memory_requested=profile_memory,
+                        python_memory_requested=profile_python_memory,
+                    )
+
+    _run_command(operation)
+
+
+@app.command("evolution")
+def repository_evolution_command(
+    base_snapshot: Annotated[Path, typer.Option("--base-snapshot", help="Checksum-verified base .ass snapshot.")],
+    root: Annotated[Path, typer.Argument(help="Workspace root containing Atlas snapshot state.")] = Path("."),
+    head_snapshot: Annotated[Path | None, typer.Option("--head-snapshot", help="Checksum-verified head .ass snapshot; defaults to latest.ass.")] = None,
+    maximum_node_changes: Annotated[int, typer.Option("--max-node-changes", min=1, max=5000, help="Maximum canonical node changes retained.")] = 256,
+    maximum_relation_changes: Annotated[int, typer.Option("--max-relation-changes", min=1, max=5000, help="Maximum canonical relation changes retained.")] = 256,
+    json_output: Annotated[bool, typer.Option("--json", help="Print canonical deterministic JSON.")] = False,
+    profile: Annotated[bool, typer.Option("--profile", help="Write an opt-in M2 repository-evolution measurement sidecar.")] = False,
+    profile_output: Annotated[Path | None, typer.Option("--profile-output", help="Repository-evolution measurement JSON path; implies --profile.")] = None,
+    profile_memory: Annotated[bool, typer.Option("--profile-memory", help="Collect best-effort process memory counters; implies --profile.")] = False,
+    profile_python_memory: Annotated[bool, typer.Option("--profile-python-memory", help="Collect Python allocation samples; implies --profile.")] = False,
+) -> None:
+    """Compare exact canonical facts from two verified semantic snapshots."""
+
+    def operation() -> None:
+        resolved_root = root.expanduser().resolve()
+        profile_enabled = (
+            profile
+            or profile_output is not None
+            or profile_memory
+            or profile_python_memory
+        )
+        profile_target = (
+            _measurement_output_path(
+                resolved_root,
+                profile_output,
+                default_name="latest-repository-evolution.json",
+            )
+            if profile_enabled else None
+        )
+        with _python_memory_collection(profile_python_memory):
+            measurement = MeasurementSession(MeasurementConfig(
+                enabled=profile_enabled,
+                capture_process_memory=profile_memory,
+                capture_python_memory=profile_python_memory,
+            ))
+            try:
+                try:
+                    base = _load_ai_snapshot(
+                        root,
+                        base_snapshot,
+                        measurement=measurement,
+                    )
+                except SemanticSnapshotError as exc:
+                    if str(exc).startswith("semantic snapshot not found:"):
+                        raise SemanticSnapshotError(
+                            "base semantic snapshot not found"
+                        ) from exc
+                    raise SemanticSnapshotError(
+                        "base semantic snapshot could not be loaded or verified"
+                    ) from exc
+                try:
+                    head = _load_ai_snapshot(
+                        root,
+                        head_snapshot,
+                        measurement=measurement,
+                    )
+                except SemanticSnapshotError as exc:
+                    if str(exc).startswith("semantic snapshot not found:"):
+                        raise SemanticSnapshotError(
+                            "head semantic snapshot not found"
+                        ) from exc
+                    raise SemanticSnapshotError(
+                        "head semantic snapshot could not be loaded or verified"
+                    ) from exc
+                request = RepositoryEvolutionRequest(
+                    maximum_node_changes,
+                    maximum_relation_changes,
+                )
+                response = RepositoryEvolutionService(
+                    measurement=measurement,
+                ).compare(base, head, request)
+                with measurement.scope(
+                    "repository_evolution.render",
+                    consumer="repository-evolution",
+                    sample_key=response.input_fingerprint,
+                ) as rendering:
+                    output = (
+                        response.to_json() + "\n"
+                        if json_output
+                        else render_repository_evolution(response)
+                    )
+                    rendering.add_units(
+                        len(response.node_changes)
+                        + len(response.relation_changes)
+                        + len(response.capabilities)
                     )
                     rendering.add_bytes(len(output.encode("utf-8")))
                     rendering.add_objects_produced(1)

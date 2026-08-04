@@ -98,7 +98,19 @@ caller-verified fingerprint through the API or the explicit, unverified
 `--assume-current-snapshot` CLI opt-in. `atlas ai review` remains unchanged. See
 [`docs/PR140_CHANGE_REVIEW.md`](docs/PR140_CHANGE_REVIEW.md).
 
-The current repository includes implemented work through PR140. PR137 Refactoring
+PR141 begins Repository Evolution with a deterministic, request-local comparison of
+two checksum-verified semantic snapshots. `atlas evolution` reports bounded exact
+changes to PR129 canonical nodes, relationships, and relationship evidence while
+keeping commit association unavailable unless compatible PR132 Git-head evidence
+exists, and explicitly partial even when it does. The base snapshot is required;
+the head can be selected explicitly or use the verified `latest.ass` pointer. Atlas
+does not claim complete producer, configuration, or coverage comparability from
+matching analyzer versions alone. It never converts remove-plus-add into a rename or
+infers API breakage, security causality, architectural drift, runtime behavior, or
+developer intent. See
+[`docs/PR141_REPOSITORY_EVOLUTION.md`](docs/PR141_REPOSITORY_EVOLUTION.md).
+
+The current repository includes implemented work through PR141. PR137 Refactoring
 Advisor and PR138 Security Intelligence remain deliberately partial roadmap items;
 PR139 consumes only their compatible published capabilities. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
@@ -127,6 +139,7 @@ atlas ai chat "Explain the repository architecture" .
 atlas ai chat "What is the impact of changing UserService?" . --subject UserService --capability impact --json
 atlas change-review . --json
 atlas change-review . --staged --assume-current-snapshot
+atlas evolution . --base-snapshot .atlas/ass/base.ass --head-snapshot .atlas/ass/latest.ass --json
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from
@@ -190,6 +203,7 @@ atlas impact "com.example.UserService" . --profile
 atlas refactor . --profile
 atlas security . --profile
 atlas change-review . --profile
+atlas evolution . --base-snapshot .atlas/ass/base.ass --profile
 ```
 
 The default sidecar is `.atlas/measurements/latest.json`; a compact summary is written

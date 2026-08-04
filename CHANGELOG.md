@@ -1,5 +1,30 @@
 # Changelog
 
+## PR141 deterministic repository evolution
+
+- Added an ephemeral, bounded `RepositoryEvolutionService` that compares two
+  checksum-verified PR111 snapshots through the existing PR129 canonical graph and
+  PR134 source-free subject projection; no second graph, resolver, traversal,
+  persistence layer, cache, or semantic pass was introduced.
+- Reports exact canonical node additions, removals, and structured modifications,
+  plus relationship additions, removals, and evidence-only changes. All selected
+  observations carry PR130 evidence, reproducible confidence, base/head lineage,
+  exact counts, deterministic bounds, and strict round-trip validation.
+- Reuses compatible PR132 `git-head` evidence only as an explicitly partial
+  analysis-time commit association. Current snapshots do not prove a clean worktree
+  or commit ancestry, and missing or conflicting evidence remains unavailable or
+  incompatible.
+- Added provider-free `atlas evolution` human and canonical JSON output over two
+  verified `.ass` files with a required base, an explicit head or `latest.ass`
+  default, deterministic node/relation limits, unique rendered change limitations,
+  and opt-in M2 profiling. It never auto-selects history by timestamp or rescans
+  source.
+- Requires analyzer-version equality for comparison but does not treat it as proof
+  of complete producer, configuration, language-capability, or coverage equivalence.
+- Kept rename/move continuity, API/ABI compatibility, security causality,
+  architectural drift, runtime behavior, migration safety, ownership, and developer
+  intent explicitly unavailable rather than approximating future roadmap work.
+
 ## PR140 deterministic change review
 
 - Extended the existing PR92 Git-diff owner with strict immutable DTO restoration,
