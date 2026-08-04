@@ -55,6 +55,14 @@ from .refactoring_advisor import (
     RefactoringRequest,
     render_refactoring_advice,
 )
+from .security_intelligence import (
+    SecurityCategory,
+    SecurityIntelligenceRequest,
+    SecurityIntelligenceService,
+    SecurityScope,
+    SecuritySeverity,
+    render_security_intelligence,
+)
 from .subject_resolution import SubjectQuery
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
@@ -878,6 +886,112 @@ def refactoring_advisor_command(
                         )
                     )
                     rendering.add_units(len(response.advice))
+                    rendering.add_bytes(len(output.encode("utf-8")))
+                    rendering.add_objects_produced(1)
+                    typer.echo(output, nl=False)
+            finally:
+                if profile_target is not None:
+                    _publish_measurement_report(
+                        profile_target,
+                        measurement,
+                        output_kind=(
+                            "default" if profile_output is None else "custom"
+                        ),
+                        memory_requested=profile_memory,
+                        python_memory_requested=profile_python_memory,
+                    )
+
+    _run_command(operation)
+
+
+@app.command("security")
+def security_intelligence_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root containing the semantic snapshot.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Read a specific .ass snapshot instead of latest.ass.")] = None,
+    scope: Annotated[str, typer.Option("--scope", help="Security scope: repository, project, or symbol.")] = "repository",
+    project: Annotated[list[str] | None, typer.Option("--project", help="Restrict an owning project; repeat as needed.")] = None,
+    language: Annotated[list[str] | None, typer.Option("--language", help="Restrict a producer language; repeat as needed.")] = None,
+    category: Annotated[list[str] | None, typer.Option("--category", help="Restrict a security category; repeat as needed.")] = None,
+    severity: Annotated[list[str] | None, typer.Option("--severity", help="Restrict a severity; repeat as needed.")] = None,
+    subject_id: Annotated[list[str] | None, typer.Option("--subject-id", help="Restrict a canonical subject ID; repeat as needed and required for symbol scope.")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=10000, help="Maximum returned security findings.")] = 100,
+    json_output: Annotated[bool, typer.Option("--json", help="Print canonical deterministic JSON.")] = False,
+    explain_priority: Annotated[bool, typer.Option("--explain-priority", help="Show deterministic priority components.")] = False,
+    profile: Annotated[bool, typer.Option("--profile", help="Write an opt-in M2 security-intelligence measurement sidecar.")] = False,
+    profile_output: Annotated[Path | None, typer.Option("--profile-output", help="Security measurement JSON path; implies --profile.")] = None,
+    profile_memory: Annotated[bool, typer.Option("--profile-memory", help="Collect best-effort process memory counters; implies --profile.")] = False,
+    profile_python_memory: Annotated[bool, typer.Option("--profile-python-memory", help="Collect Python allocation samples; implies --profile.")] = False,
+) -> None:
+    """Query persisted evidence-backed security intelligence without rescanning source."""
+
+    def operation() -> None:
+        profile_enabled = (
+            profile
+            or profile_output is not None
+            or profile_memory
+            or profile_python_memory
+        )
+        profile_target = (
+            _measurement_output_path(
+                root.expanduser().resolve(),
+                profile_output,
+                default_name="latest-security.json",
+            )
+            if profile_enabled else None
+        )
+        with _python_memory_collection(profile_python_memory):
+            measurement = MeasurementSession(MeasurementConfig(
+                enabled=profile_enabled,
+                capture_process_memory=profile_memory,
+                capture_python_memory=profile_python_memory,
+            ))
+            try:
+                selected_scope = SecurityScope(
+                    scope.strip().casefold().replace("-", "_")
+                )
+                request = SecurityIntelligenceRequest(
+                    selected_scope,
+                    projects=tuple(project or ()),
+                    languages=tuple(language or ()),
+                    categories=tuple(
+                        SecurityCategory(item.strip().casefold().replace("-", "_"))
+                        for item in (category or ())
+                    ),
+                    severities=tuple(
+                        SecuritySeverity(item.strip().casefold().replace("-", "_"))
+                        for item in (severity or ())
+                    ),
+                    limit=limit,
+                    canonical_subject_ids=tuple(subject_id or ()),
+                )
+                try:
+                    loaded = _load_ai_snapshot(
+                        root, snapshot, measurement=measurement,
+                    )
+                except SemanticSnapshotError as exc:
+                    if str(exc).startswith("semantic snapshot not found:"):
+                        raise SemanticSnapshotError(
+                            "semantic snapshot not found; run analysis snapshot creation first"
+                        ) from exc
+                    raise SemanticSnapshotError(
+                        "semantic snapshot could not be loaded or verified"
+                    ) from exc
+                response = SecurityIntelligenceService.from_snapshot(
+                    loaded, measurement=measurement,
+                ).analyze(request)
+                with measurement.scope(
+                    "security_intelligence.render",
+                    consumer="security-intelligence",
+                    sample_key=response.input_fingerprint,
+                ) as rendering:
+                    output = (
+                        response.to_json() + "\n"
+                        if json_output
+                        else render_security_intelligence(
+                            response, explain_priority=explain_priority,
+                        )
+                    )
+                    rendering.add_units(len(response.findings))
                     rendering.add_bytes(len(output.encode("utf-8")))
                     rendering.add_objects_produced(1)
                     typer.echo(output, nl=False)

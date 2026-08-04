@@ -256,6 +256,51 @@ class KnowledgeGraph:
 
         if self._stable_digest is not None:
             return self._stable_digest
+        self._stable_digest = self._stable_serialized_digest(
+            (self._node_to_dict(node) for node in self.nodes),
+            (
+                {
+                    "source": edge.source,
+                    "target": edge.target,
+                    "kind": edge.relation.value,
+                    "evidence": list(edge.evidence),
+                }
+                for edge in self.edges
+            ),
+        )
+        return self._stable_digest
+
+    @classmethod
+    def stable_payload_digest(cls, payload: Mapping[str, object]) -> str:
+        """Hash one canonical serialized graph without reconstructing its indexes."""
+
+        if not isinstance(payload, Mapping):
+            raise TypeError("graph payload must be a mapping")
+        schema_version = payload.get("schema_version")
+        if (
+            not isinstance(schema_version, int)
+            or isinstance(schema_version, bool)
+            or schema_version != 1
+        ):
+            raise ValueError("graph payload schema must be 1")
+        nodes = payload.get("nodes")
+        edges = payload.get("edges")
+        if (
+            not isinstance(nodes, list)
+            or not isinstance(edges, list)
+            or any(not isinstance(item, Mapping) for item in nodes)
+            or any(not isinstance(item, Mapping) for item in edges)
+        ):
+            raise TypeError("serialized graph nodes and edges must be objects")
+        return cls._stable_serialized_digest(nodes, edges)
+
+    @staticmethod
+    def _stable_serialized_digest(
+        nodes: Iterable[Mapping[str, object]],
+        edges: Iterable[Mapping[str, object]],
+    ) -> str:
+        """Hash canonical node and edge records using the PR129 wire identity."""
+
         digest = hashlib.sha256()
 
         def update(value: object) -> None:
@@ -267,23 +312,17 @@ class KnowledgeGraph:
             ).encode("utf-8"))
 
         digest.update(b'{"edges":[')
-        for index, edge in enumerate(self.edges):
+        for index, edge in enumerate(edges):
             if index:
                 digest.update(b",")
-            update({
-                "source": edge.source,
-                "target": edge.target,
-                "kind": edge.relation.value,
-                "evidence": list(edge.evidence),
-            })
+            update(edge)
         digest.update(b'],"nodes":[')
-        for index, node in enumerate(self.nodes):
+        for index, node in enumerate(nodes):
             if index:
                 digest.update(b",")
-            update(self._node_to_dict(node))
+            update(node)
         digest.update(b'],"schema_version":1}')
-        self._stable_digest = digest.hexdigest()
-        return self._stable_digest
+        return digest.hexdigest()
     def to_dict(self):
         return {
             'schema_version': 1,

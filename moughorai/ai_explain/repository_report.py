@@ -67,6 +67,11 @@ class RepositoryReportRenderer:
 
         if repository_report.get("status") == "available":
             self._render_pr133_report(lines, repository_report)
+            if "security_intelligence" in context:
+                self._render_security_intelligence(
+                    lines,
+                    context.get("security_intelligence"),
+                )
             return "\n".join(lines).rstrip() + "\n"
 
         lines.extend([
@@ -142,6 +147,11 @@ class RepositoryReportRenderer:
             "Risk and hotspots",
             context.get("risk_analysis"),
         )
+        if "security_intelligence" in context:
+            self._render_security_intelligence(
+                lines,
+                context.get("security_intelligence"),
+            )
         self._render_structured_section(
             lines,
             "AI repository report",
@@ -153,6 +163,65 @@ class RepositoryReportRenderer:
             context.get("limitations"),
         )
         return "\n".join(lines).rstrip() + "\n"
+
+    def _render_security_intelligence(
+        self,
+        lines: list[str],
+        value: object,
+    ) -> None:
+        """Render only the bounded PR138 repository projection."""
+
+        mapping = self._as_mapping(value)
+        rendered: dict[str, object] = {
+            key: mapping[key]
+            for key in (
+                "status",
+                "finding_count",
+                "included_finding_count",
+                "omitted_finding_count",
+                "category_count",
+                "included_category_count",
+                "omitted_category_count",
+                "source_limitation_count",
+            )
+            if key in mapping
+        }
+        categories = [
+            {
+                key: item[key]
+                for key in (
+                    "category",
+                    "state",
+                    "finding_count",
+                    "included_finding_count",
+                    "included_severity_counts",
+                    "included_confidence",
+                    "included_evidence_count",
+                    "source_limitation_count",
+                    "limitations",
+                )
+                if key in item and (key != "limitations" or item[key])
+            }
+            for item in self._mapping_sequence(mapping.get("categories"))
+        ]
+        if categories:
+            rendered["categories"] = categories
+        if mapping.get("limitations"):
+            rendered["limitations"] = mapping["limitations"]
+        self._render_structured_section(lines, "Security Intelligence", rendered)
+        finding_count = self._first_present(
+            mapping,
+            "finding_count",
+            "total_finding_count",
+        )
+        if (
+            mapping.get("status") in ("available", "partial")
+            and finding_count == 0
+        ):
+            lines.append(
+                "No structured findings were reported within the analyzed scope; "
+                "this does not establish that the repository is secure."
+            )
 
     def _render_pr133_report(
         self,

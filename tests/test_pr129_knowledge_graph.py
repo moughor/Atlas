@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from moughorai.ai_context import WorkspaceContextBuilder
 from moughorai.ai_context import AnalyzerRegistry
 from moughorai.ai_context.persistence import (
@@ -155,6 +157,40 @@ def test_unified_graph_serialization_is_deterministic_and_pr125_compatible() -> 
     assert restored.outgoing("type:service", KnowledgeRelation.IMPORTS)
     assert restored.get("type:service").symbol_id is not None
     assert restored.to_dict() == first
+
+
+def test_serialized_graph_digest_preserves_canonical_evidence_order() -> None:
+    graph = KnowledgeGraph(
+        (
+            KnowledgeNode("project:demo", KnowledgeKind.PROJECT, "demo"),
+            KnowledgeNode("type:demo", KnowledgeKind.TYPE, "demo.Type"),
+        ),
+        (
+            KnowledgeEdge(
+                "project:demo",
+                "type:demo",
+                KnowledgeRelation.OWNS,
+                ("semantic_graph.project_id:z", "semantic_graph.project_id:a"),
+            ),
+        ),
+    )
+    payload = graph.to_dict()
+
+    assert KnowledgeGraph.stable_payload_digest(payload) == graph.stable_digest()
+
+    evidence = payload["edges"][0]["evidence"]
+    assert isinstance(evidence, list)
+    evidence.reverse()
+    assert KnowledgeGraph.stable_payload_digest(payload) != graph.stable_digest()
+
+    payload["schema_version"] = True
+    with pytest.raises(ValueError, match="schema"):
+        KnowledgeGraph.stable_payload_digest(payload)
+
+    payload = graph.to_dict()
+    payload["nodes"] = tuple(payload["nodes"])
+    with pytest.raises(TypeError, match="nodes and edges"):
+        KnowledgeGraph.stable_payload_digest(payload)
 
 
 def test_workspace_context_publishes_enriched_source_free_graph(tmp_path: Path) -> None:

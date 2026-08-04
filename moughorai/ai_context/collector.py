@@ -27,6 +27,12 @@ from moughorai.reachability import ReachabilityAnalysisService
 from moughorai.risk_analysis import RiskAnalysisService
 from moughorai.repository_report import RepositoryReportService
 from moughorai.measurement import MeasurementPhase, MeasurementSession
+from moughorai.security_intelligence import (
+    SecurityCapabilityState,
+    SecurityIntelligenceRequest,
+    SecurityIntelligenceService,
+    SecurityProducerReport,
+)
 
 from .models import WorkspaceSemanticContext
 from .service import WorkspaceContextBuilder
@@ -72,6 +78,7 @@ class SemanticContextCollector:
         declared_dependencies: list[DeclaredDependency] = []
         java_architecture_graphs: dict[str, JavaArchitectureGraph] = {}
         call_graphs: dict[str, CallGraph] = {}
+        security_producer_reports: list[SecurityProducerReport] = []
         with self.measurement.scope(
             MeasurementPhase.SYMBOL_EXTRACTION,
             consumer="semantic-collector",
@@ -91,6 +98,7 @@ class SemanticContextCollector:
                     symbols,
                     java_architecture_graphs,
                     call_graphs,
+                    security_producer_reports,
                 ):
                     projects_with_symbols.add(run.project)
             self._collect_java_sources(
@@ -152,6 +160,47 @@ class SemanticContextCollector:
             scope.set_objects_retained(
                 len(knowledge_graph.nodes) + len(knowledge_graph.edges)
             )
+        graph_digest = knowledge_graph.stable_digest()
+        with self.measurement.scope(
+            "security_intelligence.consolidation",
+            consumer="semantic-collector",
+            sample_key="workspace",
+        ) as scope:
+            # Keep semantic-snapshot imports acyclic while the AI context package
+            # initializes; the resolver is needed only for this optional phase.
+            from moughorai.subject_resolution import CanonicalSubjectResolver
+
+            resolver = CanonicalSubjectResolver(
+                knowledge_graph,
+                symbols=context_data["symbols"],
+                graph_digest=graph_digest,
+            )
+            security_service = SecurityIntelligenceService(
+                resolver,
+                snapshot_id=f"semantic-graph:{graph_digest}",
+                measurement=self.measurement,
+            )
+            try:
+                security_intelligence = security_service.analyze(
+                    SecurityIntelligenceRequest(limit=10_000),
+                    producer_reports=tuple(security_producer_reports),
+                )
+            except (TypeError, ValueError, OverflowError):
+                security_intelligence = SecurityIntelligenceService(
+                    resolver,
+                    snapshot_id=f"semantic-graph:{graph_digest}",
+                    measurement=self.measurement,
+                    limitations=(
+                        "Security producer consolidation was incompatible or "
+                        "exceeded its deterministic work bound.",
+                    ),
+                    unavailable_state=SecurityCapabilityState.INCOMPATIBLE,
+                ).analyze(SecurityIntelligenceRequest(limit=10_000))
+            scope.add_units(len(security_producer_reports))
+            scope.add_objects_produced(len(security_intelligence.findings))
+            scope.set_objects_retained(len(security_intelligence.findings))
+            context_data["security_intelligence"] = security_intelligence.to_dict()
+            del security_intelligence
         with self.measurement.scope(
             "design_patterns.analysis",
             consumer="semantic-collector",
@@ -249,6 +298,7 @@ class SemanticContextCollector:
         symbols: GlobalSymbolDatabase,
         java_architecture_graphs: dict[str, JavaArchitectureGraph],
         call_graphs: dict[str, CallGraph],
+        security_producer_reports: list[SecurityProducerReport],
     ) -> bool:
         if isinstance(value, SemanticDocument):
             diagnostics.setdefault(project, []).extend(value.diagnostics)
@@ -260,6 +310,9 @@ class SemanticContextCollector:
             call_graph = value.get_artifact("call_graph")
             if isinstance(call_graph, CallGraph):
                 call_graphs[project] = call_graph
+            security_report = value.get_artifact("security_producer_report")
+            if isinstance(security_report, SecurityProducerReport):
+                security_producer_reports.append(security_report)
             raw_symbols = value.get_artifact("global_symbols")
             if raw_symbols is not None:
                 self._add_unique(symbols, raw_symbols)
@@ -274,6 +327,9 @@ class SemanticContextCollector:
         if isinstance(raw_types, TypeTable) and len(raw_types):
             types[project] = raw_types
         raw_symbols = self._field(value, "symbols")
+        raw_security_report = self._field(value, "security_producer_report")
+        if isinstance(raw_security_report, SecurityProducerReport):
+            security_producer_reports.append(raw_security_report)
         if raw_symbols is not None:
             self._add_unique(symbols, raw_symbols)
             return True

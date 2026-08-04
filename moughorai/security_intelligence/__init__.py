@@ -1,0 +1,51 @@
+"""PR138 deterministic security-intelligence public package."""
+
+from .models import (
+    LegacyConfidence,
+    SECURITY_INTELLIGENCE_PRODUCER,
+    SECURITY_INTELLIGENCE_SCHEMA_VERSION,
+    SECURITY_INTELLIGENCE_SNAPSHOT_KEY,
+    SecurityCapability,
+    SecurityCapabilityState,
+    SecurityCategory,
+    SecurityIntelligenceFinding,
+    SecurityIntelligenceReport,
+    SecurityIntelligenceRequest,
+    SecurityLocation,
+    SecurityPriority,
+    SecurityPriorityComponent,
+    SecurityPriorityTier,
+    SecurityProducerFinding,
+    SecurityProducerReport,
+    SecurityScope,
+    SecuritySeverity,
+    priority_tier,
+    security_category_for_rule,
+)
+from .renderer import render_security_intelligence
+from .service import SecurityIntelligenceService
+
+__all__ = [
+    "LegacyConfidence",
+    "SECURITY_INTELLIGENCE_PRODUCER",
+    "SECURITY_INTELLIGENCE_SCHEMA_VERSION",
+    "SECURITY_INTELLIGENCE_SNAPSHOT_KEY",
+    "SecurityCapability",
+    "SecurityCapabilityState",
+    "SecurityCategory",
+    "SecurityIntelligenceFinding",
+    "SecurityIntelligenceReport",
+    "SecurityIntelligenceRequest",
+    "SecurityIntelligenceService",
+    "SecurityLocation",
+    "SecurityPriority",
+    "SecurityPriorityComponent",
+    "SecurityPriorityTier",
+    "SecurityProducerFinding",
+    "SecurityProducerReport",
+    "SecurityScope",
+    "SecuritySeverity",
+    "priority_tier",
+    "render_security_intelligence",
+    "security_category_for_rule",
+]

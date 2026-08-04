@@ -20,6 +20,11 @@ from moughorai.refactoring_advisor import (
     RefactoringRequest,
     RefactoringResponse,
 )
+from moughorai.security_intelligence import (
+    SecurityIntelligenceReport,
+    SecurityIntelligenceRequest,
+    SecurityIntelligenceService,
+)
 from moughorai.plugin_sdk import PluginContext, PluginManifest, PluginRegistry
 from moughorai.project_index import PersistentProjectIndex, ProjectFileIndexer
 from moughorai.rule_sdk import RuleContext, RuleFinding, RuleRegistry, RuleRunner
@@ -55,6 +60,9 @@ PUBLIC_API_SIGNATURES: Mapping[str, str] = {
     "RefactoringAdvisorService": "(resolver: 'CanonicalSubjectResolver', *, snapshot_id: 'str', analyzer_version: 'str', semantic_context: 'Mapping[str, object]', measurement: 'MeasurementSession | None' = None, confidence: 'ConfidenceCalculator | None' = None) -> 'None'",
     "RefactoringRequest": "(subject: 'SubjectQuery' = <factory>, families: 'tuple[RefactoringFamily, ...]' = (), limit: 'int' = 20, include_impact: 'bool' = True, impact_depth: 'int' = 4) -> None",
     "RefactoringResponse": "(request: 'RefactoringRequest', resolution: 'SubjectResolution', advice: 'tuple[RefactoringAdvice, ...]', capabilities: 'tuple[RefactoringCapability, ...]', evidence_index: 'EvidenceIndex', input_fingerprint: 'str', graph_digest: 'str', lineage: 'str', total_candidate_count: 'int' = 0, omitted_count: 'int' = 0, truncated: 'bool' = False, limitations: 'tuple[str, ...]' = (), visited_node_count: 'int' = 0, visited_edge_count: 'int' = 0, producer_version: 'str' = 'atlas-pr137/1', schema_version: 'int' = 1) -> None",
+    "SecurityIntelligenceReport": "(request: 'SecurityIntelligenceRequest', findings: 'tuple[SecurityIntelligenceFinding, ...]', capabilities: 'tuple[SecurityCapability, ...]', evidence_index: 'EvidenceIndex', input_fingerprint: 'str', graph_digest: 'str', snapshot_id: 'str', total_finding_count: 'int', omitted_count: 'int' = 0, truncated: 'bool' = False, limitations: 'tuple[str, ...]' = (), producer: 'str' = 'atlas-pr138/1', schema_version: 'int' = 1) -> None",
+    "SecurityIntelligenceRequest": "(scope: 'SecurityScope' = <SecurityScope.REPOSITORY: 'repository'>, projects: 'tuple[str, ...]' = (), languages: 'tuple[str, ...]' = (), categories: 'tuple[SecurityCategory, ...]' = (), severities: 'tuple[SecuritySeverity, ...]' = (), limit: 'int' = 100, canonical_subject_ids: 'tuple[str, ...]' = ()) -> None",
+    "SecurityIntelligenceService": "(resolver: 'CanonicalSubjectResolver | None', *, snapshot_id: 'str' = 'unavailable', analyzer_version: 'str | None' = None, measurement: 'MeasurementSession | None' = None, published_report: 'SecurityIntelligenceReport | None' = None, limitations: 'Iterable[str]' = (), unavailable_state: 'SecurityCapabilityState' = <SecurityCapabilityState.NOT_ANALYZED: 'not_analyzed'>) -> 'None'",
     "ResolvedConfiguration": "(values: 'Mapping[str, Any]', provenance: 'Mapping[str, str]', layers: 'tuple[str, ...]') -> None",
     "RuleContext": "(path: 'Path', source: 'str', language: 'str', configuration: 'Mapping[str, Any]') -> None",
     "RuleFinding": "(rule_id: 'str', message: 'str', severity: 'RuleSeverity', location: 'RuleLocation', data: 'tuple[tuple[str, Any], ...]' = ()) -> None",
@@ -110,6 +118,9 @@ __all__ = [
     "RefactoringAdvisorService",
     "RefactoringRequest",
     "RefactoringResponse",
+    "SecurityIntelligenceReport",
+    "SecurityIntelligenceRequest",
+    "SecurityIntelligenceService",
     "ResolvedConfiguration",
     "RuleContext",
     "RuleFinding",

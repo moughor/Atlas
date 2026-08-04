@@ -251,7 +251,7 @@ def test_pre_m21_semantic_checkpoint_producer_is_invalidated(
 ) -> None:
     service = make_service(tmp_path)
     previous = ANALYSIS_RESULT_PRODUCER_FINGERPRINT.replace(
-        "workspace-analysis-result-v5",
+        "workspace-analysis-result-v6",
         "workspace-analysis-result-v4",
     )
     WorkspaceRecoveryManager(
@@ -265,8 +265,30 @@ def test_pre_m21_semantic_checkpoint_producer_is_invalidated(
     report = WorkspaceRecoveryManager(service).inspect()
 
     assert ANALYSIS_RESULT_PRODUCER_FINGERPRINT.endswith(
-        "workspace-analysis-result-v5"
+        "workspace-analysis-result-v6"
     )
+    assert report.invalidated
+    assert report.invalidation_reason == "analysis producer changed"
+
+
+def test_pre_pr138_semantic_checkpoint_producer_is_invalidated(
+    tmp_path: Path,
+) -> None:
+    service = make_service(tmp_path)
+    previous = ANALYSIS_RESULT_PRODUCER_FINGERPRINT.replace(
+        "workspace-analysis-result-v6",
+        "workspace-analysis-result-v5",
+    )
+    WorkspaceRecoveryManager(
+        service,
+        producer_fingerprint=previous,
+    ).execute(
+        WorkspaceAnalysisOrchestrator(service),
+        lambda project, dependencies: project.name,
+    )
+
+    report = WorkspaceRecoveryManager(service).inspect()
+
     assert report.invalidated
     assert report.invalidation_reason == "analysis producer changed"
 

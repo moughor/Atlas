@@ -17,6 +17,11 @@ from moughorai.refactoring_advisor import (
     RefactoringRequest,
     RefactoringResponse,
 )
+from moughorai.security_intelligence import (
+    SecurityIntelligenceReport,
+    SecurityIntelligenceRequest,
+    SecurityIntelligenceService,
+)
 from moughorai.semantic_search import (
     SemanticSearchRequest,
     SemanticSearchResponse,
@@ -39,6 +44,9 @@ def test_public_facade_preserves_existing_type_identity() -> None:
     assert public_api.RefactoringAdvisorService is RefactoringAdvisorService
     assert public_api.RefactoringRequest is RefactoringRequest
     assert public_api.RefactoringResponse is RefactoringResponse
+    assert public_api.SecurityIntelligenceReport is SecurityIntelligenceReport
+    assert public_api.SecurityIntelligenceRequest is SecurityIntelligenceRequest
+    assert public_api.SecurityIntelligenceService is SecurityIntelligenceService
     assert public_api.SubjectQuery is SubjectQuery
 
 

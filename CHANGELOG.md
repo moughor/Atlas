@@ -1,5 +1,31 @@
 # Changelog
 
+## PR138 deterministic security intelligence
+
+- Began the official PR138 Security Intelligence roadmap item with a deliberately
+  partial Java slice; PR138 does not continue or complete the partial PR137
+  Refactoring Advisor item.
+- Reused selected Java source already held by the normal language-analysis pass and
+  the existing `JavaSecurityAnalyzer`, then consolidated its bounded findings against
+  PR129 canonical identity with PR130 evidence and confidence and PR134 resolution.
+- Added explicit `analyzed`, `partial`, `not_analyzed`, and `incompatible` category
+  states for secrets, SQL injection, weak cryptography, path traversal, SSRF, XSS,
+  unsafe deserialization, unsafe reflection, and general taint; zero findings never
+  means that a scope is secure.
+- Added additive, source-free `semantic_context.security_intelligence` persistence,
+  strict deterministic serialization and lineage validation, bounded evidence and
+  request work, and v6 analysis-result producer invalidation for recovery safety.
+- Added snapshot-only `atlas security` human and canonical JSON queries with
+  repository/project/symbol scopes, project/language/category/severity filters,
+  deterministic limits, priority details, and opt-in M2 measurement.
+- Added a bounded aggregate Security Intelligence section to the provider-free
+  default repository explanation while preserving the accepted rendering of
+  snapshots that predate the PR138 field.
+- Preserved all specialized security, taint, CI, SARIF, LSP, policy, and incremental
+  APIs. XSS, project-wide interprocedural and cross-project taint, non-Java producers,
+  PR136 blast-radius enrichment, runtime testing, feeds, and automatic fixes remain
+  explicitly unavailable or deferred.
+
 ## PR137 deterministic refactoring advisor
 
 - Added a conservative first PR137 slice that turns only fully revalidated PR128

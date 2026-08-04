@@ -19,7 +19,7 @@ from .service import WorkspaceService
 
 STATE_SCHEMA_VERSION = 1
 ANALYSIS_RESULT_PRODUCER_FINGERPRINT = (
-    f"atlas/{__version__}:workspace-analysis-result-v5"
+    f"atlas/{__version__}:workspace-analysis-result-v6"
 )
 _LEGACY_PRODUCER_FINGERPRINT = "atlas/legacy:unversioned-analysis-result"
 

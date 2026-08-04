@@ -16,6 +16,7 @@ from moughorai.java_architecture import (
     JavaArchitectureGraph,
     UnresolvedArchitectureReference,
 )
+from moughorai.security_intelligence import SecurityProducerReport
 
 
 _DOCUMENT_MARKER = "atlas.semantic-document.v1"
@@ -25,7 +26,7 @@ def encode_analysis_result(value: Any) -> Any:
     """Encode Atlas semantic results while preserving legacy analyzer values."""
     if not isinstance(value, SemanticDocument):
         return value
-    return {
+    encoded = {
         "$type": _DOCUMENT_MARKER,
         "language": value.language,
         "metadata": dict(value.metadata),
@@ -55,6 +56,12 @@ def encode_analysis_result(value: Any) -> Any:
             value.get_artifact("java_architecture_graph")
         ),
     }
+    security_report = _encode_security_producer_report(
+        value.get_artifact("security_producer_report")
+    )
+    if security_report is not None:
+        encoded["security_producer_report"] = security_report
+    return encoded
 
 
 def decode_analysis_result(value: Any) -> Any:
@@ -96,6 +103,14 @@ def decode_analysis_result(value: Any) -> Any:
             "java_architecture_graph",
             _decode_java_architecture(raw_architecture),
         )
+    if "security_producer_report" in value:
+        raw_security_report = value["security_producer_report"]
+        if not isinstance(raw_security_report, Mapping):
+            raise TypeError("security_producer_report must be an object")
+        document = document.with_artifact(
+            "security_producer_report",
+            SecurityProducerReport.from_dict(raw_security_report),
+        )
     return document.with_diagnostics(
         Diagnostic(
             code=str(item["code"]),
@@ -122,6 +137,12 @@ def _encode_symbol(symbol: GlobalSymbol) -> dict[str, Any]:
     if symbol.scope_id is not None:
         result["scope_id"] = symbol.scope_id
     return result
+
+
+def _encode_security_producer_report(value: object) -> dict[str, object] | None:
+    if not isinstance(value, SecurityProducerReport):
+        return None
+    return value.to_dict()
 
 
 def _decode_symbol(value: Mapping[str, Any]) -> GlobalSymbol:

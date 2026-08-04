@@ -68,12 +68,26 @@ unsupported capabilities. It
 does not generate patches or infer recommendations from names or an LLM. See
 [`docs/PR137_REFACTORING_ADVISOR.md`](docs/PR137_REFACTORING_ADVISOR.md).
 
-The current repository includes completed work through the safe first slice of
-PR137. Recent repository
+PR138 begins the next official roadmap item, Security Intelligence; it does not
+extend or complete PR137. Its first safe slice reuses the existing Java security
+adapter while each selected source is already in memory, consolidates the resulting
+evidence against PR129 canonical identities, and publishes a bounded source-free
+`security_intelligence` snapshot section. `atlas security` queries only a verified
+snapshot and supports deterministic repository, project, and symbol scopes without
+rescanning source. The default repository explanation includes compact category,
+severity, confidence, evidence-reference, and limitation counts. XSS,
+interprocedural and cross-project taint, non-Java producers, and PR136 blast-radius
+enrichment remain explicitly unavailable or deferred. See
+[`docs/PR138_SECURITY_INTELLIGENCE.md`](docs/PR138_SECURITY_INTELLIGENCE.md).
+
+The current repository includes implemented work through the safe first slice of
+PR138. PR137 Refactoring Advisor and PR138 Security Intelligence both remain
+deliberately partial roadmap items. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
 reachability, deterministic risk/hotspot indicators, bounded executive reports, and
-canonical subject explanations, search, and impact prediction.
+canonical subject explanations, search, impact prediction, refactoring advice, and
+security intelligence.
 
 ## Install
 
@@ -89,6 +103,8 @@ atlas impact "com.example.UserService" . --change signature
 atlas impact "dependency:maven:example" . --json
 atlas refactor . --subject repository --no-impact
 atlas refactor . --subject project:example --family cycle-breaking --json
+atlas security .
+atlas security . --scope project --project example --category sql-injection --json
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from
@@ -123,6 +139,8 @@ from moughorai.public_api import (
     Project,
     RefactoringAdvisorService,
     RefactoringRequest,
+    SecurityIntelligenceRequest,
+    SecurityIntelligenceService,
     SemanticSearchRequest,
     SemanticSearchService,
     SubjectQuery,
@@ -148,6 +166,7 @@ atlas ai explain . --profile
 atlas search "dependency injection" . --profile
 atlas impact "com.example.UserService" . --profile
 atlas refactor . --profile
+atlas security . --profile
 ```
 
 The default sidecar is `.atlas/measurements/latest.json`; a compact summary is written

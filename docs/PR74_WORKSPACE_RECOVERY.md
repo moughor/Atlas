@@ -100,6 +100,11 @@ and PR70 state remain readable, but v4 payloads are deliberately invalidated bec
 an interrupted semantic checkpoint could contain report metadata instead of the full
 encoded analysis result.
 
+PR138 subsequently advances the fingerprint to v6 because recovered Java semantic
+documents must contain the new source-free security producer artifact. Valid v5
+payloads remain readable at the envelope level but are invalidated for reuse so an
+old completed project cannot be presented as newly security-analyzed.
+
 ## Run-scoped verification snapshot
 
 Recovery freshness is still verified with content hashes, never with filenames,

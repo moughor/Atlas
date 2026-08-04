@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sized
+from collections.abc import Iterable, Mapping, Sized
 from dataclasses import dataclass, replace
+from itertools import chain
 from pathlib import Path
 import re
 from threading import RLock
@@ -17,6 +18,7 @@ from moughorai.java_architecture import (
     JavaArchitectureGraph,
     JavaArchitectureService,
 )
+from moughorai.java_security import JavaSecurityAnalyzer
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
 from moughorai.java_symbols import (
     DuplicateTypeError,
@@ -30,6 +32,7 @@ from moughorai.java_workspace.source_selection import (
 )
 from moughorai.measurement import MeasurementPhase, MeasurementSession
 from moughorai.python_semantics import PythonSemanticAnalyzer
+from moughorai.security_intelligence import SecurityProducerReport
 from moughorai.semantic import Diagnostic, DiagnosticSeverity, SemanticDocument
 from moughorai.semantic.types import TypeTable
 from moughorai.workspace import GRADLE_SETTINGS_MEMBERSHIP_OPTION, Project
@@ -243,12 +246,14 @@ class JavaLanguageAnalyzer:
         architecture: JavaArchitectureService | None = None,
         workspace_scanner: JavaWorkspaceScanner | None = None,
         measurement: MeasurementSession | None = None,
+        security_analyzer: JavaSecurityAnalyzer | None = None,
     ) -> None:
         self._parser = parser or JavaParser()
         self._symbol_builder = symbol_builder or JavaSymbolIndexBuilder()
         self._global_builder = global_builder or GlobalSymbolDatabaseBuilder()
         self._architecture = architecture or JavaArchitectureService()
         self._workspace_scanner = workspace_scanner or JavaWorkspaceScanner()
+        self._security_analyzer = security_analyzer or JavaSecurityAnalyzer()
         self.measurement = measurement or MeasurementSession()
 
     def analyze(self, project, paths, dependencies) -> SemanticDocument:
@@ -300,9 +305,19 @@ class JavaLanguageAnalyzer:
                 ))
         units: list[object] = []
         sources: list[Path] = []
+        security_findings: tuple[object, ...] = ()
+        security_omitted_findings = 0
+        security_warning_count = 0
+        security_source_files = 0
+        security_read_failures = 0
+        security_path_failures = 0
+        security_analysis_failures = 0
+        project_root = project.path.resolve()
         for path in paths:
+            source_loaded = False
             try:
                 source = path.read_text(encoding="utf-8-sig")
+                source_loaded = True
                 if self.measurement.filesystem.enabled:
                     self.measurement.filesystem.file_content_read_unknown_size(
                         "java-analyzer",
@@ -310,16 +325,88 @@ class JavaLanguageAnalyzer:
                     )
                     self.measurement.filesystem.language_parsed("java-analyzer")
                 try:
+                    try:
+                        security_path = path.resolve().relative_to(
+                            project_root
+                        ).as_posix()
+                    except (OSError, ValueError):
+                        security_path_failures += 1
+                        security_warning_count += 1
+                    else:
+                        try:
+                            security_report = self._security_analyzer.analyze_source(
+                                source,
+                                security_path,
+                            )
+                            if security_report.findings:
+                                normalized_findings, omitted_findings = (
+                                    SecurityProducerReport.normalize_findings(
+                                        chain(
+                                            security_findings,
+                                            security_report.findings,
+                                        )
+                                    )
+                                )
+                            else:
+                                # The existing bounded set is already normalized;
+                                # avoid copying and sorting it again for the common
+                                # no-finding file case.
+                                normalized_findings = security_findings
+                                omitted_findings = 0
+                            file_security_warning_count = len(
+                                security_report.warnings
+                            )
+                        except Exception:
+                            # Security intelligence is an additive producer. A
+                            # producer failure must not fail the language frontend.
+                            security_analysis_failures += 1
+                            security_warning_count += 1
+                        else:
+                            security_source_files += 1
+                            security_findings = normalized_findings
+                            security_omitted_findings += omitted_findings
+                            security_warning_count += file_security_warning_count
                     unit = self._parser.parse_source(source)
                 finally:
                     del source
                 units.append(unit)
                 sources.append(path)
             except (OSError, UnicodeError, ValueError) as exc:
+                if not source_loaded:
+                    security_read_failures += 1
+                    security_warning_count += 1
                 diagnostics.append(Diagnostic(
                     "ATLAS-JAVA-PARSE", str(exc), DiagnosticSeverity.ERROR,
                     location=path, pass_name="java-language-analyzer",
                 ))
+        security_limitations = [
+            "Java security evidence is file-local; inter-file and cross-project "
+            "flows are not analyzed by this producer."
+        ]
+        if security_read_failures:
+            security_limitations.append(
+                "Java security analysis skipped "
+                f"{security_read_failures} selected source file(s) that could "
+                "not be read."
+            )
+        if security_path_failures:
+            security_limitations.append(
+                "Java security analysis skipped "
+                f"{security_path_failures} source file(s) whose project-relative "
+                "path could not be established."
+            )
+        if security_analysis_failures:
+            security_limitations.append(
+                "Java security analysis failed for "
+                f"{security_analysis_failures} selected source file(s)."
+            )
+        if security_omitted_findings:
+            security_warning_count += 1
+            security_limitations.append(
+                "Java security producers exceeded the per-project finding bound; "
+                f"retained 4096 deterministic findings and omitted "
+                f"{security_omitted_findings}."
+            )
         with self.measurement.scope(
             MeasurementPhase.SYMBOL_EXTRACTION,
             consumer="java-analyzer",
@@ -356,9 +443,26 @@ class JavaLanguageAnalyzer:
                     location=None,
                     pass_name="java-language-analyzer",
                 ))
+                partial_security_report = _build_security_producer_report(
+                    project_id=project.name,
+                    language="java",
+                    findings=security_findings,
+                    source_files=security_source_files,
+                    warning_count=security_warning_count,
+                    producer_version="atlas-java-security/1",
+                    limitations=tuple(sorted({
+                        *security_limitations,
+                        "Gradle source sets were analyzed independently; "
+                        "cross-source-set security flows are unavailable.",
+                    })),
+                )
                 return (
                     SemanticDocument("java", "", isolated_units)
                     .with_artifact("global_symbols", symbols)
+                    .with_artifact(
+                        "security_producer_report",
+                        partial_security_report,
+                    )
                     .with_diagnostics(diagnostics)
                 )
             symbols = _scope_symbols(
@@ -378,11 +482,24 @@ class JavaLanguageAnalyzer:
             scope.add_objects_produced(len(architecture.nodes) + len(architecture.edges))
             scope.set_objects_retained(len(architecture.nodes) + len(architecture.edges))
         symbols = _with_java_relations(symbols, index, architecture)
+        security_producer_report = _build_security_producer_report(
+            project_id=project.name,
+            language="java",
+            findings=security_findings,
+            source_files=security_source_files,
+            warning_count=security_warning_count,
+            producer_version="atlas-java-security/1",
+            limitations=tuple(sorted(set(security_limitations))),
+        )
         document = SemanticDocument("java", "", tuple(units))
         return (
             document
             .with_artifact("global_symbols", symbols)
             .with_artifact("java_architecture_graph", architecture)
+            .with_artifact(
+                "security_producer_report",
+                security_producer_report,
+            )
             .with_diagnostics(diagnostics)
         )
 
@@ -605,6 +722,44 @@ class TypeScriptLanguageAnalyzer:
             "global_symbols",
             tuple(sorted(symbols, key=lambda item: (item.qualified_name, item.kind.value))),
         ).with_diagnostics(diagnostics)
+
+
+def _build_security_producer_report(
+    *,
+    project_id: str,
+    language: str,
+    findings: Iterable[object],
+    source_files: int,
+    warning_count: int,
+    producer_version: str,
+    limitations: Iterable[str],
+) -> SecurityProducerReport:
+    """Normalize additive security output without failing Java semantics."""
+
+    normalized_limitations = tuple(limitations)
+    try:
+        return SecurityProducerReport.from_findings(
+            findings,
+            project_id=project_id,
+            language=language,
+            source_files=source_files,
+            warning_count=warning_count,
+            producer_version=producer_version,
+            limitations=normalized_limitations,
+        )
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return SecurityProducerReport.from_findings(
+            (),
+            project_id=project_id,
+            language=language,
+            source_files=source_files,
+            warning_count=warning_count + 1,
+            producer_version=producer_version,
+            limitations=(*normalized_limitations, (
+                "Security producer result normalization failed; findings from "
+                "this project were omitted."
+            )),
+        )
 
 
 def _normalize_extension(value: str) -> str:

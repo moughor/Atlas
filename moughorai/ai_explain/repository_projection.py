@@ -13,6 +13,11 @@ from moughorai.repository_report import (
     RepositoryReportContextSelector,
 )
 from moughorai.repository_report.safety import contains_absolute_path_text
+from moughorai.security_intelligence import (
+    SecurityIntelligenceReport,
+    SecurityIntelligenceRequest,
+    SecurityIntelligenceService,
+)
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 from moughorai.workspace import GRADLE_SETTINGS_MEMBERSHIP_OPTION
 
@@ -31,6 +36,7 @@ class RepositoryExplanationProjector:
     MAX_RISK_HOTSPOTS = 10
     MAX_RISK_FACTORS = 7
     MAX_RISK_EVIDENCE_RECORDS = 30
+    MAX_SECURITY_CATEGORIES = 20
     MAX_EVIDENCE_IDS = 3
 
     _WEAK_ARCHITECTURE_EVIDENCE = frozenset({
@@ -159,6 +165,18 @@ class RepositoryExplanationProjector:
             "repository_report": repository_report,
             "limitations": limitations,
         }
+        # A missing key identifies a pre-PR138 snapshot. Omitting the projection
+        # preserves its accepted deterministic explanation byte-for-byte; a
+        # present but malformed key is still reported explicitly as unavailable.
+        if "security_intelligence" in source:
+            validated_security = SecurityIntelligenceService.from_snapshot(
+                snapshot
+            ).analyze(SecurityIntelligenceRequest(limit=10_000))
+            projected["security_intelligence"] = (
+                self.compact_security_intelligence(
+                    validated_security.to_dict()
+                )
+            )
         return WorkspaceSemanticContext(self._source_free_projection(projected))
 
     def compact_summary(
@@ -652,6 +670,132 @@ class RepositoryExplanationProjector:
             ),
             "capabilities": capabilities,
             "limitations": limitations,
+        }
+
+    @classmethod
+    def compact_security_intelligence(cls, value: object) -> dict[str, object]:
+        """Select the producer-bounded, source-free PR138 AI projection."""
+
+        if not isinstance(value, Mapping):
+            return {
+                "status": "unavailable",
+                "limitations": [
+                    "Structured security intelligence is unavailable in this snapshot."
+                ],
+            }
+        try:
+            report = SecurityIntelligenceReport.from_dict(value)
+            context = report.to_ai_context()
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return {
+                "status": "unavailable",
+                "limitations": [
+                    "The persisted security intelligence is malformed or uses an "
+                    "unsupported schema; no security conclusion is inferred."
+                ],
+            }
+        if not isinstance(context, Mapping):
+            return {
+                "status": "unavailable",
+                "limitations": [
+                    "The persisted security intelligence did not produce a compatible "
+                    "bounded AI context; no security conclusion is inferred."
+                ],
+            }
+        capabilities = {
+            str(item.get("category")): item
+            for item in cls._mapping_records(context.get("capabilities"))
+            if item.get("category") is not None
+        }
+        findings_by_category: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for item in cls._mapping_records(context.get("findings")):
+            if item.get("category") is not None:
+                findings_by_category[str(item["category"])].append(item)
+        category_names = sorted(set(capabilities) | set(findings_by_category))
+        categories = []
+        for category in category_names[: cls.MAX_SECURITY_CATEGORIES]:
+            capability = capabilities.get(category, {})
+            findings = findings_by_category.get(category, [])
+            severity_counts = Counter(
+                str(item.get("severity", "unknown")) for item in findings
+            )
+            confidence_scores = []
+            confidence_tiers: Counter[str] = Counter()
+            for item in findings:
+                confidence = item.get("confidence")
+                if not isinstance(confidence, Mapping):
+                    continue
+                score = cls._optional_float(confidence.get("score"))
+                if score is not None:
+                    confidence_scores.append(score)
+                confidence_tiers[str(confidence.get("tier", "unknown"))] += 1
+            source_limitation_count = sum(
+                len(cls._sequence(item.get("limitations")))
+                for item in (capability, *findings)
+            )
+            state = str(capability.get("state", "unknown"))
+            limitations = {
+                "partial": (
+                    "Structured security coverage for this category is partial."
+                ),
+                "not_analyzed": (
+                    "Structured security analysis for this category was not executed."
+                ),
+                "incompatible": (
+                    "Structured security data for this category is incompatible."
+                ),
+                "unknown": (
+                    "Structured security capability state is unavailable."
+                ),
+            }.get(state)
+            categories.append({
+                "category": category,
+                "state": state,
+                "finding_count": (
+                    cls._optional_int(capability.get("finding_count"))
+                    if capability else None
+                ),
+                "included_finding_count": len(findings),
+                "included_severity_counts": dict(sorted(severity_counts.items())),
+                "included_confidence": {
+                    "status": "available" if confidence_scores else "unavailable",
+                    "minimum_score": min(confidence_scores) if confidence_scores else None,
+                    "maximum_score": max(confidence_scores) if confidence_scores else None,
+                    "tier_counts": dict(sorted(confidence_tiers.items())),
+                },
+                "included_evidence_count": sum(
+                    cls._optional_int(item.get("evidence_count")) or 0
+                    for item in findings
+                ) + (cls._optional_int(capability.get("evidence_count")) or 0),
+                "source_limitation_count": source_limitation_count,
+                "limitations": [] if limitations is None else [limitations],
+            })
+        status = str(context.get("status", "unavailable"))
+        source_limitation_count = len(cls._sequence(context.get("limitations")))
+        overall_limitation = {
+            "partial": (
+                "Structured security coverage is partial; unavailable evidence "
+                "must not be inferred."
+            ),
+            "unavailable": "Structured security analysis is unavailable.",
+        }.get(status)
+        return {
+            "status": status,
+            "finding_count": cls._optional_int(context.get("finding_count")) or 0,
+            "included_finding_count": (
+                cls._optional_int(context.get("included_finding_count")) or 0
+            ),
+            "omitted_finding_count": (
+                cls._optional_int(context.get("omitted_finding_count")) or 0
+            ),
+            "category_count": len(category_names),
+            "included_category_count": len(categories),
+            "omitted_category_count": len(category_names) - len(categories),
+            "categories": categories,
+            "source_limitation_count": source_limitation_count,
+            "limitations": (
+                [] if overall_limitation is None else [overall_limitation]
+            ),
         }
 
     def _inventory(
