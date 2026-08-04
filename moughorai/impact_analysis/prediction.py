@@ -37,6 +37,7 @@ from moughorai.subject_resolution import (
     ResolutionStatus,
     SubjectCandidate,
     SubjectMatchBasis,
+    SubjectQuery,
     SubjectResolution,
 )
 
@@ -270,6 +271,51 @@ class ImpactPredictionService:
             scope.add_objects_produced(len(response.findings))
             scope.set_objects_retained(len(response.findings))
         return response
+
+    def risk_context_for_subject(
+        self,
+        subject: SubjectCandidate,
+    ) -> tuple[ImpactRiskContext | None, EvidenceIndex, ImpactCapability]:
+        """Project compatible PR132 context for one exact canonical subject.
+
+        Impact traversals deliberately exclude their changed roots from findings.
+        Composite consumers that already own an exact canonical subject therefore
+        use this PR136-owned adapter instead of reimplementing PR132 validation or
+        treating a downstream finding's risk as risk on the changed subject.
+        """
+
+        if not isinstance(subject, SubjectCandidate):
+            raise TypeError("impact risk projection requires a canonical subject")
+        projected = self._resolver.candidate_for_graph_id(subject.graph_id)
+        if projected is None or projected.canonical_id != subject.canonical_id:
+            raise ValueError(
+                "impact risk projection subject is not present in the active canonical graph"
+            )
+        request = ImpactPredictionRequest(
+            SubjectQuery(subject.canonical_id, subject.kind),
+            include_risk=True,
+        )
+        evidence = EvidenceIndex()
+        context = self._risk_context(subject, request, evidence)
+        capability = next(
+            item for item in self._capabilities(request) if item.name == "risk"
+        )
+        if (
+            context is None
+            and capability.state is ImpactCapabilityState.AVAILABLE
+        ):
+            capability = ImpactCapability(
+                capability.name,
+                ImpactCapabilityState.PARTIAL,
+                capability.coverage,
+                capability.scopes,
+                capability.evidence_ids,
+                tuple(sorted({
+                    *capability.limitations,
+                    "The compatible PR132 report is bounded to ranked hotspots; absence of this exact subject is unknown, not low risk.",
+                })),
+            )
+        return context, evidence.freeze(), capability
 
     def _predict(self, request: ImpactPredictionRequest) -> ImpactPredictionResponse:
         if not isinstance(request, ImpactPredictionRequest):

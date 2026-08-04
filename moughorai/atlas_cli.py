@@ -73,6 +73,11 @@ from .repository_evolution import (
     RepositoryEvolutionService,
     render_repository_evolution,
 )
+from .technical_debt import (
+    TechnicalDebtRequest,
+    TechnicalDebtService,
+    render_technical_debt,
+)
 from .subject_resolution import SubjectQuery
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
@@ -1122,6 +1127,108 @@ def refactoring_advisor_command(
                         )
                     )
                     rendering.add_units(len(response.advice))
+                    rendering.add_bytes(len(output.encode("utf-8")))
+                    rendering.add_objects_produced(1)
+                    typer.echo(output, nl=False)
+            finally:
+                if profile_target is not None:
+                    _publish_measurement_report(
+                        profile_target,
+                        measurement,
+                        output_kind=(
+                            "default" if profile_output is None else "custom"
+                        ),
+                        memory_requested=profile_memory,
+                        python_memory_requested=profile_python_memory,
+                    )
+
+    _run_command(operation)
+
+
+@app.command("debt")
+def technical_debt_command(
+    root: Annotated[Path, typer.Argument(help="Workspace root containing the semantic snapshot.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Read a specific .ass snapshot instead of latest.ass.")] = None,
+    subject: Annotated[str, typer.Option("--subject", help="Canonical subject ID or exact repository subject name.")] = "repository",
+    kind: Annotated[str | None, typer.Option("--kind", help="Constrain the canonical subject kind.")] = None,
+    project: Annotated[str | None, typer.Option("--project", help="Constrain the owning project.")] = None,
+    language: Annotated[str | None, typer.Option("--language", help="Constrain the analyzer language.")] = None,
+    path_constraint: Annotated[str | None, typer.Option("--path", help="Constrain a workspace-relative subject path.")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=1000, help="Maximum returned debt observations.")] = 20,
+    candidate_limit: Annotated[int, typer.Option("--candidate-limit", min=1, max=256, help="Maximum verified cycle seams evaluated before output ranking.")] = 100,
+    impact_depth: Annotated[int, typer.Option("--impact-depth", min=1, max=64, help="Maximum PR136 represented-impact depth.")] = 4,
+    json_output: Annotated[bool, typer.Option("--json", help="Print canonical deterministic JSON.")] = False,
+    profile: Annotated[bool, typer.Option("--profile", help="Write an opt-in M2 technical-debt measurement sidecar.")] = False,
+    profile_output: Annotated[Path | None, typer.Option("--profile-output", help="Technical-debt measurement JSON path; implies --profile.")] = None,
+    profile_memory: Annotated[bool, typer.Option("--profile-memory", help="Collect best-effort process memory counters; implies --profile.")] = False,
+    profile_python_memory: Annotated[bool, typer.Option("--profile-python-memory", help="Collect Python allocation samples; implies --profile.")] = False,
+) -> None:
+    """Rank evidence-backed dependency-cycle debt observations."""
+
+    def operation() -> None:
+        profile_enabled = (
+            profile
+            or profile_output is not None
+            or profile_memory
+            or profile_python_memory
+        )
+        profile_target = (
+            _measurement_output_path(
+                root.expanduser().resolve(),
+                profile_output,
+                default_name="latest-debt.json",
+            )
+            if profile_enabled else None
+        )
+        with _python_memory_collection(profile_python_memory):
+            measurement = MeasurementSession(MeasurementConfig(
+                enabled=profile_enabled,
+                capture_process_memory=profile_memory,
+                capture_python_memory=profile_python_memory,
+            ))
+            try:
+                selected_kind = (
+                    KnowledgeKind(kind.strip().casefold().replace("-", "_"))
+                    if kind is not None else None
+                )
+                request = TechnicalDebtRequest(
+                    SubjectQuery(
+                        subject,
+                        selected_kind,
+                        project,
+                        language,
+                        path_constraint,
+                    ),
+                    limit=limit,
+                    candidate_limit=candidate_limit,
+                    impact_depth=impact_depth,
+                )
+                try:
+                    loaded = _load_ai_snapshot(
+                        root, snapshot, measurement=measurement,
+                    )
+                except SemanticSnapshotError as exc:
+                    if str(exc).startswith("semantic snapshot not found:"):
+                        raise SemanticSnapshotError(
+                            "semantic snapshot not found; run analysis snapshot creation first"
+                        ) from exc
+                    raise SemanticSnapshotError(
+                        "semantic snapshot could not be loaded or verified"
+                    ) from exc
+                response = TechnicalDebtService.from_snapshot(
+                    loaded, measurement=measurement,
+                ).analyze(request)
+                with measurement.scope(
+                    "technical_debt.render",
+                    consumer="technical-debt",
+                    sample_key=response.input_fingerprint,
+                ) as rendering:
+                    output = (
+                        response.to_json() + "\n"
+                        if json_output
+                        else render_technical_debt(response)
+                    )
+                    rendering.add_units(response.returned_count)
                     rendering.add_bytes(len(output.encode("utf-8")))
                     rendering.add_objects_produced(1)
                     typer.echo(output, nl=False)

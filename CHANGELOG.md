@@ -1,5 +1,31 @@
 # Changelog
 
+## PR142 deterministic technical-debt observations
+
+- Added an ephemeral, cycle-only first slice of the Technical Debt Engine. It
+  consumes fully revalidated PR137 dependency-cycle seams and does not introduce a
+  second graph, resolver, cycle detector, impact engine, risk engine, evidence
+  model, confidence model, persistence layer, cache, or semantic pass.
+- Ranks comparable observations ordinally from bounded PR136 represented impact,
+  with compatible exact-subject PR132 risk used only as context or a deterministic
+  tie-breaker. Missing impact retains the verified observation as explicitly
+  unranked; no composite debt score, effort, urgency, ownership, or remediation
+  safety is invented.
+- Added strict immutable, source-free request/response contracts with deterministic
+  identities, exact evidence closure, explicit capability states, bounded counts,
+  canonical JSON round trips, and stable human rendering.
+- Collapses overlapping-cycle observations that share a directed seam into one item,
+  keeps all evaluated advice IDs and exact equivalent/unevaluated/output-omission counts, and
+  bounds merged advice evidence to six deterministic observations. PR136 impact is
+  retained through one fingerprinted, non-reversible evidence adapter instead of an
+  unbounded copy of path records.
+- Added provider-free `atlas debt` snapshot queries with subject scope, candidate,
+  result, and impact-depth bounds plus opt-in M2 profiling. PR142 adds no ordinary
+  semantic-snapshot field, durable state, or frozen public-v1 API surface.
+- Kept PR131 reachability debt, clone/duplication analysis, production complexity,
+  test-density debt, security-debt classification, evolution timelines, automatic
+  fixes, and PR143 Architectural Drift explicitly deferred.
+
 ## PR141 deterministic repository evolution
 
 - Added an ephemeral, bounded `RepositoryEvolutionService` that compares two

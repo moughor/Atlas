@@ -110,9 +110,17 @@ infers API breakage, security causality, architectural drift, runtime behavior, 
 developer intent. See
 [`docs/PR141_REPOSITORY_EVOLUTION.md`](docs/PR141_REPOSITORY_EVOLUTION.md).
 
-The current repository includes implemented work through PR141. PR137 Refactoring
-Advisor and PR138 Security Intelligence remain deliberately partial roadmap items;
-PR139 consumes only their compatible published capabilities. Recent repository
+PR142 begins the Technical Debt Engine with a deliberately partial, cycle-only
+slice. `atlas debt` ranks only dependency-cycle seams already fully revalidated by
+PR137, using bounded PR136 represented impact and compatible exact-subject PR132
+risk or structured-complexity context when available. It publishes no composite
+debt score and keeps missing impact explicitly unranked; a cycle remains observed
+debt evidence rather than proof of a defect. See
+[`docs/PR142_TECHNICAL_DEBT.md`](docs/PR142_TECHNICAL_DEBT.md).
+
+The current repository includes implemented work through PR142. PR137 Refactoring
+Advisor, PR138 Security Intelligence, and PR142 Technical Debt remain deliberately
+partial roadmap items; PR139 consumes only compatible published capabilities. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
 reachability, deterministic risk/hotspot indicators, bounded executive reports, and
@@ -140,6 +148,8 @@ atlas ai chat "What is the impact of changing UserService?" . --subject UserServ
 atlas change-review . --json
 atlas change-review . --staged --assume-current-snapshot
 atlas evolution . --base-snapshot .atlas/ass/base.ass --head-snapshot .atlas/ass/latest.ass --json
+atlas debt .
+atlas debt . --subject project:example --candidate-limit 50 --json
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from
@@ -204,6 +214,7 @@ atlas refactor . --profile
 atlas security . --profile
 atlas change-review . --profile
 atlas evolution . --base-snapshot .atlas/ass/base.ass --profile
+atlas debt . --profile
 ```
 
 The default sidecar is `.atlas/measurements/latest.json`; a compact summary is written
