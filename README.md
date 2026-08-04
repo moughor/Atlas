@@ -80,9 +80,18 @@ interprocedural and cross-project taint, non-Java producers, and PR136 blast-rad
 enrichment remain explicitly unavailable or deferred. See
 [`docs/PR138_SECURITY_INTELLIGENCE.md`](docs/PR138_SECURITY_INTELLIGENCE.md).
 
-The current repository includes implemented work through the safe first slice of
-PR138. PR137 Refactoring Advisor and PR138 Security Intelligence both remain
-deliberately partial roadmap items. Recent repository
+PR139 adds Interactive Engineering Chat by extending the existing `AskEngine` and
+workspace-scoped conversation memory. `atlas ai ask` and its `atlas ai chat` alias
+resolve and search through PR134--PR135, optionally consume compatible impact,
+refactoring, and security results, build a bounded source-free context, validate
+provider evidence citations, and persist snapshot lineage and recoverable turn state.
+Unavailable or ambiguous capabilities remain explicit; chat never runs analyzers or
+turns missing evidence into a fact. See
+[`docs/PR139_INTERACTIVE_ENGINEERING_CHAT.md`](docs/PR139_INTERACTIVE_ENGINEERING_CHAT.md).
+
+The current repository includes implemented work through PR139. PR137 Refactoring
+Advisor and PR138 Security Intelligence remain deliberately partial roadmap items;
+PR139 consumes only their compatible published capabilities. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
 reachability, deterministic risk/hotspot indicators, bounded executive reports, and
@@ -105,6 +114,8 @@ atlas refactor . --subject repository --no-impact
 atlas refactor . --subject project:example --family cycle-breaking --json
 atlas security .
 atlas security . --scope project --project example --category sql-injection --json
+atlas ai chat "Explain the repository architecture" .
+atlas ai chat "What is the impact of changing UserService?" . --subject UserService --capability impact --json
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from

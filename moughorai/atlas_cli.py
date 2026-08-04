@@ -1141,13 +1141,24 @@ def ai_explain_command(
     _run_command(operation)
 
 
+@ai_app.command("chat")
 @ai_app.command("ask")
 def ai_ask_command(
     question: Annotated[str, typer.Argument(help="Question about the workspace.")],
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
     snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Specific .ass snapshot.")] = None,
+    conversation_id: Annotated[int | None, typer.Option("--conversation", help="Continue one workspace-scoped conversation.")] = None,
+    subject: Annotated[str | None, typer.Option("--subject", help="Canonical subject or exact semantic identity.")] = None,
+    kind: Annotated[str | None, typer.Option("--kind", help="Constrain the canonical subject kind.")] = None,
+    project: Annotated[str | None, typer.Option("--project", help="Constrain the owning project.")] = None,
+    language: Annotated[str | None, typer.Option("--language", help="Constrain the subject language.")] = None,
+    capability: Annotated[list[str] | None, typer.Option("--capability", help="Request impact, refactoring, or security enrichment.")] = None,
+    history_limit: Annotated[int, typer.Option("--history-limit", min=0, help="Maximum prior messages retained in context.")] = 12,
+    result_limit: Annotated[int, typer.Option("--limit", min=1, max=20, help="Maximum findings or semantic hits per capability.")] = 8,
+    maximum_input_tokens: Annotated[int, typer.Option("--max-input-tokens", min=1024, help="Deterministic provider input ceiling.")] = 7000,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the structured grounded response envelope.")] = False,
 ) -> None:
-    """Ask a semantic question about an ASS artifact."""
+    """Ask a grounded engineering question about an ASS artifact."""
     if not question.strip():
         typer.echo("error: question must not be empty", err=True)
         raise typer.Exit(code=2)
@@ -1156,9 +1167,30 @@ def ai_ask_command(
         provider = (_ai_provider_factory or OllamaProvider)()
         try:
             result = AskEngine(LlmClient(provider), memory=ConversationMemoryStore(root)).ask(
-                loaded, AskRequest(question)
+                loaded,
+                AskRequest(
+                    question,
+                    conversation_id,
+                    history_limit,
+                    subject,
+                    kind,
+                    project,
+                    language,
+                    tuple(capability or ()),
+                    maximum_input_tokens,
+                    result_limit,
+                ),
             )
-            typer.echo(result.answer)
+            if json_output:
+                typer.echo(result.to_json())
+            else:
+                typer.echo(result.answer)
+                if not result.grounded:
+                    typer.echo(
+                        "warning: provider grounding citations were incomplete; "
+                        "use --json for validation details",
+                        err=True,
+                    )
         finally:
             close = getattr(provider, "close", None)
             if callable(close):

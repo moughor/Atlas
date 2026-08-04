@@ -1,5 +1,27 @@
 # Changelog
 
+## PR139 interactive engineering chat
+
+- Extended the existing Ask Engine into the single repository-aware chat path; no
+  second analyzer, graph, resolver, semantic-search engine, or confidence/evidence
+  model was introduced.
+- Added deterministic intent selection, PR134 canonical explanation, PR135 semantic
+  search, and optional PR136 impact, PR137 refactoring, and PR138 security context
+  with explicit unavailable, incompatible, ambiguous, and not-requested states.
+- Added bounded whole-section context selection, exact shared-evidence closure,
+  source/secret/path redaction, stale-snapshot history labels, deterministic context
+  digests, and post-provider evidence-citation validation. Provider prose remains
+  outside Atlas's determinism guarantee.
+- Extended the version-1 conversation database additively with recoverable
+  running/completed/failed turn envelopes containing workspace and snapshot lineage,
+  resolved subjects, context digest, selected evidence, truncation, provider/model,
+  and limitations. Existing conversations and messages remain readable.
+- Added `atlas ai chat` as an alias of `atlas ai ask`, plus bounded conversation,
+  subject, capability, and canonical JSON options. Both commands use the same engine.
+- Kept semantic snapshots unchanged and source-free. Chat loads persisted facts and
+  never scans source, executes code, modifies repositories, or synthesizes missing
+  impact, refactoring, security, or call evidence.
+
 ## PR138 deterministic security intelligence
 
 - Began the official PR138 Security Intelligence roadmap item with a deliberately

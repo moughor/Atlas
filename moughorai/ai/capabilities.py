@@ -19,6 +19,7 @@ class AtlasAiCapabilities:
     git_context: bool = True
     ide_protocol: bool = True
     providers: tuple[str, ...] = ("ollama",)
+    engineering_chat: bool = True
 
     @property
     def ready(self) -> bool:

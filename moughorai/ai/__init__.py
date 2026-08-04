@@ -1,6 +1,20 @@
 """Stable public facade for Atlas AI 1.0."""
 
-from moughorai.ai_ask import AskEngine, AskRequest, AskResult
+from moughorai.ai_ask import (
+    AskEngine,
+    AskRequest,
+    AskResult,
+    ChatCapability,
+    ChatCapabilityState,
+    ChatContext,
+    ChatContextSection,
+    ChatEngine,
+    ChatIntent,
+    ChatRequest,
+    ChatResult,
+    ChatSelection,
+    CitationValidation,
+)
 from moughorai.ai_explain import (
     ExplainEngine,
     ExplainRequest,
@@ -26,6 +40,9 @@ __all__ = [
     "ExplanationAvailability", "StructuredExplanation", "StructuredExplanationRequest",
     "ReviewEngine", "ReviewRequest", "ReviewResult",
     "AskEngine", "AskRequest", "AskResult",
+    "ChatEngine", "ChatRequest", "ChatResult", "ChatContext",
+    "ChatContextSection", "ChatCapability", "ChatCapabilityState",
+    "ChatIntent", "ChatSelection", "CitationValidation",
     "PatchEngine", "PatchRequest", "PatchProposal", "GitPatchValidator",
     "GitContext", "GitContextService",
     "IdeAction", "IdeAssistant", "IdeRequest", "IdeResponse", "SupportedIde",
