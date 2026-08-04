@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 import hashlib
 from pathlib import PurePosixPath
+import re
 from types import MappingProxyType
 import unicodedata
 
@@ -18,11 +19,14 @@ from moughorai.repository_report.safety import contains_absolute_path_text
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 
 from .models import (
+    PathCandidateEvidence,
+    PathSubjectCandidates,
     ResolutionStatus,
     SubjectCandidate,
     SubjectMatchBasis,
     SubjectQuery,
     SubjectResolution,
+    _relative_path,
 )
 
 
@@ -30,6 +34,7 @@ class CanonicalSubjectResolver:
     """Resolve structured subjects against one indexed PR129 graph."""
 
     DEFAULT_MAXIMUM_CANDIDATES = 12
+    DEFAULT_MAXIMUM_PATH_CANDIDATES = 128
 
     def __init__(
         self,
@@ -52,6 +57,13 @@ class CanonicalSubjectResolver:
         self._by_normalized: Mapping[str, tuple[KnowledgeNode, ...]] = MappingProxyType({})
         self._simple_names: Mapping[str, str] = MappingProxyType({})
         self._paths: Mapping[str, tuple[str, ...]] = MappingProxyType({})
+        self._path_sources: Mapping[
+            str, Mapping[str, tuple[str, ...]]
+        ] = MappingProxyType({})
+        self._by_path: Mapping[str, tuple[KnowledgeNode, ...]] = MappingProxyType({})
+        self._projects_by_root: Mapping[str, tuple[KnowledgeNode, ...]] = (
+            MappingProxyType({})
+        )
         self._project_scopes: Mapping[str, tuple[str, ...]] = MappingProxyType({})
         self._available_kinds: frozenset[KnowledgeKind] = frozenset()
         if graph is not None:
@@ -272,6 +284,113 @@ class CanonicalSubjectResolver:
             limitations=limitations,
         )
 
+    def candidates_for_path(
+        self,
+        path: str,
+        *,
+        maximum_candidates: int = DEFAULT_MAXIMUM_PATH_CANDIDATES,
+    ) -> PathSubjectCandidates:
+        """Return bounded canonical subjects associated with one exact source path.
+
+        Exact persisted path evidence takes precedence.  When it is absent, the
+        deepest containing canonical project is returned as an explicitly marked
+        structural fallback.  No basename, suffix, or fuzzy-name inference is used.
+        """
+
+        if (
+            isinstance(maximum_candidates, bool)
+            or not isinstance(maximum_candidates, int)
+            or maximum_candidates < 1
+        ):
+            raise ValueError(
+                "maximum path subject candidates must be a positive integer"
+            )
+        normalized_path = _relative_path(path)
+        if self._graph is None:
+            return PathSubjectCandidates(
+                normalized_path,
+                (),
+                0,
+                0,
+                False,
+                self.graph_digest,
+                (
+                    *self.limitations,
+                    (
+                        "Canonical graph is unavailable; exact path association was "
+                        "not performed."
+                    ),
+                ),
+            )
+
+        exact_nodes = self._by_path.get(normalized_path, ())
+        project_fallback = False
+        limitations: tuple[str, ...] = self.limitations
+        nodes = exact_nodes
+        if not nodes:
+            nodes = self._containing_projects(normalized_path)
+            if nodes:
+                project_fallback = True
+                limitations = (
+                    *limitations,
+                    (
+                        "No exact canonical subject source matched; returned the deepest "
+                        "containing project as a structural fallback. Project containment "
+                        "does not identify a changed declaration."
+                    ),
+                )
+            else:
+                limitations = (
+                    *limitations,
+                    (
+                        "No exact canonical subject source or containing canonical project "
+                        "matched this workspace-relative path."
+                    ),
+                )
+
+        ordered = tuple(sorted(set(nodes), key=self._path_node_sort_key))
+        included_nodes = ordered[:maximum_candidates]
+        omitted = len(ordered) - len(included_nodes)
+        if omitted:
+            limitations = (
+                *limitations,
+                (
+                    f"Returned {len(included_nodes)} of {len(ordered)} canonical path "
+                    "candidate(s); remaining candidates were deterministically omitted."
+                ),
+            )
+        elif len(ordered) > 1 and not project_fallback:
+            limitations = (
+                *limitations,
+                (
+                    "The exact path is associated with multiple canonical subjects; "
+                    "path evidence does not identify which declaration a hunk changed."
+                ),
+            )
+        return PathSubjectCandidates(
+            normalized_path,
+            tuple(
+                self._candidate(node, SubjectMatchBasis.PATH)
+                for node in included_nodes
+            ),
+            len(ordered),
+            omitted,
+            project_fallback,
+            self.graph_digest,
+            limitations,
+            tuple(
+                PathCandidateEvidence(
+                    self._public_id(node),
+                    self._candidate_path_sources(
+                        node,
+                        normalized_path,
+                        project_fallback=project_fallback,
+                    ),
+                )
+                for node in included_nodes
+            ),
+        )
+
     def _build_indexes(self, symbols: tuple[Mapping[str, object], ...]) -> None:
         if self._graph is None:
             raise RuntimeError("canonical subject indexes require a graph")
@@ -308,6 +427,9 @@ class CanonicalSubjectResolver:
             }))
         simple_names: dict[str, str] = {}
         paths: dict[str, set[str]] = defaultdict(set)
+        path_sources: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
         for node_id, item in by_symbol_id.items():
             name = str(item.get("name", "")).strip()
             if name and not contains_absolute_path_text(name):
@@ -315,11 +437,17 @@ class CanonicalSubjectResolver:
             source = _safe_relative_path(item.get("source"))
             if source:
                 paths[node_id].add(source)
+                path_sources[node_id][source].add(
+                    "global_symbol.metadata:source"
+                )
 
         for node in self._graph.nodes:
             metadata_path = _safe_relative_path(dict(node.metadata).get("path"))
             if metadata_path:
                 paths[node.id].add(metadata_path)
+                path_sources[node.id][metadata_path].add(
+                    "semantic_graph.node.metadata:path"
+                )
 
         project_scopes: dict[str, set[str]] = defaultdict(set)
         for node in self._graph.nodes:
@@ -343,6 +471,7 @@ class CanonicalSubjectResolver:
                         dependency_path = _safe_relative_path(evidence[len(prefix):])
                         if dependency_path:
                             paths[edge.target].add(dependency_path)
+                            path_sources[edge.target][dependency_path].add(evidence)
 
         by_public_id: dict[str, list[KnowledgeNode]] = defaultdict(list)
         by_qualified: dict[str, list[KnowledgeNode]] = defaultdict(list)
@@ -382,6 +511,32 @@ class CanonicalSubjectResolver:
         self._simple_names = MappingProxyType(simple_names)
         self._paths = MappingProxyType({
             key: tuple(sorted(values)) for key, values in paths.items()
+        })
+        self._path_sources = MappingProxyType({
+            node_id: MappingProxyType({
+                path: tuple(sorted(refs))
+                for path, refs in sorted(values.items())
+            })
+            for node_id, values in sorted(path_sources.items())
+        })
+        by_path: dict[str, list[KnowledgeNode]] = defaultdict(list)
+        projects_by_root: dict[str, list[KnowledgeNode]] = defaultdict(list)
+        for node in self._graph.nodes:
+            for path in self._paths.get(node.id, ()):
+                if node.kind is KnowledgeKind.PROJECT:
+                    projects_by_root[path].append(node)
+                elif node.kind not in {
+                    KnowledgeKind.REPOSITORY,
+                    KnowledgeKind.WORKSPACE,
+                }:
+                    by_path[path].append(node)
+        self._by_path = MappingProxyType({
+            key: tuple(sorted(set(values), key=self._path_node_sort_key))
+            for key, values in by_path.items()
+        })
+        self._projects_by_root = MappingProxyType({
+            key: tuple(sorted(set(values), key=self._path_node_sort_key))
+            for key, values in projects_by_root.items()
         })
         self._project_scopes = MappingProxyType({
             key: tuple(sorted(
@@ -515,6 +670,67 @@ class CanonicalSubjectResolver:
         )
 
     @staticmethod
+    def _path_node_sort_key(node: KnowledgeNode) -> tuple[str, str, str, str, str]:
+        return (
+            CanonicalSubjectResolver._public_id(node),
+            node.kind.value,
+            node.qualified_name or node.name,
+            node.project_id or "",
+            node.language,
+        )
+
+    def _candidate_path_sources(
+        self,
+        node: KnowledgeNode,
+        path: str,
+        *,
+        project_fallback: bool,
+    ) -> tuple[str, ...]:
+        sources = self._path_sources.get(node.id, {})
+        if not project_fallback:
+            refs = sources.get(path, ())
+            if not refs:
+                raise RuntimeError("exact path candidate lacks resolver provenance")
+            return tuple(refs)
+        path_parts = PurePosixPath(path).parts
+        deepest = -1
+        retained: set[str] = set()
+        for root, refs in sources.items():
+            root_parts = () if root == "." else PurePosixPath(root).parts
+            if len(root_parts) > len(path_parts):
+                continue
+            if root_parts and path_parts[:len(root_parts)] != root_parts:
+                continue
+            depth = len(root_parts)
+            if depth > deepest:
+                deepest = depth
+                retained = set(refs)
+            elif depth == deepest:
+                retained.update(refs)
+        if deepest < 0 or not retained:
+            raise RuntimeError("project path fallback lacks resolver provenance")
+        retained.add("canonical_subject_resolver:project_path_containment")
+        return tuple(sorted(retained))
+
+    def _containing_projects(self, path: str) -> tuple[KnowledgeNode, ...]:
+        path_parts = PurePosixPath(path).parts
+        deepest = -1
+        matches: list[KnowledgeNode] = []
+        for root, projects in self._projects_by_root.items():
+            root_parts = () if root == "." else PurePosixPath(root).parts
+            if len(root_parts) > len(path_parts):
+                continue
+            if root_parts and path_parts[:len(root_parts)] != root_parts:
+                continue
+            depth = len(root_parts)
+            if depth > deepest:
+                deepest = depth
+                matches = list(projects)
+            elif depth == deepest:
+                matches.extend(projects)
+        return tuple(sorted(set(matches), key=self._path_node_sort_key))
+
+    @staticmethod
     def _public_text(value: str, *, fallback: str) -> str:
         text = value.strip()
         return fallback if not text or contains_absolute_path_text(text) else text
@@ -560,7 +776,11 @@ def _safe_relative_path(value: object) -> str | None:
     normalized = str(value).strip().replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
-    if not normalized or contains_absolute_path_text(normalized):
+    if (
+        not normalized
+        or re.match(r"^[A-Za-z]:", normalized)
+        or contains_absolute_path_text(normalized)
+    ):
         return None
     path = PurePosixPath(normalized)
     if path.is_absolute() or ".." in path.parts:

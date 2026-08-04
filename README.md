@@ -89,7 +89,16 @@ Unavailable or ambiguous capabilities remain explicit; chat never runs analyzers
 turns missing evidence into a fact. See
 [`docs/PR139_INTERACTIVE_ENGINEERING_CHAT.md`](docs/PR139_INTERACTIVE_ENGINEERING_CHAT.md).
 
-The current repository includes implemented work through PR139. PR137 Refactoring
+PR140 adds deterministic, source-free review of tracked Git changes.
+`atlas change-review` combines normalized PR92 Git metadata with exact PR134 path
+identity, bounded PR136 impact/test/risk context, and compatible PR137 verified
+cycle-seam context. Snapshot alignment and unavailable evidence remain explicit.
+The command does not rescan by default, so semantic enrichment requires a
+caller-verified fingerprint through the API or the explicit, unverified
+`--assume-current-snapshot` CLI opt-in. `atlas ai review` remains unchanged. See
+[`docs/PR140_CHANGE_REVIEW.md`](docs/PR140_CHANGE_REVIEW.md).
+
+The current repository includes implemented work through PR140. PR137 Refactoring
 Advisor and PR138 Security Intelligence remain deliberately partial roadmap items;
 PR139 consumes only their compatible published capabilities. Recent repository
 intelligence work adds source-free summaries, a canonical knowledge graph,
@@ -116,6 +125,8 @@ atlas security .
 atlas security . --scope project --project example --category sql-injection --json
 atlas ai chat "Explain the repository architecture" .
 atlas ai chat "What is the impact of changing UserService?" . --subject UserService --capability impact --json
+atlas change-review . --json
+atlas change-review . --staged --assume-current-snapshot
 ```
 
 Atlas requires Python 3.12 or newer. Workspace configuration is read from
@@ -178,6 +189,7 @@ atlas search "dependency injection" . --profile
 atlas impact "com.example.UserService" . --profile
 atlas refactor . --profile
 atlas security . --profile
+atlas change-review . --profile
 ```
 
 The default sidecar is `.atlas/measurements/latest.json`; a compact summary is written

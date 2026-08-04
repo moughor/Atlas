@@ -1,5 +1,30 @@
 # Changelog
 
+## PR140 deterministic change review
+
+- Extended the existing PR92 Git-diff owner with strict immutable DTO restoration,
+  resolved commit provenance, deterministic fingerprints, safe sub-workspace path
+  translation, and source-free file/hunk metadata; no second collector or parser was
+  introduced.
+- Extended the PR134 canonical resolver with bounded exact-path association and
+  resolver-owned provenance. Containing-project fallback is explicit structural
+  context, not changed-declaration identity or a PR136 impact root.
+- Added an ephemeral `ChangeReviewService` with eight deterministic capability
+  sections, current/assumed/stale/unknown alignment gating, global file/subject/
+  impact/architecture bounds, exact omitted counts, and strict projection,
+  evidence, confidence, lineage, and serialization validation.
+- Reused PR136 for represented impact, evidence-linked tests, and compatible PR132
+  risk, and PR137 for fully revalidated existing dependency-cycle seams. Missing
+  calls/tests, diff attribution, and general migration evidence remain explicit.
+- Added separate provider-free `atlas change-review` human and canonical JSON output
+  with working-tree, staged, base/head, snapshot, bounds, architecture, explicit
+  currency-assumption, and opt-in M2 profile controls. The PR115 `atlas ai review`
+  command remains unchanged.
+- Kept reviews source-free and request-local: no snapshot field, public-facade
+  change, cache, journal, conversation turn, provider call, or workspace rescan.
+  PR138 security change projection and PR141+ evolution/drift capabilities remain
+  intentionally deferred.
+
 ## PR139 interactive engineering chat
 
 - Extended the existing Ask Engine into the single repository-aware chat path; no

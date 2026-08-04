@@ -1,4 +1,6 @@
 from .models import (
+    PathCandidateEvidence,
+    PathSubjectCandidates,
     ResolutionStatus,
     SubjectCandidate,
     SubjectMatchBasis,
@@ -9,6 +11,8 @@ from .resolver import CanonicalSubjectResolver
 
 __all__ = [
     "CanonicalSubjectResolver",
+    "PathCandidateEvidence",
+    "PathSubjectCandidates",
     "ResolutionStatus",
     "SubjectCandidate",
     "SubjectMatchBasis",

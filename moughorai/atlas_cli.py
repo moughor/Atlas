@@ -63,6 +63,11 @@ from .security_intelligence import (
     SecuritySeverity,
     render_security_intelligence,
 )
+from .change_review import (
+    ChangeReviewRequest,
+    ChangeReviewService,
+    render_change_review,
+)
 from .subject_resolution import SubjectQuery
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
@@ -544,6 +549,126 @@ def _load_ai_snapshot(
             f"semantic snapshot not found: {target}; run analysis snapshot creation first"
         )
     return loaded
+
+
+@app.command("change-review")
+def change_review_command(
+    root: Annotated[Path, typer.Argument(help="Git workspace root containing the semantic snapshot.")] = Path("."),
+    snapshot: Annotated[Path | None, typer.Option("--snapshot", help="Read a specific .ass snapshot instead of latest.ass.")] = None,
+    base: Annotated[str | None, typer.Option("--base", help="Git base revision; without --head, compare it with the working tree.")] = None,
+    head: Annotated[str | None, typer.Option("--head", help="Git head revision; requires --base and is incompatible with --staged.")] = None,
+    staged: Annotated[bool, typer.Option("--staged", help="Review staged Git changes.")] = False,
+    change_kind: Annotated[ImpactChangeKind, typer.Option("--change-kind", help="Explicit semantic change scenario; Git metadata alone defaults to unknown.")] = ImpactChangeKind.UNKNOWN,
+    maximum_files: Annotated[int, typer.Option("--max-files", min=1, max=1000, help="Maximum changed files retained for review.")] = 256,
+    maximum_subjects_per_file: Annotated[int, typer.Option("--max-subjects-per-file", min=1, max=128, help="Maximum canonical subjects retained per changed file.")] = 32,
+    maximum_subjects: Annotated[int, typer.Option("--max-subjects", min=1, max=128, help="Maximum canonical subjects retained across the review.")] = 64,
+    impact_depth: Annotated[int, typer.Option("--impact-depth", min=1, max=64, help="Maximum PR136 impact traversal depth.")] = 4,
+    impact_limit: Annotated[int, typer.Option("--impact-limit", min=1, max=1000, help="Maximum returned PR136 impact classifications.")] = 100,
+    architecture_subject_limit: Annotated[int, typer.Option("--architecture-subject-limit", min=1, max=32, help="Maximum changed subjects evaluated for compatible architecture context.")] = 8,
+    architecture_advice_limit: Annotated[int, typer.Option("--architecture-advice-limit", min=1, max=100, help="Maximum compatible PR137 advice items across the review.")] = 8,
+    architecture: Annotated[bool, typer.Option("--architecture/--no-architecture", help="Include compatible PR137 architecture and migration context.")] = True,
+    assume_current_snapshot: Annotated[bool, typer.Option("--assume-current-snapshot", help="Explicitly permit semantic enrichment without independently rescanning the workspace.")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Print canonical deterministic JSON.")] = False,
+    profile: Annotated[bool, typer.Option("--profile", help="Write an opt-in M2 change-review measurement sidecar.")] = False,
+    profile_output: Annotated[Path | None, typer.Option("--profile-output", help="Change-review measurement JSON path; implies --profile.")] = None,
+    profile_memory: Annotated[bool, typer.Option("--profile-memory", help="Collect best-effort process memory counters; implies --profile.")] = False,
+    profile_python_memory: Annotated[bool, typer.Option("--profile-python-memory", help="Collect Python allocation samples; implies --profile.")] = False,
+) -> None:
+    """Review tracked Git changes through deterministic snapshot-backed evidence."""
+
+    def operation() -> None:
+        resolved_root = root.expanduser().resolve()
+        profile_enabled = (
+            profile
+            or profile_output is not None
+            or profile_memory
+            or profile_python_memory
+        )
+        profile_target = (
+            _measurement_output_path(
+                resolved_root,
+                profile_output,
+                default_name="latest-change-review.json",
+            )
+            if profile_enabled else None
+        )
+        with _python_memory_collection(profile_python_memory):
+            measurement = MeasurementSession(MeasurementConfig(
+                enabled=profile_enabled,
+                capture_process_memory=profile_memory,
+                capture_python_memory=profile_python_memory,
+            ))
+            try:
+                request = ChangeReviewRequest(
+                    change_kind=change_kind,
+                    maximum_files=maximum_files,
+                    maximum_subjects_per_file=maximum_subjects_per_file,
+                    maximum_subjects=maximum_subjects,
+                    impact_depth=impact_depth,
+                    impact_limit=impact_limit,
+                    architecture_subject_limit=architecture_subject_limit,
+                    architecture_advice_limit=architecture_advice_limit,
+                    include_architecture=architecture,
+                    assume_snapshot_current=assume_current_snapshot,
+                )
+                with measurement.scope(
+                    "change_review.git_diff",
+                    consumer="change-review",
+                    sample_key="workspace",
+                ) as collection:
+                    diff = GitDiffService(resolved_root).collect(
+                        base=base,
+                        head=head,
+                        staged=staged,
+                    )
+                    collection.add_units(len(diff.files))
+                    collection.add_objects_produced(len(diff.files))
+                    collection.set_objects_retained(len(diff.files))
+                try:
+                    loaded = _load_ai_snapshot(
+                        root, snapshot, measurement=measurement,
+                    )
+                except SemanticSnapshotError as exc:
+                    if str(exc).startswith("semantic snapshot not found:"):
+                        raise SemanticSnapshotError(
+                            "semantic snapshot not found; run analysis snapshot creation first"
+                        ) from exc
+                    raise SemanticSnapshotError(
+                        "semantic snapshot could not be loaded or verified"
+                    ) from exc
+                response = ChangeReviewService.from_snapshot(
+                    loaded,
+                    measurement=measurement,
+                ).review(diff, request)
+                with measurement.scope(
+                    "change_review.render",
+                    consumer="change-review",
+                    sample_key=response.input_fingerprint,
+                ) as rendering:
+                    output = (
+                        response.to_json() + "\n"
+                        if json_output
+                        else render_change_review(response)
+                    )
+                    rendering.add_units(
+                        len(response.changed_files) + len(response.sections)
+                    )
+                    rendering.add_bytes(len(output.encode("utf-8")))
+                    rendering.add_objects_produced(1)
+                    typer.echo(output, nl=False)
+            finally:
+                if profile_target is not None:
+                    _publish_measurement_report(
+                        profile_target,
+                        measurement,
+                        output_kind=(
+                            "default" if profile_output is None else "custom"
+                        ),
+                        memory_requested=profile_memory,
+                        python_memory_requested=profile_python_memory,
+                    )
+
+    _run_command(operation)
 
 
 @app.command("search")
