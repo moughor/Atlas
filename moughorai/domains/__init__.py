@@ -1,0 +1,1 @@
+"""Independent Atlas intelligence domains."""
