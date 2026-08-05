@@ -22,7 +22,7 @@ from moughorai.knowledge_graph.evidence import (
 )
 from moughorai.measurement import MeasurementSession
 from moughorai.reachability import DeadCodeReport
-from moughorai.repository_report.safety import contains_absolute_path, contains_absolute_path_text
+from moughorai.platform.safety import contains_absolute_path, contains_absolute_path_text
 from moughorai.risk_analysis import RiskAnalysisReport
 from moughorai.semantic_evidence import (
     EvidenceIndex,

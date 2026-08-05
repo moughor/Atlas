@@ -1,5 +1,23 @@
 # Changelog
 
+## PR144 minimal platform boundary
+
+- Added the intentionally minimal `moughorai.platform` package and made its
+  `safety` module the canonical owner of the existing domain-neutral
+  absolute-path checks.
+- Preserved `moughorai.repository_report.safety` as an identity-preserving
+  compatibility re-export while migrating its 21 production consumers to the
+  platform boundary.
+- Moved canonical `WorkspaceSemanticContext` ownership to
+  `moughorai.semantic_snapshot.context`, preserved the existing `ai_context`
+  imports as the same class object, and removed `semantic_snapshot` imports of
+  `ai_context`.
+- Added dependency-boundary and fixed-vector snapshot tests. Snapshot schema,
+  dictionaries, identifiers, checksums, serialized bytes, CLI behavior,
+  renderers, public APIs, and plugin contracts remain unchanged.
+- Kept measurement, evidence, graphs, storage, CLI abstractions, Architectural
+  Drift, and Benchmark Intelligence out of scope.
+
 ## PR142 deterministic technical-debt observations
 
 - Added an ephemeral, cycle-only first slice of the Technical Debt Engine. It

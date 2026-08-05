@@ -37,7 +37,7 @@ from .models import (
     RepositoryReportItem,
     RepositoryReportSection,
 )
-from .safety import contains_absolute_path_text
+from moughorai.platform.safety import contains_absolute_path_text
 
 
 @dataclass(frozen=True, slots=True)

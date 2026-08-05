@@ -8,7 +8,7 @@ import json
 import re
 
 from moughorai.knowledge_graph import KnowledgeRelation
-from moughorai.repository_report.safety import contains_absolute_path
+from moughorai.platform.safety import contains_absolute_path
 from moughorai.semantic_evidence import (
     ConfidenceCalculator,
     ConfidenceResult,

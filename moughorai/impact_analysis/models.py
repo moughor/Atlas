@@ -12,7 +12,7 @@ import re
 from moughorai.dependency_graph import DependencyKind
 from moughorai.global_symbols import GlobalSymbol, SymbolId
 from moughorai.knowledge_graph import KnowledgeKind, KnowledgeRelation
-from moughorai.repository_report.safety import contains_absolute_path
+from moughorai.platform.safety import contains_absolute_path
 from moughorai.semantic_evidence import (
     ConfidenceCalculator,
     ConfidenceResult,

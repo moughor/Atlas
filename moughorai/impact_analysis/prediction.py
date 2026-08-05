@@ -21,7 +21,7 @@ from moughorai.knowledge_graph.evidence import (
 )
 from moughorai.measurement import MeasurementSession
 from moughorai.project_inventory import is_test_source_path
-from moughorai.repository_report.safety import contains_absolute_path
+from moughorai.platform.safety import contains_absolute_path
 from moughorai.risk_analysis import RiskAnalysisReport, RiskHotspot
 from moughorai.reachability import CoverageStatus, DeadCodeReport, RootCategory
 from moughorai.semantic_evidence import (

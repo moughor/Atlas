@@ -12,7 +12,7 @@ import re
 
 from moughorai.impact_analysis import ImpactRiskContext
 from moughorai.knowledge_graph import KnowledgeKind
-from moughorai.repository_report.safety import contains_absolute_path
+from moughorai.platform.safety import contains_absolute_path
 from moughorai.semantic_evidence import (
     ConfidenceCalculator,
     ConfidenceResult,

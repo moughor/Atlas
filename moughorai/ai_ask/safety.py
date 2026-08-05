@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import re
 
-from moughorai.repository_report.safety import contains_absolute_path_text
+from moughorai.platform.safety import contains_absolute_path_text
 
 
 _CODE_FENCE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)

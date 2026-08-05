@@ -8,7 +8,7 @@ import json
 import math
 from typing import TypeAlias
 
-from moughorai.repository_report.safety import contains_absolute_path
+from moughorai.platform.safety import contains_absolute_path
 from moughorai.semantic_evidence import (
     ConfidenceResult,
     EvidenceIndex,

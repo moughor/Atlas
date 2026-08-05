@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 import re
 import unicodedata
 
-from moughorai.repository_report.safety import contains_absolute_path_text
+from moughorai.platform.safety import contains_absolute_path_text
 
 from .models import KnowledgeRelation
 

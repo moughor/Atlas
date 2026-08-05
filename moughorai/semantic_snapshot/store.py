@@ -9,12 +9,12 @@ import tempfile
 from threading import RLock
 from typing import Callable
 
-from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.measurement import MeasurementPhase, MeasurementSession
 from moughorai.version import __version__
 from moughorai.workspace import Workspace
 from moughorai.workspace.cache import WorkspaceCache
 
+from .context import WorkspaceSemanticContext
 from .models import (
     SEMANTIC_SNAPSHOT_FORMAT,
     AtlasSemanticSnapshot,

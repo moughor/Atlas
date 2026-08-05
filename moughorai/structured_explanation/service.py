@@ -13,7 +13,7 @@ from moughorai.knowledge_graph import (
     KnowledgeKind,
     KnowledgeRelation,
 )
-from moughorai.repository_report.safety import contains_absolute_path_text
+from moughorai.platform.safety import contains_absolute_path_text
 from moughorai.repository_report import RepositoryReport
 from moughorai.design_patterns.models import PatternKind
 from moughorai.reachability.models import ReachabilityState

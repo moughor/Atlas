@@ -30,7 +30,7 @@ from moughorai.knowledge_graph.evidence import (
     safe_edge_evidence_refs,
 )
 from moughorai.measurement import MeasurementSession
-from moughorai.repository_report.safety import contains_absolute_path_text
+from moughorai.platform.safety import contains_absolute_path_text
 from moughorai.semantic_evidence import (
     ConfidenceCalculator,
     EvidenceIndex,

@@ -4,6 +4,13 @@ Atlas is organized as a layered static-analysis platform. Dependencies should
 flow downward through models and explicit service interfaces; CLI, LSP, API,
 and reporting adapters sit above analysis and workspace services.
 
+PR144 establishes the first deliberately small platform boundary.
+`moughorai.platform` contains only proven domain-neutral infrastructure and
+must not import Repository Intelligence, Benchmark Intelligence, CLI, or
+persistence concepts. Its first admitted contract is the existing pure
+absolute-path safety utility. Any future addition must justify why it cannot
+remain inside an existing domain package.
+
 ```mermaid
 flowchart TD
     Interfaces["CLI · API · LSP · CI"] --> Workspace["Workspace orchestration"]
@@ -62,6 +69,8 @@ source-free projection but cannot establish facts or change confidence.
 
 ## Ownership boundaries
 
+- `platform` owns only cross-domain, domain-neutral contracts admitted under
+  the platform boundary rule.
 - `semantic`, `passes`, and language packages own parsing and semantic meaning.
 - `workspace` owns project discovery, configuration, planning, execution,
   persistence, recovery, and events.
@@ -74,6 +83,8 @@ source-free projection but cannot establish facts or change confidence.
   models.
 - `repository_summary`, `risk_analysis`, `repository_report`, and `ai_explain` own
   progressively bounded source-free projections. Missing evidence remains explicit.
+- `semantic_snapshot` owns `WorkspaceSemanticContext`; `ai_context` retains
+  its established import as an identity-preserving compatibility re-export.
 
 See the PR-specific documents for detailed contracts and
 `PR106_PLUGIN_TRUST_MODEL.md` for the plugin security boundary.
