@@ -1,0 +1,36 @@
+{
+  "benchmark_id": "benchmark:ul:3dmark:fire-strike-standard",
+  "native_submission_identifier": "fire-strike-submission-v1",
+  "schema_version": 1,
+  "scores": {
+    "combined_score": {
+      "field_locator": "/scores/combined_score",
+      "normalized_value": "15000",
+      "raw_value": "15,000",
+      "state": "observed",
+      "unit": "marks"
+    },
+    "graphics_score": {
+      "field_locator": "/scores/graphics_score",
+      "normalized_value": "40000",
+      "raw_value": "40,000",
+      "state": "observed",
+      "unit": "marks"
+    },
+    "overall_score": {
+      "field_locator": "/scores/overall_score",
+      "normalized_value": "30000",
+      "raw_value": "30,000",
+      "state": "observed",
+      "unit": "marks"
+    },
+    "physics_score": {
+      "field_locator": "/scores/physics_score",
+      "normalized_value": "25000",
+      "raw_value": "25,000",
+      "state": "observed",
+      "unit": "marks"
+    }
+  },
+  "source_identifier": "source:atlas-fixture"
+}
