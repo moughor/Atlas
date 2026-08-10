@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.design_patterns import PatternDetectionService
 from moughorai.knowledge_graph import KnowledgeGraph, KnowledgeKind, KnowledgeRelation
-from moughorai.repository_report import RepositoryReportService
+from moughorai.repository_report import RepositoryReport, RepositoryReportService
 from moughorai.repository_report.safety import contains_absolute_path
 from moughorai.semantic_evidence import EvidenceIndex, EvidenceKind, EvidenceRecord
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
@@ -1129,6 +1130,87 @@ def test_stale_pr133_report_is_not_attributed_to_a_different_graph() -> None:
     assert "Deterministic repository report" not in {
         fact.title for fact in result.facts
     }
+
+
+def test_restored_pr133_report_uses_its_stable_digest_as_explanation_evidence() -> None:
+    context = _base_context()
+    report = RepositoryReportService().build(context)
+    report_payload = report.to_dict()
+    report_evidence_ids = tuple(
+        record.evidence_id for record in report.evidence_index.records
+    )
+    report_source_refs = tuple(
+        record.source_refs for record in report.evidence_index.records
+    )
+    restored_report = RepositoryReport.from_dict(report_payload)
+
+    assert restored_report.to_dict() == report_payload
+    assert "context_digest" not in report_payload
+    assert tuple(
+        record.evidence_id for record in restored_report.evidence_index.records
+    ) == report_evidence_ids
+    assert tuple(
+        record.source_refs for record in restored_report.evidence_index.records
+    ) == report_source_refs
+    assert (
+        restored_report.stable_digest()
+        == "d6b8651356e7e137f8895560ec26dfc5ab395ea78236e706618ca88e2995739d"
+    )
+
+    context["repository_report"] = report_payload
+    snapshot = _snapshot(context)
+    restored_snapshot = AtlasSemanticSnapshot.from_dict(snapshot.to_dict())
+    assert restored_snapshot.snapshot_id == snapshot.snapshot_id
+    assert (
+        restored_snapshot.snapshot_id
+        == "e9c812f483b432da401eebb4f62a662a572480298f82dcc585c7fffb6f39f612"
+    )
+
+    service = StructuredExplanationService(restored_snapshot)
+    request = ExplanationRequest("repository", KnowledgeKind.REPOSITORY.value)
+    first = service.explain(request)
+    second = service.explain(request)
+    metadata = next(
+        fact for fact in first.facts
+        if fact.title == "Deterministic repository report"
+    )
+    evidence = first.evidence_index.get(metadata.evidence_ids[0])
+
+    assert evidence is not None
+    assert evidence.source_refs == (
+        f"repository-report:{restored_report.stable_digest()}",
+    )
+    assert (
+        metadata.fact_id
+        == "explanation-fact:65b2c4ddbc5820cf1957f3fc32d2960e3efcea8cd004ac38b310ea1fb5bbe603"
+    )
+    assert (
+        evidence.evidence_id
+        == "evidence:5778ab52c66c264035f2325188e2ef519cf58f356a66348bf4a31e111b56b9d4"
+    )
+    assert first.to_json() == second.to_json()
+    assert (
+        first.context_digest
+        == "c3a123b2d4d93247f0c6bbe4f65b37cc804581450373b0819f0c357241d0bf22"
+    )
+    assert (
+        hashlib.sha256(first.to_json().encode("utf-8")).hexdigest()
+        == "cc162dca483ae168359ccebcdfa8be33b6aae3ce2dc63f3eac381b050c818c82"
+    )
+    assert StructuredExplanation.from_dict(first.to_dict()).to_dict() == first.to_dict()
+
+    workspace = service.explain(
+        ExplanationRequest("workspace", KnowledgeKind.WORKSPACE.value)
+    )
+    workspace_metadata = next(
+        fact for fact in workspace.facts
+        if fact.title == "Deterministic repository report"
+    )
+    workspace_evidence = workspace.evidence_index.get(
+        workspace_metadata.evidence_ids[0]
+    )
+    assert workspace_evidence is not None
+    assert workspace_evidence.source_refs == evidence.source_refs
 
 
 def test_dangling_graph_edges_report_partial_canonical_graph_coverage() -> None:

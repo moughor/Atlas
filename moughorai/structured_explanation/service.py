@@ -904,7 +904,7 @@ class StructuredExplanationService:
                 ExplanationAttribute("referenced_item_count", item_count),
             ),
             evidence_kind=EvidenceKind.ANALYSIS_RESULT,
-            source_refs=(f"repository-report:{restored.context_digest}",),
+            source_refs=(f"repository-report:{restored.stable_digest()}",),
             producer_ids=("atlas-pr133/1", self.PRODUCER_VERSION),
             reliability=0.9,
         )
