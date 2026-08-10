@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import subprocess
 
 from moughorai.gradle_syntax import (
     literal_arguments as _literal_gradle_arguments,
     strip_comments as _strip_gradle_comments,
 )
 from moughorai.project_inventory.maven_parser import MavenParseError, MavenParser
+from moughorai.project_inventory.maven_models import MavenProject
 from moughorai.project_locator import DEFAULT_PROJECT_MARKERS
 from moughorai.measurement import MeasurementPhase, MeasurementSession
 
@@ -78,7 +80,7 @@ class WorkspaceDiscovery:
             sample_key="workspace",
         ) as build:
             projects = self._gradle_projects(workspace_root, projects)
-            projects.extend(self._maven_projects(workspace_root, projects))
+            projects = self._maven_projects(workspace_root, projects)
             build.add_units(len(projects))
             build.add_objects_produced(len(projects))
         with self.measurement.scope(
@@ -92,16 +94,37 @@ class WorkspaceDiscovery:
         return Workspace(root=workspace_root, projects=tuple(sorted(projects, key=lambda item: item.name)))
 
     def _maven_projects(self, root: Path, existing: list[Project]) -> list[Project]:
-        """Discover explicit Maven reactor modules beyond the generic depth limit."""
+        """Discover authoritative Maven projects beyond the generic depth limit."""
 
         workspace_root = root.resolve()
-        known_paths = {project.path.resolve() for project in existing}
+        result = list(existing)
+        known_paths = {project.path.resolve() for project in result}
+
+        def add_project(module_path: Path) -> None:
+            module_path = module_path.resolve()
+            if module_path in known_paths:
+                return
+            try:
+                relative = module_path.relative_to(workspace_root)
+            except ValueError:
+                return
+            known_paths.add(module_path)
+            name = (
+                workspace_root.name
+                if relative == Path(".")
+                else "-".join(relative.parts)
+            )
+            result.append(Project(name, module_path))
+
+        tracked_poms = frozenset(self._tracked_maven_poms(workspace_root))
+        for pom in tracked_poms:
+            add_project(pom.parent)
+
         pending = sorted(
             (path for path in known_paths if (path / "pom.xml").is_file()),
             key=lambda path: path.as_posix().casefold(),
         )
         parsed_paths: set[Path] = set()
-        discovered: list[Project] = []
 
         while pending:
             project_path = pending.pop(0)
@@ -121,17 +144,111 @@ class WorkspaceDiscovery:
                     continue
                 module_path = pom.parent.resolve()
                 try:
-                    relative = module_path.relative_to(workspace_root)
+                    module_path.relative_to(workspace_root)
                 except ValueError:
                     continue
-                if module_path not in known_paths:
-                    known_paths.add(module_path)
-                    discovered.append(Project("-".join(relative.parts), module_path))
+                add_project(module_path)
                 if module_path not in parsed_paths:
                     pending.append(module_path)
             pending.sort(key=lambda path: path.as_posix().casefold())
 
-        return discovered
+        parsed = self._parse_maven_projects(result)
+        return self._prefer_tracked_maven_descriptors(
+            result,
+            parsed,
+            tracked_poms,
+        )
+
+    @staticmethod
+    def _tracked_maven_poms(root: Path) -> tuple[Path, ...]:
+        """Return tracked Maven descriptors without consulting a remote."""
+
+        try:
+            completed = subprocess.run(
+                ("git", "ls-files", "-z", "--cached", "--"),
+                cwd=root,
+                check=False,
+                capture_output=True,
+            )
+        except OSError:
+            return ()
+        if completed.returncode != 0:
+            return ()
+        try:
+            names = completed.stdout.decode("utf-8").split("\0")
+        except UnicodeDecodeError:
+            return ()
+        descriptors: set[Path] = set()
+        for name in names:
+            relative = Path(name)
+            if (
+                not name
+                or relative.is_absolute()
+                or relative.name != "pom.xml"
+                or ".." in relative.parts
+            ):
+                continue
+            try:
+                descriptor = (root / relative).resolve()
+                descriptor.relative_to(root)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if descriptor.is_file():
+                descriptors.add(descriptor)
+        return tuple(
+            sorted(
+                descriptors,
+                key=lambda path: (path.as_posix().casefold(), path.as_posix()),
+            )
+        )
+
+    def _parse_maven_projects(
+        self,
+        projects: list[Project],
+    ) -> dict[Path, MavenProject]:
+        parsed: dict[Path, MavenProject] = {}
+        for project in sorted(
+            projects,
+            key=lambda item: (
+                item.path.as_posix().casefold(),
+                item.path.as_posix(),
+            ),
+        ):
+            pom = project.path / "pom.xml"
+            if not pom.is_file():
+                continue
+            try:
+                self.measurement.filesystem.descriptor_parsed("workspace-discovery")
+                parsed[project.path.resolve()] = self.maven_parser.parse(pom)
+            except MavenParseError:
+                continue
+        return parsed
+
+    @staticmethod
+    def _prefer_tracked_maven_descriptors(
+        projects: list[Project],
+        parsed: dict[Path, MavenProject],
+        tracked_poms: frozenset[Path],
+    ) -> list[Project]:
+        by_coordinate: dict[str, list[Path]] = {}
+        for path, model in parsed.items():
+            if model.coordinate is None:
+                continue
+            by_coordinate.setdefault(model.coordinate.identifier, []).append(path)
+
+        omitted: set[Path] = set()
+        for paths in by_coordinate.values():
+            tracked = {
+                path for path in paths
+                if (path / "pom.xml").resolve() in tracked_poms
+            }
+            if tracked:
+                omitted.update(path for path in paths if path not in tracked)
+        return [
+            project
+            for project in projects
+            if project.path.resolve() not in omitted
+        ]
 
     def _gradle_projects(self, root: Path, existing: list[Project]) -> list[Project]:
         """Merge projects proven by literal Gradle settings declarations."""
