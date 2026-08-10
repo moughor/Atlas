@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.ai_explain import ExplainEngine, ExplainRequest, ExplainResult
 from moughorai.atlas_cli import app
 from moughorai.llm import LlmClient, ScriptedLlmProvider
+from moughorai.repository_report import RepositoryReport, RepositoryReportService
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot, SemanticSnapshotStore
 from moughorai.structured_explanation import (
     ExplanationAvailability,
@@ -96,6 +98,34 @@ def _snapshot(*, ambiguous: bool = False) -> AtlasSemanticSnapshot:
     return AtlasSemanticSnapshot.create(
         context,
         workspace_fingerprint="workspace",
+        analyzer_version="test",
+    )
+
+
+def _repository_snapshot() -> AtlasSemanticSnapshot:
+    context = deepcopy(dict(_snapshot().semantic_context))
+    graph = context["semantic_graph"]
+    assert isinstance(graph, dict)
+    nodes = graph["nodes"]
+    edges = graph["edges"]
+    assert isinstance(nodes, list) and isinstance(edges, list)
+    nodes.append({
+        "id": "repository:atlas-demo",
+        "kind": "repository",
+        "qualified_name": "atlas-demo",
+        "project_id": None,
+        "language": "unknown",
+    })
+    edges.append({
+        "source": "repository:atlas-demo",
+        "target": "project:app",
+        "kind": "ownership",
+        "evidence": ["workspace.projects"],
+    })
+    context["repository_report"] = RepositoryReportService().build(context).to_dict()
+    return AtlasSemanticSnapshot.create(
+        WorkspaceSemanticContext(context),
+        workspace_fingerprint="repository-explain",
         analyzer_version="test",
     )
 
@@ -237,6 +267,96 @@ def test_cli_json_is_canonical_and_never_constructs_a_provider(
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def test_repository_cli_json_and_profile_use_the_normal_explain_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    (tmp_path / "atlas.yaml").write_text(
+        "projects:\n  - name: app\n    path: app\n",
+        encoding="utf-8",
+    )
+    workspace = WorkspaceService(tmp_path).workspace
+    snapshot = _repository_snapshot()
+    SemanticSnapshotStore(workspace).save(snapshot)
+    sidecar = tmp_path / ".atlas" / "measurements" / "explain-profile.json"
+
+    def forbidden_provider():
+        raise AssertionError("--json must not construct an LLM provider")
+
+    def forbidden_context(_root):
+        raise AssertionError("snapshot explanation must not rediscover the workspace")
+
+    monkeypatch.setattr(atlas_cli, "_ai_provider_factory", forbidden_provider)
+    monkeypatch.setattr(atlas_cli, "_context", forbidden_context)
+    arguments = [
+        "ai",
+        "explain",
+        str(tmp_path),
+        "--subject",
+        "repository:atlas-demo",
+        "--kind",
+        "repository",
+        "--json",
+    ]
+    baseline = CliRunner().invoke(app, arguments)
+    profiled = CliRunner().invoke(app, [
+        *arguments,
+        "--profile-output",
+        str(sidecar),
+    ])
+
+    assert baseline.exit_code == profiled.exit_code == 0, (
+        baseline.output,
+        profiled.output,
+        profiled.exception,
+    )
+    assert baseline.stdout == profiled.stdout
+    payload = json.loads(profiled.stdout)
+    assert payload["subject"]["subject_id"] == "repository"
+    report = RepositoryReport.from_dict(
+        snapshot.semantic_context["repository_report"]
+    )
+    metadata = next(
+        fact for fact in payload["facts"]
+        if fact["title"] == "Deterministic repository report"
+    )
+    evidence_by_id = {
+        record["evidence_id"]: record
+        for record in payload["evidence_index"]["records"]
+    }
+    assert evidence_by_id[metadata["evidence_ids"][0]]["source_refs"] == [
+        f"repository-report:{report.stable_digest()}"
+    ]
+    assert profiled.stdout.strip() == json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    assert sidecar.is_file()
+    profile = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert "explain.projection" in profile["phase_ids"]
+    assert "profile:" in profiled.stderr
+
+
+def test_provider_backed_repository_explain_reaches_the_provider() -> None:
+    provider = ScriptedLlmProvider(["Repository narrative"])
+    result = ExplainEngine(LlmClient(provider)).explain(
+        _repository_snapshot(),
+        ExplainRequest(
+            subject="repository:atlas-demo",
+            kind="repository",
+        ),
+    )
+
+    assert len(provider.calls) == 1
+    assert result.structured_explanation is not None
+    assert "## Optional provider narrative" in result.markdown
+    assert result.markdown.endswith("Repository narrative")
 
 
 def test_legacy_explain_dataclass_positions_remain_compatible() -> None:
