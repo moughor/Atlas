@@ -1,17 +1,18 @@
 # Atlas Dependency Rules
 
-Status: proposed normative rules for future changes. They do not retroactively
-declare existing imports invalid; they define the target direction and the
-incremental remediation order.
+Status: normative dependency rules accepted by PR143 and updated with the
+verified PR145 runtime graph. They define the required direction for future
+changes.
 
 ## Basis
 
 The rules preserve the existing Atlas engineering principles: evidence before
 inference, deterministic reasoning, explicit uncertainty, specialized analyzer
-authority, compatibility, and incremental abstraction. They are also grounded
-in the PR142 import inventory: 1,438 internal edges, a 16-module static cycle,
-and high fan-in shared utilities currently located inside Repository
-Intelligence packages.
+authority, compatibility, and incremental abstraction. The PR145 inventory
+contains 535 production Python modules, 1,441 statically resolvable runtime
+edges, three typing-only edges, and no cyclic runtime strongly connected
+component. The test methodology and its dynamic-import limitation are recorded
+in `docs/PR145_PLATFORM_DEPENDENCY_RATCHET.md`.
 
 ## Layers
 
@@ -100,20 +101,21 @@ features, and the existing repository-specific plugin and rule systems.
 
 ## Circular-dependency policy
 
-The current static cycle contains `ai_context`, `semantic_snapshot`,
-`subject_resolution`, `repository_report`, `security_intelligence`, and
-`prompts`. Several lazy imports intentionally mitigate initialization order,
-but they do not remove the maintenance risk.
+PR145 removes the remaining six-module runtime component by importing
+`WorkspaceSemanticContext` from its PR144 canonical owner instead of the eager
+`ai_context` compatibility facade. The statically resolvable runtime graph now
+contains no cyclic strongly connected component.
 
-- No new import may enlarge this strongly connected component.
+- No new runtime import may introduce a cyclic strongly connected component.
 - New code must import leaf modules rather than package aggregators when that
   avoids an upward dependency.
-- Type-only dependencies should use `TYPE_CHECKING`, protocols, mappings, or
-  a domain-local adapter when runtime construction is unnecessary.
-- The PR144 snapshot/context decoupling must be characterized by import and
-  snapshot compatibility tests before removing the direct edge.
-- A cycle may be reduced only with a tested dependency inversion; modules must
-  not be moved en masse merely to make a graph visualization look cleaner.
+- Type-only dependencies must be classified separately and should use
+  `TYPE_CHECKING`, protocols, mappings, or a domain-local adapter when runtime
+  construction is unnecessary.
+- Variable dynamic imports are not represented as static graph edges; existing
+  plugin admission and runtime validation remain responsible for them.
+- A dependency must be corrected with a tested inversion or canonical-owner
+  import. Modules must not be moved merely to change a graph visualization.
 
 ## Extension boundaries
 
@@ -126,15 +128,15 @@ but they do not remove the maintenance risk.
 
 ## Enforcement plan
 
-1. Add an AST-based dependency-rule test that allows the known PR142 cycle
-   during migration but rejects any new platform-to-domain or domain-to-domain
-   edge.
-2. Add a regression test that imports the published entry points and all
-   platform candidates in a clean interpreter.
+1. Parse production imports deterministically, classify `TYPE_CHECKING`
+   imports separately, and reject every cyclic runtime strongly connected
+   component. There is no runtime-cycle allowlist.
+2. Import affected boundaries in a clean interpreter and verify that canonical
+   imports do not load legacy package facades.
 3. Keep existing public API fixture, snapshot checksum, deterministic JSON,
    CLI, plugin-trust, and renderer tests as required migration gates.
-4. After PR144, ratchet the cycle allowlist downward only when a removed edge
-   is verified by tests. Do not make “zero cycles” a false success criterion.
+4. Treat a proposed exception as an architectural change requiring evidence
+   and approval; do not silently add an allowlist entry.
 
 ## Review criterion
 

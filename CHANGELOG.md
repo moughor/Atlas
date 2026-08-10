@@ -1,5 +1,22 @@
 # Changelog
 
+## PR145 Atlas runtime dependency ratchet
+
+- Replaced the remaining `prompts.semantic` compatibility-facade import with
+  the PR144 canonical `semantic_snapshot.context` owner of
+  `WorkspaceSemanticContext`; the imported class object remains identical.
+- Removed the only statically resolvable runtime dependency cycle without
+  moving a package or introducing a runtime abstraction.
+- Added deterministic test-only dependency governance with separate runtime
+  and `TYPE_CHECKING` edge classification, literal dynamic-import recognition,
+  and strongly connected component validation.
+- Added clean-interpreter coverage proving that semantic prompt imports no
+  longer initialize `ai_context`, its collector, or `repository_report`.
+- Preserved public APIs, CLI behavior, prompt behavior, snapshot schema and
+  bytes, identifiers, checksums, renderers, persistence, and serialization.
+- Kept Architectural Drift, Benchmark Intelligence, hardware, HWBOT, and AI OC
+  out of scope.
+
 ## PR144 minimal platform boundary
 
 - Added the intentionally minimal `moughorai.platform` package and made its

@@ -26,13 +26,18 @@ second domain.
 | --- | --- | --- | --- |
 | PR143 | Platform Architecture | Review and approve the six architecture documents, platform dependency rules, domain boundary, and minimal refactoring manifest. | Documentation reviewed; no production code in scope. |
 | PR144 | Minimal Package Refactoring | Correct only the demonstrated generic safety-module placement, remove the narrow snapshot/context dependency edge if characterization permits, and add dependency-rule regression tests. | Public API, CLI, snapshot, plugin, and source-free rendering compatibility gates pass. |
-| PR145 | Architectural Contracts and Drift | Define an explicit Repository Intelligence architecture-policy contract; evaluate drift only against that contract and verified graph evidence. | PR144 complete; policy ownership, schema, defaults, limitations, and migration behavior approved. No inferred intent. |
+| PR145 | Atlas Runtime Dependency Ratchet | Remove the remaining runtime import cycle through the established canonical context owner and enforce a deterministic test-only dependency ratchet. | PR144 complete; zero cyclic runtime strongly connected components; public API, CLI, snapshot, and import-identity compatibility gates pass. |
 | PR146 | Benchmark Foundation | Implement the AI OC evidence spine using manually supplied, redistributable fixtures: source registry, immutable capture envelope, extraction batch/observation boundary, and deterministic IDs. | Platform boundary proven; AI OC fixture provenance and terms policy approved; no automated acquisition. |
 | PR147 | HWBOT Fixture Parser | Add one approved, fixture-only Benchmark Intelligence parser and preserve raw-to-observation lineage. | PR146 model and fixture contract pass; no scraping schedule or unsupported source claim. |
 | PR148 | Benchmark Normalization and Identity | Implement conservative benchmark, hardware, submission, and run identity resolution; preserve ambiguous/unresolved states. | PR147 supplies representative fixtures and identity acceptance tests. |
 | PR149 | Deterministic Benchmark Analytics | Build compatible cohorts, formula reconciliation, deltas, and bounded observations from versioned evidence. | PR148 supports comparability; formulas, units, and rounding have approved evidence. |
 | PR150 | Benchmark Query and Explanation | Publish bounded source-free Benchmark Intelligence projections and optional explanation that cannot manufacture facts. | PR149 projections and citation/limitation contracts pass. |
 | PR151+ | Future domains or platform extractions | Consider Hardware Intelligence, Log Intelligence, shared storage, or a cross-domain exchange contract only after a concrete approved domain need exists. | Two implemented consumers demonstrate identical contract and lifecycle requirements. |
+
+Architectural Contracts and Drift remains deferred without a proposed PR
+number. It still requires separate approval of policy ownership, schema,
+defaults, limitations, and migration behavior. This PR145 assignment does not
+renumber PR146 or later work.
 
 ## Existing roadmap items not automatically renumbered
 
@@ -81,7 +86,8 @@ Their sequencing must be reassessed after PR144 because:
 
 - Approve PR143 documents before authorizing any source change.
 - Approve the exact PR144 change manifest and test matrix before a refactor.
-- Approve the explicit Architectural Contract before a PR145 drift design.
+- Approve the explicit Architectural Contract before assigning or designing
+  any Architectural Drift PR.
 - Approve AI OC fixture provenance, collection permissions, and evidence schema
   freeze before a PR146 implementation.
 - Reassess the historical enterprise roadmap only after the platform boundary
@@ -89,7 +95,8 @@ Their sequencing must be reassessed after PR144 because:
 
 ## Recommendation
 
-Adopt PR143 Platform Architecture as the immediate documentation-only phase,
-followed by a deliberately narrow PR144. Keep PR145 gated by an explicit
-architecture contract. Use Benchmark Foundation, not a speculative framework,
-as the first real test of Atlas as an Evidence Intelligence Platform.
+PR143 established the architecture baseline and PR144 established the first
+minimal platform boundary. Use PR145 to enforce the verified runtime dependency
+ratchet. Keep Architectural Contracts and Drift separately gated by an explicit
+policy contract. Use Benchmark Foundation, not a speculative framework, as the
+first real test of Atlas as an Evidence Intelligence Platform.
