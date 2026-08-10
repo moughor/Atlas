@@ -273,6 +273,7 @@ def test_package_manifest_and_dependency_direction_remain_narrow() -> None:
     assert sorted(path.name for path in PACKAGE.glob("*.py")) == [
         "__init__.py",
         "canonical.py",
+        "capture.py",
         "evidence.py",
         "fire_strike.py",
         "fixture.py",

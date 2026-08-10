@@ -1,6 +1,7 @@
 """Deterministic Benchmark Intelligence domain models."""
 
 from .canonical import canonical_json, canonical_json_bytes, normalize_decimal, sha256_hex
+from .capture import CapturedSourceV1, CaptureValidationError
 from .evidence import FieldEvidenceV1, FieldState
 from .fire_strike import (
     FIRE_STRIKE_STANDARD_BENCHMARK_ID,
@@ -11,6 +12,8 @@ from .fixture import FixtureParseError, parse_fire_strike_submission_fixture
 
 __all__ = [
     "FIRE_STRIKE_STANDARD_BENCHMARK_ID",
+    "CapturedSourceV1",
+    "CaptureValidationError",
     "FieldEvidenceV1",
     "FieldState",
     "FireStrikeSubmissionV1",
