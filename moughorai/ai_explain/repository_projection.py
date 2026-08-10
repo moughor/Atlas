@@ -12,7 +12,7 @@ from moughorai.repository_report import (
     RepositoryReport,
     RepositoryReportContextSelector,
 )
-from moughorai.repository_report.safety import contains_absolute_path_text
+from moughorai.platform.safety import contains_absolute_path_text
 from moughorai.security_intelligence import (
     SecurityIntelligenceReport,
     SecurityIntelligenceRequest,

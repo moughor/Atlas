@@ -7,7 +7,7 @@ import json
 from types import MappingProxyType
 from typing import Any
 
-from moughorai.ai_context import WorkspaceSemanticContext
+from .context import WorkspaceSemanticContext
 
 
 SEMANTIC_SNAPSHOT_SCHEMA_VERSION = 1

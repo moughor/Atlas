@@ -9,7 +9,7 @@ import re
 from typing import Any
 
 from moughorai.prompts import TokenEstimator
-from moughorai.repository_report.safety import contains_absolute_path
+from moughorai.platform.safety import contains_absolute_path
 from moughorai.semantic_evidence import EvidenceIndex
 
 from .safety import contains_unsafe_chat_content

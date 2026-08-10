@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 from pathlib import Path
 from threading import Barrier
@@ -12,11 +13,53 @@ from moughorai.semantic_snapshot import (
     AtlasSemanticSnapshot,
     SemanticSnapshotError,
     SemanticSnapshotStore,
+    WorkspaceSemanticContext as SnapshotWorkspaceSemanticContext,
 )
 from moughorai.workspace import Project, Workspace
 
 
 NOW = datetime(2026, 7, 29, 20, 52, 57, tzinfo=timezone.utc)
+
+
+def test_pr144_move_preserves_fixed_snapshot_identity_and_bytes() -> None:
+    context = SnapshotWorkspaceSemanticContext(
+        {
+            "schema_version": 1,
+            "semantic_graph": {"nodes": [], "edges": []},
+            "symbols": [],
+            "limitations": ["fixed-vector"],
+        }
+    )
+    snapshot = AtlasSemanticSnapshot.create(
+        context,
+        workspace_fingerprint="pr144-fixed-workspace",
+        analyzer_version="atlas-pr142/1",
+        history_reference="history-fixed",
+    )
+
+    assert snapshot.to_dict() == {
+        "schema_version": 1,
+        "snapshot_id": "8e67c26515ddc4e23959faf40983e7c6873e413929b21b655d6bf361ae9f9201",
+        "workspace_fingerprint": "pr144-fixed-workspace",
+        "analyzer_version": "atlas-pr142/1",
+        "history_reference": "history-fixed",
+        "semantic_context": {
+            "schema_version": 1,
+            "semantic_graph": {"nodes": [], "edges": []},
+            "symbols": [],
+            "limitations": ["fixed-vector"],
+        },
+    }
+
+    serialized = SemanticSnapshotStore._serialize(snapshot).encode("utf-8")
+    envelope = json.loads(serialized)
+    assert envelope["checksum"] == (
+        "253a7cf16f5645ebbdf80f08fd49fe4d8fccffff67004a7f31843a1dd71090e3"
+    )
+    assert len(serialized) == 604
+    assert hashlib.sha256(serialized).hexdigest() == (
+        "fb54370fa219f0d606baf650f9ac66968c6e1ce1658d926e8ce2d1841669daf5"
+    )
 
 
 def _workspace(tmp_path: Path) -> Workspace:

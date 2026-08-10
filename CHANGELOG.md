@@ -1,5 +1,40 @@
 # Changelog
 
+## PR145 Atlas runtime dependency ratchet
+
+- Replaced the remaining `prompts.semantic` compatibility-facade import with
+  the PR144 canonical `semantic_snapshot.context` owner of
+  `WorkspaceSemanticContext`; the imported class object remains identical.
+- Removed the only statically resolvable runtime dependency cycle without
+  moving a package or introducing a runtime abstraction.
+- Added deterministic test-only dependency governance with separate runtime
+  and `TYPE_CHECKING` edge classification, literal dynamic-import recognition,
+  and strongly connected component validation.
+- Added clean-interpreter coverage proving that semantic prompt imports no
+  longer initialize `ai_context`, its collector, or `repository_report`.
+- Preserved public APIs, CLI behavior, prompt behavior, snapshot schema and
+  bytes, identifiers, checksums, renderers, persistence, and serialization.
+- Kept Architectural Drift, Benchmark Intelligence, hardware, HWBOT, and AI OC
+  out of scope.
+
+## PR144 minimal platform boundary
+
+- Added the intentionally minimal `moughorai.platform` package and made its
+  `safety` module the canonical owner of the existing domain-neutral
+  absolute-path checks.
+- Preserved `moughorai.repository_report.safety` as an identity-preserving
+  compatibility re-export while migrating its 21 production consumers to the
+  platform boundary.
+- Moved canonical `WorkspaceSemanticContext` ownership to
+  `moughorai.semantic_snapshot.context`, preserved the existing `ai_context`
+  imports as the same class object, and removed `semantic_snapshot` imports of
+  `ai_context`.
+- Added dependency-boundary and fixed-vector snapshot tests. Snapshot schema,
+  dictionaries, identifiers, checksums, serialized bytes, CLI behavior,
+  renderers, public APIs, and plugin contracts remain unchanged.
+- Kept measurement, evidence, graphs, storage, CLI abstractions, Architectural
+  Drift, and Benchmark Intelligence out of scope.
+
 ## PR142 deterministic technical-debt observations
 
 - Added an ephemeral, cycle-only first slice of the Technical Debt Engine. It

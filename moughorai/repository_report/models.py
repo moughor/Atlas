@@ -14,7 +14,7 @@ from moughorai.semantic_evidence import (
     EvidenceRecord,
 )
 
-from .safety import contains_absolute_path
+from moughorai.platform.safety import contains_absolute_path
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None

@@ -6,8 +6,8 @@ from string import Formatter
 from types import MappingProxyType
 from typing import Mapping
 
-from moughorai.ai_context import WorkspaceSemanticContext
 from moughorai.llm import LlmMessage, LlmRequest
+from moughorai.semantic_snapshot.context import WorkspaceSemanticContext
 
 
 class PromptTemplateError(ValueError):

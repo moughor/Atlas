@@ -9,7 +9,7 @@ import sqlite3
 from threading import RLock
 from typing import Callable
 
-from moughorai.repository_report.safety import contains_absolute_path_text
+from moughorai.platform.safety import contains_absolute_path_text
 
 from .models import (
     Conversation,
