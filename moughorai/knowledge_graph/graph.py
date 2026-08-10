@@ -315,7 +315,11 @@ class KnowledgeGraph:
         for index, edge in enumerate(edges):
             if index:
                 digest.update(b",")
-            update(edge)
+            canonical_edge = dict(edge)
+            evidence = canonical_edge.get("evidence")
+            if isinstance(evidence, (list, tuple)):
+                canonical_edge["evidence"] = sorted(map(str, evidence))
+            update(canonical_edge)
         digest.update(b'],"nodes":[')
         for index, node in enumerate(nodes):
             if index:

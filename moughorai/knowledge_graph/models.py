@@ -33,6 +33,9 @@ class KnowledgeEdge:
     relation: KnowledgeRelation
     evidence: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence", tuple(sorted(map(str, self.evidence))))
+
 
 @dataclass(frozen=True, order=True)
 class KnowledgeRelationDegree:

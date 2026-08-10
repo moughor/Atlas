@@ -6,7 +6,7 @@ from urllib.parse import quote
 import pytest
 
 from moughorai.ai_context import WorkspaceSemanticContext
-from moughorai.knowledge_graph import KnowledgeKind
+from moughorai.knowledge_graph import KnowledgeGraph, KnowledgeKind
 from moughorai.repository_report.safety import (
     contains_absolute_path,
     contains_absolute_path_text,
@@ -442,3 +442,25 @@ def test_old_snapshot_and_dangling_relationships_degrade_explicitly() -> None:
     )
     assert partial.status is ResolutionStatus.RESOLVED
     assert any("dangling" in item for item in partial.limitations)
+
+
+def test_snapshot_reconstruction_preserves_persisted_graph_digest() -> None:
+    context = _context(
+        [
+            _node("project:a", "project", "a"),
+            _node("project:b", "project", "b"),
+        ],
+        edges=[{
+            "source": "project:a",
+            "target": "project:b",
+            "kind": "depends_on",
+            "evidence": ["evidence:z", "evidence:a"],
+        }],
+    )
+    raw_graph = context["semantic_graph"]
+    assert isinstance(raw_graph, dict)
+    persisted_digest = KnowledgeGraph.from_dict(raw_graph).stable_digest()
+
+    resolver = CanonicalSubjectResolver.from_snapshot(_snapshot(context))
+
+    assert resolver.graph_digest == persisted_digest

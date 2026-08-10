@@ -162,7 +162,7 @@ class CanonicalSubjectResolver:
                 continue
             raw_evidence = item.get("evidence", ())
             evidence = (
-                sorted({str(value) for value in raw_evidence})
+                sorted(str(value) for value in raw_evidence)
                 if isinstance(raw_evidence, Sequence)
                 and not isinstance(raw_evidence, (str, bytes, bytearray))
                 else []
