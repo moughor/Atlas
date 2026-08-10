@@ -11,6 +11,8 @@ from moughorai.gradle_syntax import (
 )
 from moughorai.project_inventory.maven_parser import MavenParseError, MavenParser
 from moughorai.project_inventory.maven_models import MavenProject
+from moughorai.project_inventory.module_graph_builder import MavenModuleGraphBuilder
+from moughorai.project_inventory.module_graph_models import ModuleEdgeKind
 from moughorai.project_locator import DEFAULT_PROJECT_MARKERS
 from moughorai.measurement import MeasurementPhase, MeasurementSession
 
@@ -153,11 +155,18 @@ class WorkspaceDiscovery:
             pending.sort(key=lambda path: path.as_posix().casefold())
 
         parsed = self._parse_maven_projects(result)
-        return self._prefer_tracked_maven_descriptors(
+        result = self._prefer_tracked_maven_descriptors(
             result,
             parsed,
             tracked_poms,
         )
+        retained_paths = {project.path.resolve() for project in result}
+        parsed = {
+            path: model
+            for path, model in parsed.items()
+            if path in retained_paths
+        }
+        return self._resolve_maven_dependencies(result, parsed)
 
     @staticmethod
     def _tracked_maven_poms(root: Path) -> tuple[Path, ...]:
@@ -248,6 +257,58 @@ class WorkspaceDiscovery:
             project
             for project in projects
             if project.path.resolve() not in omitted
+        ]
+
+    @staticmethod
+    def _resolve_maven_dependencies(
+        projects: list[Project],
+        parsed: dict[Path, MavenProject],
+    ) -> list[Project]:
+        by_coordinate: dict[str, list[tuple[Project, MavenProject]]] = {}
+        projects_by_path = {project.path.resolve(): project for project in projects}
+        for path, model in parsed.items():
+            coordinate = model.coordinate
+            project = projects_by_path.get(path)
+            if coordinate is None or project is None:
+                continue
+            by_coordinate.setdefault(coordinate.identifier, []).append((project, model))
+
+        unique = {
+            identifier: values[0]
+            for identifier, values in by_coordinate.items()
+            if len(values) == 1
+        }
+        if not unique:
+            return projects
+        graph = MavenModuleGraphBuilder().build(
+            [model for _project, model in unique.values()]
+        )
+        names = {
+            identifier: project.name
+            for identifier, (project, _model) in unique.items()
+        }
+        dependencies = {
+            project.name: set(project.dependencies)
+            for project in projects
+        }
+        for edge in graph.edges:
+            if edge.kind is not ModuleEdgeKind.DEPENDS_ON:
+                continue
+            source = names.get(edge.source)
+            target = names.get(edge.target)
+            if source is not None and target is not None:
+                dependencies[source].add(target)
+
+        return [
+            Project(
+                project.name,
+                project.path,
+                tuple(sorted(dependencies[project.name])),
+                project.include,
+                project.exclude,
+                project.options,
+            )
+            for project in projects
         ]
 
     def _gradle_projects(self, root: Path, existing: list[Project]) -> list[Project]:

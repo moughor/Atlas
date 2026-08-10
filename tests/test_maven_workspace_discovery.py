@@ -5,16 +5,35 @@ import subprocess
 
 import pytest
 
+from moughorai.ai_context import WorkspaceContextBuilder
+from moughorai.knowledge_graph import KnowledgeGraph, KnowledgeRelation
 from moughorai.workspace import WorkspaceDiscovery
 
 
-def _write_pom(path: Path, *, artifact_id: str) -> None:
+def _write_pom(
+    path: Path,
+    *,
+    artifact_id: str,
+    modules: tuple[str, ...] = (),
+    dependencies: tuple[tuple[str, str], ...] = (),
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    module_xml = "".join(f"<module>{module}</module>" for module in modules)
+    dependency_xml = "".join(
+        (
+            f"<dependency><groupId>{group_id}</groupId>"
+            f"<artifactId>{dependency_artifact}</artifactId>"
+            "<version>1</version></dependency>"
+        )
+        for group_id, dependency_artifact in dependencies
+    )
     path.write_text(
         (
             "<project><modelVersion>4.0.0</modelVersion>"
             "<groupId>com.example</groupId>"
             f"<artifactId>{artifact_id}</artifactId><version>1</version>"
+            f"<modules>{module_xml}</modules>"
+            f"<dependencies>{dependency_xml}</dependencies>"
             "</project>"
         ),
         encoding="utf-8",
@@ -109,3 +128,98 @@ def test_duplicate_tracked_maven_coordinates_are_preserved(
     paths = _relative_project_paths(root)
 
     assert {"first", "second"} <= paths
+
+
+def test_maven_reactor_dependencies_become_workspace_and_graph_edges(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "reactor"
+    _write_pom(
+        root / "pom.xml",
+        artifact_id="root",
+        modules=("module-a", "module-b"),
+    )
+    _write_pom(root / "module-a/pom.xml", artifact_id="module-a")
+    _write_pom(
+        root / "module-b/pom.xml",
+        artifact_id="module-b",
+        dependencies=(
+            ("com.example", "module-a"),
+            ("org.external", "library"),
+        ),
+    )
+
+    workspace = WorkspaceDiscovery().discover(root)
+
+    assert workspace.names() == ("module-a", "module-b", "reactor")
+    assert workspace.get("module-b").dependencies == ("module-a",)
+    graph = KnowledgeGraph.from_dict(
+        WorkspaceContextBuilder().build(workspace).to_dict()["semantic_graph"]
+    )
+    edges = graph.outgoing("project:module-b", KnowledgeRelation.DEPENDS_ON)
+    assert tuple(edge.target for edge in edges) == ("project:module-a",)
+
+
+def test_maven_workspace_dependency_order_is_deterministic(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "reactor"
+    _write_pom(
+        root / "pom.xml",
+        artifact_id="root",
+        modules=("module-c", "module-b", "module-a"),
+    )
+    _write_pom(root / "module-a/pom.xml", artifact_id="module-a")
+    _write_pom(root / "module-c/pom.xml", artifact_id="module-c")
+    _write_pom(
+        root / "module-b/pom.xml",
+        artifact_id="module-b",
+        dependencies=(
+            ("com.example", "module-c"),
+            ("com.example", "module-a"),
+        ),
+    )
+
+    first = WorkspaceDiscovery().discover(root)
+    second = WorkspaceDiscovery().discover(root)
+
+    assert first.get("module-b").dependencies == ("module-a", "module-c")
+    assert second.to_dict() == first.to_dict()
+
+
+def test_ambiguous_maven_coordinates_are_not_projected(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "reactor"
+    _write_pom(
+        root / "pom.xml",
+        artifact_id="root",
+        modules=("first", "second", "consumer"),
+    )
+    _write_pom(root / "first/pom.xml", artifact_id="shared")
+    _write_pom(root / "second/pom.xml", artifact_id="shared")
+    _write_pom(
+        root / "consumer/pom.xml",
+        artifact_id="consumer",
+        dependencies=(("com.example", "shared"),),
+    )
+    _git(root, "init", "--quiet")
+    _git(
+        root,
+        "add",
+        "pom.xml",
+        "first/pom.xml",
+        "second/pom.xml",
+        "consumer/pom.xml",
+    )
+
+    workspace = WorkspaceDiscovery().discover(root)
+
+    assert workspace.get("consumer").dependencies == ()
+    graph = KnowledgeGraph.from_dict(
+        WorkspaceContextBuilder().build(workspace).to_dict()["semantic_graph"]
+    )
+    assert graph.outgoing(
+        "project:consumer",
+        KnowledgeRelation.DEPENDS_ON,
+    ) == ()
