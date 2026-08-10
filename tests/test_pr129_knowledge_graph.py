@@ -159,8 +159,8 @@ def test_unified_graph_serialization_is_deterministic_and_pr125_compatible() -> 
     assert restored.to_dict() == first
 
 
-def test_serialized_graph_digest_preserves_canonical_evidence_order() -> None:
-    graph = KnowledgeGraph(
+def test_serialized_graph_digest_canonicalizes_evidence_order() -> None:
+    unordered = KnowledgeGraph(
         (
             KnowledgeNode("project:demo", KnowledgeKind.PROJECT, "demo"),
             KnowledgeNode("type:demo", KnowledgeKind.TYPE, "demo.Type"),
@@ -174,23 +174,83 @@ def test_serialized_graph_digest_preserves_canonical_evidence_order() -> None:
             ),
         ),
     )
-    payload = graph.to_dict()
+    normalized = KnowledgeGraph(
+        unordered.nodes,
+        (
+            KnowledgeEdge(
+                "project:demo",
+                "type:demo",
+                KnowledgeRelation.OWNS,
+                ("semantic_graph.project_id:a", "semantic_graph.project_id:z"),
+            ),
+        ),
+    )
+    payload = unordered.to_dict()
 
-    assert KnowledgeGraph.stable_payload_digest(payload) == graph.stable_digest()
+    assert unordered.stable_digest() == normalized.stable_digest()
+    assert unordered.to_dict() == normalized.to_dict()
+    assert normalized.stable_digest() == (
+        "3c85dadefb52a333e62cc1c6076985b90170810ea20d2b56dd1e93989a2a1caf"
+    )
+    assert KnowledgeGraph.stable_payload_digest(payload) == unordered.stable_digest()
 
     evidence = payload["edges"][0]["evidence"]
     assert isinstance(evidence, list)
     evidence.reverse()
-    assert KnowledgeGraph.stable_payload_digest(payload) != graph.stable_digest()
+    assert KnowledgeGraph.stable_payload_digest(payload) == unordered.stable_digest()
 
     payload["schema_version"] = True
     with pytest.raises(ValueError, match="schema"):
         KnowledgeGraph.stable_payload_digest(payload)
 
-    payload = graph.to_dict()
+    payload = unordered.to_dict()
     payload["nodes"] = tuple(payload["nodes"])
     with pytest.raises(TypeError, match="nodes and edges"):
         KnowledgeGraph.stable_payload_digest(payload)
+
+
+def test_evidence_order_cannot_change_canonical_multi_edge_order() -> None:
+    nodes = (
+        KnowledgeNode("project:demo", KnowledgeKind.PROJECT, "demo"),
+        KnowledgeNode("type:demo", KnowledgeKind.TYPE, "demo.Type"),
+    )
+    first = KnowledgeGraph(
+        nodes,
+        (
+            KnowledgeEdge(
+                "project:demo",
+                "type:demo",
+                KnowledgeRelation.OWNS,
+                ("evidence:z", "evidence:a"),
+            ),
+            KnowledgeEdge(
+                "project:demo",
+                "type:demo",
+                KnowledgeRelation.OWNS,
+                ("evidence:b", "evidence:c"),
+            ),
+        ),
+    )
+    second = KnowledgeGraph(
+        nodes,
+        (
+            KnowledgeEdge(
+                "project:demo",
+                "type:demo",
+                KnowledgeRelation.OWNS,
+                ("evidence:a", "evidence:z"),
+            ),
+            KnowledgeEdge(
+                "project:demo",
+                "type:demo",
+                KnowledgeRelation.OWNS,
+                ("evidence:b", "evidence:c"),
+            ),
+        ),
+    )
+
+    assert first.to_dict() == second.to_dict()
+    assert first.stable_digest() == second.stable_digest()
 
 
 def test_workspace_context_publishes_enriched_source_free_graph(tmp_path: Path) -> None:
