@@ -85,6 +85,7 @@ class ChatContextBudgetError(ValueError):
 class _CandidateSection:
     section: ChatContextSection
     records: tuple[EvidenceRecord, ...] = ()
+    mandatory: bool = False
 
 
 def classify_chat_intent(question: str) -> ChatIntent:
@@ -209,13 +210,19 @@ class EngineeringChatContextBuilder:
             limitations.add("Structured semantic search could not be loaded from the current snapshot.")
 
         selected_subject = sanitize_chat_text(subject) if subject and subject.strip() else None
+        resolution_origin = "explicit" if selected_subject is not None else "none"
         selected_kind = kind.strip() if kind and kind.strip() else None
         if selected_subject is None and _is_follow_up(safe_question):
             selected_subject = next(iter(sorted(set(prior_subject_ids))), None)
+            if selected_subject is not None:
+                resolution_origin = "conversation"
         if selected_subject is None and intent is ChatIntent.REPOSITORY:
             selected_subject, selected_kind = "repository", KnowledgeKind.REPOSITORY.value
+            resolution_origin = "repository"
         if selected_subject is None and search_response is not None:
             selected_subject, selected_kind = _select_search_subject(search_response)
+            if selected_subject is not None:
+                resolution_origin = "semantic_search"
 
         explanation = None
         resolved_subject_ids: tuple[str, ...] = ()
@@ -232,7 +239,7 @@ class EngineeringChatContextBuilder:
                     token_budget=max(512, min(4_000, token_budget // 2)),
                 )
                 explanation_candidate, explanation_capability = self._explanation_section(
-                    explanation, result_limit
+                    explanation, result_limit, resolution_origin=resolution_origin
                 )
                 candidates.append(explanation_candidate)
                 capability_map[explanation_capability.name] = explanation_capability
@@ -277,13 +284,15 @@ class EngineeringChatContextBuilder:
 
         for capability in requested:
             if capability == "impact_prediction":
-                candidate, value = self._impact_section(
+                impact_candidates, value = self._impact_section(
                     snapshot, resolved_subject, result_limit
                 )
+                candidates.extend(impact_candidates)
             elif capability == "refactoring_advisor":
                 candidate, value = self._refactoring_section(
                     snapshot, resolved_subject, result_limit
                 )
+                candidates.append(candidate)
             else:
                 candidate, value = self._security_section(
                     snapshot,
@@ -294,8 +303,8 @@ class EngineeringChatContextBuilder:
                         or _explicit_repository_scope(safe_question)
                     ),
                 )
+                candidates.append(candidate)
             capability_map[capability] = value
-            candidates.append(candidate)
 
         history_candidate = self._history_section(
             snapshot,
@@ -354,7 +363,13 @@ class EngineeringChatContextBuilder:
             "semantic_search", state, (response.producer,), tuple(response.limitations)
         )
 
-    def _explanation_section(self, response, result_limit: int) -> tuple[_CandidateSection, ChatCapability]:
+    def _explanation_section(
+        self,
+        response,
+        result_limit: int,
+        *,
+        resolution_origin: str,
+    ) -> tuple[_CandidateSection, ChatCapability]:
         selected_facts = response.facts[: min(
             MAXIMUM_EXPLANATION_FACTS, max(1, result_limit)
         )]
@@ -372,6 +387,7 @@ class EngineeringChatContextBuilder:
             "limitations": list(response.limitations),
             "input_fingerprint": response.input_fingerprint,
             "lineage": response.lineage,
+            "resolution_origin": resolution_origin,
         }
         state = _chat_state(response.availability.value)
         section = ChatContextSection(
@@ -394,12 +410,13 @@ class EngineeringChatContextBuilder:
 
     def _impact_section(self, snapshot, subject, result_limit):
         if subject is None:
-            return _unavailable_section(
+            candidate, capability = _unavailable_section(
                 "impact_prediction", "Impact prediction", "atlas-pr136/1",
                 "Impact analysis requires one unambiguous canonical subject.", 20,
             )
+            return (candidate,), capability
         try:
-            response = ImpactPredictionService.from_snapshot(snapshot).predict(
+            analysis = ImpactPredictionService.from_snapshot(snapshot).analyze(
                 ImpactPredictionRequest(
                     SubjectQuery(
                         subject.subject_id,
@@ -411,7 +428,8 @@ class EngineeringChatContextBuilder:
                     limit=result_limit,
                 )
             )
-            return _response_section(
+            response = analysis.response
+            representative, capability = _response_section(
                 "impact_prediction", "Impact prediction", response,
                 "findings", result_limit, 20,
                 producer=response.producer_version,
@@ -421,12 +439,59 @@ class EngineeringChatContextBuilder:
                     "visited_edge_count", "truncated",
                 ),
             )
+            aggregate = analysis.aggregate
+            raw_aggregate = aggregate.to_dict()
+            raw_capabilities = raw_aggregate.get("capabilities", ())
+            compact_capabilities = {
+                str(item.get("name")): {
+                    "state": item.get("state"),
+                    "coverage": item.get("coverage"),
+                }
+                for item in raw_capabilities
+                if isinstance(item, Mapping) and item.get("name")
+            } if isinstance(raw_capabilities, Sequence) else {}
+            aggregate_content = _selected_mapping(raw_aggregate, (
+                "producer_version", "input_fingerprint", "graph_digest",
+                "lineage", "total_impact_count",
+                "unique_affected_project_count",
+                "direct_affected_project_count",
+                "transitive_affected_project_count", "category_counts",
+                "depth_histogram", "configured_max_depth",
+                "maximum_observed_depth", "visited_node_count",
+                "visited_edge_count", "traversal_complete",
+                "traversal_truncated", "representative_total_count",
+                "representative_included_count",
+                "representative_omitted_count", "representative_complete",
+                "evidence_ids", "limitations",
+            ), additions={
+                "capabilities": compact_capabilities,
+                "relationship_semantics": "declared_or_observed_static_relationships",
+                "runtime_usage_proven": False,
+            })
+            aggregate_section = ChatContextSection(
+                "impact_aggregate",
+                "impact_prediction",
+                "Complete deterministic impact aggregate",
+                {"aggregate": aggregate_content},
+                aggregate.evidence_ids,
+                5,
+                1,
+                1,
+                0,
+            )
+            aggregate_candidate = _CandidateSection(
+                aggregate_section,
+                aggregate.evidence_index.records,
+                mandatory=True,
+            )
+            return (aggregate_candidate, representative), capability
         except (KeyError, TypeError, ValueError, OverflowError):
-            return _unavailable_section(
+            candidate, capability = _unavailable_section(
                 "impact_prediction", "Impact prediction", "atlas-pr136/1",
                 "Structured impact analysis is unavailable or incompatible with this snapshot.", 20,
                 ChatCapabilityState.INCOMPATIBLE,
             )
+            return (candidate,), capability
 
     def _refactoring_section(self, snapshot, subject, result_limit):
         if subject is None:
@@ -556,6 +621,10 @@ class EngineeringChatContextBuilder:
                 limitations, token_budget, len(ordered) - len(trial),
             ) <= token_budget:
                 retained.append(candidate)
+            elif candidate.mandatory:
+                raise ChatContextBudgetError(
+                    f"mandatory engineering-chat section {candidate.section.section_id} exceeds its token budget"
+                )
             else:
                 omitted += 1
         if omitted:
@@ -581,11 +650,19 @@ class EngineeringChatContextBuilder:
                         break
                 if estimated <= token_budget:
                     return context
-            if not retained:
+            removable = next(
+                (
+                    index
+                    for index in range(len(retained) - 1, -1, -1)
+                    if not retained[index].mandatory
+                ),
+                None,
+            )
+            if removable is None:
                 raise ChatContextBudgetError(
                     "mandatory engineering-chat context exceeds its token budget"
                 )
-            retained.pop()
+            retained.pop(removable)
             omitted += 1
             limitations = tuple(item for item in limitations if "context section(s)" not in item)
             limitations = (*limitations, f"{omitted} chat context section(s) were omitted by the token budget.")
