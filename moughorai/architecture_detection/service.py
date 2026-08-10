@@ -7,7 +7,16 @@ from typing import Any, Protocol
 
 from moughorai.java_architecture import JavaArchitectureGraph
 
-from .models import ArchitectureEvidence, ArchitectureFinding, ArchitectureReport
+from .models import (
+    ArchitectureDependencyDirection,
+    ArchitectureDependencyEvidenceClass,
+    ArchitectureDependencyPair,
+    ArchitectureDependencyPairClassification,
+    ArchitectureDependencyTopology,
+    ArchitectureEvidence,
+    ArchitectureFinding,
+    ArchitectureReport,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +227,8 @@ class ArchitectureDetectionService:
             for node in facts.nodes
         )
         conflicts = self._conflicts(findings)
+        build_topology = self._build_topology(facts)
+        import_topology = self._import_topology(facts)
         return ArchitectureReport(
             findings,
             directions,
@@ -229,7 +240,175 @@ class ArchitectureDetectionService:
             bool(directions),
             len(directions),
             conflicts,
+            build_dependency_topology=build_topology,
+            import_dependency_topology=import_topology,
+            dependency_pair_classifications=self._pair_classifications(
+                build_topology,
+                import_topology,
+            ),
         )
+
+    @classmethod
+    def _build_topology(
+        cls,
+        facts: _ArchitectureFacts,
+    ) -> ArchitectureDependencyTopology:
+        projects = {
+            str(node.get("id")): str(
+                node.get("qualified_name") or node.get("name") or node.get("id")
+            )
+            for node in facts.nodes
+            if node.get("kind") == "project"
+        }
+        evidence: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+        for edge in facts.edges:
+            if edge.get("kind") != "depends_on":
+                continue
+            source = projects.get(str(edge.get("source")))
+            target = projects.get(str(edge.get("target")))
+            if source is None or target is None:
+                continue
+            evidence.setdefault((source, target), []).append(edge)
+        return cls._topology(
+            ArchitectureDependencyEvidenceClass.BUILD_MODULE,
+            evidence,
+            default_provenance="semantic_graph",
+        )
+
+    @classmethod
+    def _import_topology(
+        cls,
+        facts: _ArchitectureFacts,
+    ) -> ArchitectureDependencyTopology:
+        nodes = {str(node.get("id")): node for node in facts.nodes}
+        evidence: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+        for edge in facts.edges:
+            if edge.get("kind") != "imports":
+                continue
+            source = nodes.get(str(edge.get("source")))
+            target = nodes.get(str(edge.get("target")))
+            if source is None or target is None:
+                continue
+            source_project = source.get("project_id")
+            target_project = target.get("project_id")
+            if (
+                source_project
+                and target_project
+                and source_project != target_project
+            ):
+                evidence.setdefault(
+                    (str(source_project), str(target_project)),
+                    [],
+                ).append(edge)
+        return cls._topology(
+            ArchitectureDependencyEvidenceClass.SOURCE_IMPORT,
+            evidence,
+            default_provenance="semantic_graph",
+        )
+
+    @classmethod
+    def _topology(
+        cls,
+        evidence_class: ArchitectureDependencyEvidenceClass,
+        evidence: Mapping[tuple[str, str], list[Mapping[str, Any]]],
+        *,
+        default_provenance: str,
+    ) -> ArchitectureDependencyTopology:
+        directions = tuple(
+            ArchitectureDependencyDirection(
+                source,
+                target,
+                evidence_class,
+                sum(cls._evidence_count(edge) for edge in edges),
+                tuple(sorted({
+                    cls._provenance(edge, default_provenance)
+                    for edge in edges
+                })),
+            )
+            for (source, target), edges in sorted(evidence.items())
+        )
+        pairs = tuple(
+            (direction.source_project, direction.target_project)
+            for direction in directions
+        )
+        return ArchitectureDependencyTopology(
+            evidence_class,
+            directions,
+            cls._topology_cycles(pairs),
+        )
+
+    @staticmethod
+    def _evidence_count(edge: Mapping[str, Any]) -> int:
+        evidence = edge.get("evidence")
+        if isinstance(evidence, (list, tuple)):
+            return max(1, len(evidence))
+        return 1
+
+    @staticmethod
+    def _provenance(edge: Mapping[str, Any], default: str) -> str:
+        raw = edge.get("evidence")
+        values = raw if isinstance(raw, (list, tuple)) else ()
+        if any(str(item).startswith("workspace.projects:") for item in values):
+            return "workspace.projects"
+        if any(str(item).startswith("global_symbol.metadata:") for item in values):
+            return "global_symbol.metadata"
+        if any(str(item).startswith("java-architecture:") for item in values):
+            return "java-architecture"
+        return default
+
+    @staticmethod
+    def _pair_classifications(
+        build: ArchitectureDependencyTopology,
+        imports: ArchitectureDependencyTopology,
+    ) -> tuple[ArchitectureDependencyPair, ...]:
+        build_pairs = {
+            (item.source_project, item.target_project)
+            for item in build.directions
+        }
+        import_pairs = {
+            (item.source_project, item.target_project)
+            for item in imports.directions
+        }
+        return tuple(
+            ArchitectureDependencyPair(
+                source,
+                target,
+                (
+                    ArchitectureDependencyPairClassification.CORROBORATED
+                    if pair in build_pairs and pair in import_pairs
+                    else ArchitectureDependencyPairClassification.BUILD_ONLY
+                    if pair in build_pairs
+                    else ArchitectureDependencyPairClassification.IMPORT_ONLY
+                ),
+            )
+            for pair in sorted(build_pairs | import_pairs)
+            for source, target in (pair,)
+        )
+
+    @classmethod
+    def _topology_cycles(
+        cls,
+        edges: tuple[tuple[str, str], ...],
+    ) -> tuple[tuple[str, ...], ...]:
+        if not edges:
+            return ()
+        nodes = {value for edge in edges for value in edge}
+        indegree = {node: 0 for node in nodes}
+        adjacency: dict[str, set[str]] = {}
+        for source, target in edges:
+            adjacency.setdefault(source, set()).add(target)
+            indegree[target] += 1
+        ready = sorted(node for node, degree in indegree.items() if degree == 0)
+        visited = 0
+        while ready:
+            current = ready.pop(0)
+            visited += 1
+            for target in sorted(adjacency.get(current, ())):
+                indegree[target] -= 1
+                if indegree[target] == 0:
+                    ready.append(target)
+            ready.sort()
+        return () if visited == len(nodes) else cls._cycles(edges)
 
     @staticmethod
     def _conflicts(

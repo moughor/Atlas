@@ -1,6 +1,92 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class ArchitectureDependencyEvidenceClass(str, Enum):
+    BUILD_MODULE = "BUILD_MODULE"
+    SOURCE_IMPORT = "SOURCE_IMPORT"
+
+
+class ArchitectureDependencyPairClassification(str, Enum):
+    CORROBORATED = "CORROBORATED"
+    BUILD_ONLY = "BUILD_ONLY"
+    IMPORT_ONLY = "IMPORT_ONLY"
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class ArchitectureDependencyDirection:
+    source_project: str
+    target_project: str
+    evidence_class: ArchitectureDependencyEvidenceClass
+    evidence_count: int
+    provenance: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.source_project or not self.target_project:
+            raise ValueError("architecture dependency projects must not be empty")
+        if self.evidence_count < 1:
+            raise ValueError("architecture dependency evidence count must be positive")
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "source_project": self.source_project,
+            "target_project": self.target_project,
+            "evidence_class": self.evidence_class.value,
+            "evidence_count": self.evidence_count,
+            "provenance": list(self.provenance),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ArchitectureDependencyTopology:
+    evidence_class: ArchitectureDependencyEvidenceClass
+    directions: tuple[ArchitectureDependencyDirection, ...] = ()
+    cycles: tuple[tuple[str, ...], ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(
+            direction.evidence_class is not self.evidence_class
+            for direction in self.directions
+        ):
+            raise ValueError("architecture topology contains a different evidence class")
+        object.__setattr__(self, "directions", tuple(sorted(set(self.directions))))
+        object.__setattr__(self, "cycles", tuple(sorted(set(self.cycles))))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "evidence_class": self.evidence_class.value,
+            "directions": [item.to_dict() for item in self.directions],
+            "cycles": [list(cycle) for cycle in self.cycles],
+        }
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class ArchitectureDependencyPair:
+    source_project: str
+    target_project: str
+    classification: ArchitectureDependencyPairClassification
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "source_project": self.source_project,
+            "target_project": self.target_project,
+            "classification": self.classification.value,
+        }
+
+
+def _empty_build_topology() -> ArchitectureDependencyTopology:
+    return ArchitectureDependencyTopology(
+        ArchitectureDependencyEvidenceClass.BUILD_MODULE,
+    )
+
+
+def _empty_import_topology() -> ArchitectureDependencyTopology:
+    return ArchitectureDependencyTopology(
+        ArchitectureDependencyEvidenceClass.SOURCE_IMPORT,
+    )
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -50,6 +136,13 @@ class ArchitectureReport:
     dependency_evidence_edges: int = 0
     classification_conflicts: tuple[str, ...] = ()
     schema_version: int = 1
+    build_dependency_topology: ArchitectureDependencyTopology = field(
+        default_factory=_empty_build_topology,
+    )
+    import_dependency_topology: ArchitectureDependencyTopology = field(
+        default_factory=_empty_import_topology,
+    )
+    dependency_pair_classifications: tuple[ArchitectureDependencyPair, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -69,4 +162,9 @@ class ArchitectureReport:
                 "evidence_edge_count": self.dependency_evidence_edges,
             },
             "classification_conflicts": list(self.classification_conflicts),
+            "build_dependency_topology": self.build_dependency_topology.to_dict(),
+            "import_dependency_topology": self.import_dependency_topology.to_dict(),
+            "dependency_pair_classifications": [
+                item.to_dict() for item in self.dependency_pair_classifications
+            ],
         }
