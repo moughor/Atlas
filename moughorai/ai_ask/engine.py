@@ -24,7 +24,12 @@ from .context import (
     strip_chat_citations,
     validate_citations,
 )
-from .models import ChatCapabilityState, ChatContext, CitationValidation
+from .models import (
+    ChatCapabilityState,
+    ChatContext,
+    ChatIntent,
+    CitationValidation,
+)
 from .safety import contains_unsafe_chat_content, sanitize_chat_metadata
 
 
@@ -237,14 +242,22 @@ class AskResult:
         retained_capabilities = {
             section.capability for section in self.context.sections
         }
+        explicit_subject = any(
+            section.section_id == "canonical_explanation"
+            and section.content.get("resolution_origin") == "explicit"
+            for section in self.context.sections
+        )
         searchable = {
             ChatCapabilityState.AVAILABLE,
             ChatCapabilityState.PARTIAL,
             ChatCapabilityState.AMBIGUOUS,
         }
         if (
-            capabilities.get("semantic_search") not in searchable
-            or "semantic_search" not in retained_capabilities
+            not explicit_subject
+            and (
+                capabilities.get("semantic_search") not in searchable
+                or "semantic_search" not in retained_capabilities
+            )
         ):
             return False
         explainable = {
@@ -267,10 +280,20 @@ class AskResult:
                 continue
             if state not in explainable:
                 return False
-            selected_evidence = {
-                evidence_id
+            qualifying_sections = tuple(
+                section
                 for section in self.context.sections
                 if section.capability == name
+                and (
+                    name != "impact_prediction"
+                    or section.section_id == "impact_aggregate"
+                )
+            )
+            if not qualifying_sections:
+                return False
+            selected_evidence = {
+                evidence_id
+                for section in qualifying_sections
                 for evidence_id in section.evidence_ids
             }
             if not selected_evidence.intersection(
@@ -534,6 +557,30 @@ class AskEngine:
                 )
             response_provider = sanitize_chat_metadata(response.provider)
             response_model = sanitize_chat_metadata(response.model)
+            provider_result = AskResult(
+                answer,
+                snapshot.snapshot_id,
+                conversation_id,
+                context,
+                citations,
+                response_provider,
+                response_model,
+                tuple(limitations),
+            )
+            if not provider_result.grounded and context.intent is ChatIntent.IMPACT:
+                fallback = _deterministic_impact_fallback(context)
+                if fallback is not None:
+                    answer = fallback
+                    citations = validate_citations(
+                        answer,
+                        (
+                            item.evidence_id
+                            for item in context.evidence_index.records
+                        ),
+                    )
+                    limitations.add(
+                        "Provider grounding failed; Atlas discarded the provider interpretation and returned a deterministic impact fallback."
+                    )
             result = AskResult(
                 answer,
                 snapshot.snapshot_id,
@@ -609,6 +656,179 @@ class AskEngine:
             + ("\n".join(transcript) if transcript else "(none)")
             + f"\nQuestion: {context.question}"
         )
+
+
+def _deterministic_impact_fallback(context: ChatContext) -> str | None:
+    aggregate_section = next(
+        (
+            section
+            for section in context.sections
+            if section.section_id == "impact_aggregate"
+        ),
+        None,
+    )
+    if aggregate_section is None or not aggregate_section.evidence_ids:
+        return None
+    raw_aggregate = aggregate_section.content.get("aggregate")
+    if not isinstance(raw_aggregate, Mapping):
+        return None
+
+    def count(name: str) -> int:
+        value = raw_aggregate.get(name, 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    total = count("total_impact_count")
+    projects = count("unique_affected_project_count")
+    direct = count("direct_affected_project_count")
+    transitive = count("transitive_affected_project_count")
+    evidence_id = aggregate_section.evidence_ids[0]
+    depth_histogram = raw_aggregate.get("depth_histogram", {})
+    depth_text = "none"
+    if isinstance(depth_histogram, Mapping):
+        depth_text = ", ".join(
+            f"depth {depth}: {value}"
+            for depth, value in sorted(
+                depth_histogram.items(), key=lambda item: int(str(item[0]))
+            )
+        ) or "none"
+
+    representative_section = next(
+        (
+            section
+            for section in context.sections
+            if section.section_id == "impact_prediction"
+        ),
+        None,
+    )
+    raw_findings = ()
+    if representative_section is not None:
+        candidate = representative_section.content.get("findings", ())
+        if isinstance(candidate, Sequence) and not isinstance(
+            candidate, (str, bytes, bytearray)
+        ):
+            raw_findings = tuple(
+                item for item in candidate if isinstance(item, Mapping)
+            )
+    displayed_direct = sum(item.get("direct") is True for item in raw_findings)
+    displayed_transitive = len(raw_findings) - displayed_direct
+    displayed = len(raw_findings)
+    omitted = max(0, total - displayed)
+
+    lines = [
+        "Atlas deterministic impact answer",
+        "",
+        "Provider grounding failed, so the provider interpretation was discarded.",
+        "",
+        (
+            f"Deterministic aggregate: {total} impact classifications across "
+            f"{projects} affected projects; {direct} direct and {transitive} "
+            f"transitive. {evidence_id}"
+        ),
+        f"Depth distribution: {depth_text}.",
+        (
+            f"Traversal coverage: maximum configured depth "
+            f"{count('configured_max_depth')}, maximum observed depth "
+            f"{count('maximum_observed_depth')}, {count('visited_node_count')} "
+            f"visited nodes, and {count('visited_edge_count')} visited edges; "
+            f"complete: {str(raw_aggregate.get('traversal_complete') is True).lower()}."
+        ),
+        "",
+        (
+            f"Representative display: included {displayed} of {total}, omitted "
+            f"{omitted}, complete: {str(omitted == 0).lower()}."
+        ),
+        (
+            f"Direct representatives: included {displayed_direct} of {direct}, "
+            f"omitted {max(0, direct - displayed_direct)}, complete: "
+            f"{str(displayed_direct == direct).lower()}."
+        ),
+        (
+            f"Transitive representatives: included {displayed_transitive} of "
+            f"{transitive}, omitted {max(0, transitive - displayed_transitive)}, "
+            f"complete: {str(displayed_transitive == transitive).lower()}."
+        ),
+    ]
+    for item in raw_findings:
+        subject = item.get("subject")
+        canonical_id = (
+            subject.get("canonical_id")
+            if isinstance(subject, Mapping)
+            else "unavailable"
+        )
+        category = item.get("category", "unknown")
+        relation = "direct" if item.get("direct") is True else "transitive"
+        item_evidence = item.get("evidence_ids", ())
+        item_citation = next(
+            (
+                value
+                for value in item_evidence
+                if isinstance(value, str)
+                and value in representative_section.evidence_ids
+            ),
+            evidence_id,
+        ) if representative_section is not None else evidence_id
+        lines.append(
+            f"- Representative {relation} {category}: {canonical_id}. {item_citation}"
+        )
+
+    capabilities = raw_aggregate.get("capabilities", {})
+    if isinstance(capabilities, Mapping):
+        capability_text = ", ".join(
+            f"{name}={value.get('state', 'unknown')}"
+            for name, value in sorted(capabilities.items())
+            if isinstance(value, Mapping)
+        )
+        if capability_text:
+            lines.extend(("", f"Impact capability availability: {capability_text}."))
+
+    architecture_state = "not retained"
+    explanation_section = next(
+        (
+            section
+            for section in context.sections
+            if section.section_id == "canonical_explanation"
+        ),
+        None,
+    )
+    if explanation_section is not None:
+        explanation_capabilities = explanation_section.content.get(
+            "capabilities", ()
+        )
+        if isinstance(explanation_capabilities, Sequence):
+            architecture = next(
+                (
+                    item
+                    for item in explanation_capabilities
+                    if isinstance(item, Mapping)
+                    and "architecture" in str(item.get("name", ""))
+                ),
+                None,
+            )
+            if architecture is not None:
+                architecture_state = str(
+                    architecture.get("availability", "unknown")
+                )
+    lines.append(f"Architecture evidence availability: {architecture_state}.")
+    lines.append(
+        "These static declared or observed dependency relationships do not prove runtime usage."
+    )
+
+    aggregate_limitations = raw_aggregate.get("limitations", ())
+    if isinstance(aggregate_limitations, Sequence) and not isinstance(
+        aggregate_limitations, (str, bytes, bytearray)
+    ):
+        selected_limitations = tuple(
+            str(item) for item in aggregate_limitations[:8] if str(item).strip()
+        )
+        if selected_limitations:
+            lines.extend(("", "Limitations:"))
+            lines.extend(f"- {item}" for item in selected_limitations)
+        remaining = max(0, len(aggregate_limitations) - len(selected_limitations))
+        if remaining:
+            lines.append(
+                f"- {remaining} additional deterministic limitation records were omitted from this display."
+            )
+    return "\n".join(lines)
 
 
 # Additive PR139 names; the implementation remains the existing AskEngine path.

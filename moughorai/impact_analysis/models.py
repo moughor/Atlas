@@ -54,6 +54,8 @@ class ImpactAnalysisReport:
 
 IMPACT_PREDICTION_SCHEMA_VERSION = 1
 IMPACT_PREDICTION_PRODUCER = "atlas-pr136/1"
+IMPACT_AGGREGATE_SCHEMA_VERSION = 1
+IMPACT_AGGREGATE_PRODUCER = "atlas-pr151/1"
 
 _MAX_QUERY_ITEMS = 128
 _MAX_RELATIONS = len(KnowledgeRelation)
@@ -1920,6 +1922,481 @@ def _finding_sort_key(item: ImpactFinding) -> tuple[object, ...]:
 
 
 @dataclass(frozen=True, slots=True)
+class ImpactAggregate:
+    """Complete deterministic impact counts plus bounded-display metadata."""
+
+    input_fingerprint: str
+    graph_digest: str
+    lineage: str
+    total_impact_count: int
+    unique_affected_project_count: int
+    direct_affected_project_count: int
+    transitive_affected_project_count: int
+    category_counts: tuple[tuple[ImpactCategory, int], ...]
+    depth_histogram: tuple[tuple[int, int], ...]
+    configured_max_depth: int
+    maximum_observed_depth: int
+    visited_node_count: int
+    visited_edge_count: int
+    traversal_truncated: bool
+    representative_total_count: int
+    representative_included_count: int
+    representative_omitted_count: int
+    representative_complete: bool
+    capabilities: tuple[ImpactCapability, ...]
+    evidence_index: EvidenceIndex
+    limitations: tuple[str, ...] = ()
+    producer_version: str = IMPACT_AGGREGATE_PRODUCER
+    schema_version: int = IMPACT_AGGREGATE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        for name in ("input_fingerprint", "graph_digest", "lineage", "producer_version"):
+            object.__setattr__(
+                self,
+                name,
+                _safe_text(
+                    getattr(self, name), f"impact aggregate {name}", maximum=256
+                ),
+            )
+        if self.producer_version != IMPACT_AGGREGATE_PRODUCER:
+            raise ValueError("unsupported impact aggregate producer")
+        if self.schema_version != IMPACT_AGGREGATE_SCHEMA_VERSION:
+            raise ValueError("unsupported impact aggregate schema")
+
+        for name in (
+            "total_impact_count",
+            "unique_affected_project_count",
+            "direct_affected_project_count",
+            "transitive_affected_project_count",
+            "configured_max_depth",
+            "maximum_observed_depth",
+            "visited_node_count",
+            "visited_edge_count",
+            "representative_total_count",
+            "representative_included_count",
+            "representative_omitted_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"impact aggregate {name} must be a non-negative integer"
+                )
+        if not 1 <= self.configured_max_depth <= _MAX_PATH_DEPTH:
+            raise ValueError(
+                "impact aggregate configured depth is outside the supported range"
+            )
+        if self.maximum_observed_depth > self.configured_max_depth:
+            raise ValueError(
+                "impact aggregate observed depth exceeds its configured depth"
+            )
+        if (
+            self.direct_affected_project_count
+            + self.transitive_affected_project_count
+            != self.unique_affected_project_count
+        ):
+            raise ValueError("impact aggregate project partitions are inconsistent")
+
+        categories = tuple(sorted(self.category_counts, key=lambda item: item[0].value))
+        if any(
+            not isinstance(category, ImpactCategory)
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 1
+            for category, count in categories
+        ):
+            raise TypeError("impact aggregate category counts are invalid")
+        if len({category for category, _ in categories}) != len(categories):
+            raise ValueError("impact aggregate category counts contain duplicates")
+        if sum(count for _, count in categories) != self.total_impact_count:
+            raise ValueError(
+                "impact aggregate category counts do not cover every impact"
+            )
+        object.__setattr__(self, "category_counts", categories)
+
+        depths = tuple(sorted(self.depth_histogram))
+        if any(
+            isinstance(depth, bool)
+            or not isinstance(depth, int)
+            or not 1 <= depth <= self.configured_max_depth
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 1
+            for depth, count in depths
+        ):
+            raise TypeError("impact aggregate depth histogram is invalid")
+        if len({depth for depth, _ in depths}) != len(depths):
+            raise ValueError("impact aggregate depth histogram contains duplicates")
+        if sum(count for _, count in depths) != self.total_impact_count:
+            raise ValueError(
+                "impact aggregate depth histogram does not cover every impact"
+            )
+        if self.maximum_observed_depth != max(
+            (depth for depth, _ in depths), default=0
+        ):
+            raise ValueError(
+                "impact aggregate maximum observed depth is inconsistent"
+            )
+        object.__setattr__(self, "depth_histogram", depths)
+
+        if self.representative_total_count != self.total_impact_count:
+            raise ValueError("impact aggregate representative total is inconsistent")
+        if (
+            self.representative_included_count + self.representative_omitted_count
+            != self.representative_total_count
+        ):
+            raise ValueError("impact aggregate representative counts are inconsistent")
+        if self.representative_complete != (
+            self.representative_omitted_count == 0
+        ):
+            raise ValueError(
+                "impact aggregate representative completeness is inconsistent"
+            )
+        if not isinstance(self.traversal_truncated, bool):
+            raise TypeError(
+                "impact aggregate traversal truncation must be a boolean"
+            )
+
+        capabilities = tuple(sorted(self.capabilities, key=lambda item: item.name))
+        if any(not isinstance(item, ImpactCapability) for item in capabilities):
+            raise TypeError(
+                "impact aggregate capabilities must use ImpactCapability"
+            )
+        if len({item.name for item in capabilities}) != len(capabilities):
+            raise ValueError("impact aggregate capability names must be unique")
+        object.__setattr__(self, "capabilities", capabilities)
+
+        if not isinstance(self.evidence_index, EvidenceIndex):
+            raise TypeError("impact aggregate requires an EvidenceIndex")
+        evidence = self.evidence_index.freeze()
+        if len(evidence) > 1:
+            raise ValueError(
+                "impact aggregate uses at most one compact evidence record"
+            )
+        for record in evidence.records:
+            if record.kind is not EvidenceKind.ANALYSIS_RESULT:
+                raise ValueError(
+                    "impact aggregate evidence must be an analysis result"
+                )
+            if record.producer != self.producer_version:
+                raise ValueError(
+                    "impact aggregate evidence producer is inconsistent"
+                )
+            if record.snapshot_id != self.lineage:
+                raise ValueError("impact aggregate evidence lineage is inconsistent")
+            canonical = EvidenceRecord.create(
+                record.kind,
+                record.subject_id,
+                record.producer,
+                record.snapshot_id,
+                source_refs=record.source_refs,
+                scope=record.scope,
+                language=record.language,
+                detail=record.detail,
+                limitations=record.limitations,
+                reliability=record.reliability,
+                specificity=record.specificity,
+            )
+            if record != canonical:
+                raise ValueError(
+                    "impact aggregate contains non-canonical evidence"
+                )
+            detail = dict(record.detail)
+            expected_detail = {
+                "derivation": "deduplicated_impact_plans",
+                "graph_digest": self.graph_digest,
+                "input_fingerprint": self.input_fingerprint,
+                "total_impact_count": str(self.total_impact_count),
+                "unique_affected_project_count": str(
+                    self.unique_affected_project_count
+                ),
+                "direct_affected_project_count": str(
+                    self.direct_affected_project_count
+                ),
+                "transitive_affected_project_count": str(
+                    self.transitive_affected_project_count
+                ),
+                "category_counts_digest": hashlib.sha256(
+                    json.dumps(
+                        [
+                            [category.value, count]
+                            for category, count in self.category_counts
+                        ],
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "depth_histogram_digest": hashlib.sha256(
+                    json.dumps(
+                        [list(item) for item in self.depth_histogram],
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "configured_max_depth": str(self.configured_max_depth),
+                "maximum_observed_depth": str(self.maximum_observed_depth),
+                "visited_node_count": str(self.visited_node_count),
+                "visited_edge_count": str(self.visited_edge_count),
+                "traversal_complete": str(self.traversal_complete).lower(),
+                "representative_total_count": str(
+                    self.representative_total_count
+                ),
+                "representative_included_count": str(
+                    self.representative_included_count
+                ),
+                "representative_omitted_count": str(
+                    self.representative_omitted_count
+                ),
+                "representative_complete": str(
+                    self.representative_complete
+                ).lower(),
+                "relationship_semantics": "declared_or_observed_static_relationships",
+            }
+            if any(detail.get(name) != value for name, value in expected_detail.items()):
+                raise ValueError(
+                    "impact aggregate evidence does not bind its deterministic facts"
+                )
+            if not detail.get("supporting_reference_digest") or not detail.get(
+                "supporting_reference_count"
+            ):
+                raise ValueError(
+                    "impact aggregate evidence omits supporting-reference provenance"
+                )
+        object.__setattr__(self, "evidence_index", evidence)
+        object.__setattr__(
+            self,
+            "limitations",
+            _strings(
+                self.limitations,
+                "impact aggregate limitations",
+                maximum_count=_MAX_LIMITATIONS,
+                maximum_length=_MAX_EXPLANATION,
+            ),
+        )
+        if contains_absolute_path(self.to_dict()):
+            raise ValueError("impact aggregate must be source-free")
+        if _contains_source_shaped_text(self.to_dict()):
+            raise ValueError(
+                "impact aggregate must not contain source-shaped text"
+            )
+
+    @property
+    def traversal_complete(self) -> bool:
+        return not self.traversal_truncated
+
+    @property
+    def evidence_ids(self) -> tuple[str, ...]:
+        return tuple(
+            record.evidence_id for record in self.evidence_index.records
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "producer_version": self.producer_version,
+            "input_fingerprint": self.input_fingerprint,
+            "graph_digest": self.graph_digest,
+            "lineage": self.lineage,
+            "total_impact_count": self.total_impact_count,
+            "unique_affected_project_count": self.unique_affected_project_count,
+            "direct_affected_project_count": self.direct_affected_project_count,
+            "transitive_affected_project_count": self.transitive_affected_project_count,
+            "category_counts": {
+                category.value: count for category, count in self.category_counts
+            },
+            "depth_histogram": {
+                str(depth): count for depth, count in self.depth_histogram
+            },
+            "configured_max_depth": self.configured_max_depth,
+            "maximum_observed_depth": self.maximum_observed_depth,
+            "visited_node_count": self.visited_node_count,
+            "visited_edge_count": self.visited_edge_count,
+            "traversal_complete": self.traversal_complete,
+            "traversal_truncated": self.traversal_truncated,
+            "representative_total_count": self.representative_total_count,
+            "representative_included_count": self.representative_included_count,
+            "representative_omitted_count": self.representative_omitted_count,
+            "representative_complete": self.representative_complete,
+            "capabilities": [item.to_dict() for item in self.capabilities],
+            "evidence_ids": list(self.evidence_ids),
+            "evidence_index": self.evidence_index.to_dict(),
+            "limitations": list(self.limitations),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> ImpactAggregate:
+        _reject_unknown(
+            value,
+            frozenset({
+                "schema_version", "producer_version", "input_fingerprint",
+                "graph_digest", "lineage", "total_impact_count",
+                "unique_affected_project_count", "direct_affected_project_count",
+                "transitive_affected_project_count", "category_counts",
+                "depth_histogram", "configured_max_depth",
+                "maximum_observed_depth", "visited_node_count",
+                "visited_edge_count", "traversal_complete",
+                "traversal_truncated", "representative_total_count",
+                "representative_included_count", "representative_omitted_count",
+                "representative_complete", "capabilities", "evidence_ids",
+                "evidence_index", "limitations",
+            }),
+            "impact aggregate",
+        )
+        raw_categories = value.get("category_counts", {})
+        raw_depths = value.get("depth_histogram", {})
+        raw_evidence = value.get("evidence_index")
+        if not isinstance(raw_categories, Mapping):
+            raise TypeError(
+                "impact aggregate category counts must be an object"
+            )
+        if not isinstance(raw_depths, Mapping):
+            raise TypeError("impact aggregate depth histogram must be an object")
+        if not isinstance(raw_evidence, Mapping):
+            raise TypeError(
+                "impact aggregate evidence index must be an object"
+            )
+        result = cls(
+            _safe_text(
+                value.get("input_fingerprint", "unavailable"),
+                "impact aggregate fingerprint",
+                maximum=256,
+            ),
+            _safe_text(
+                value.get("graph_digest", "unavailable"),
+                "impact aggregate graph digest",
+                maximum=256,
+            ),
+            _safe_text(
+                value.get("lineage", "unavailable"),
+                "impact aggregate lineage",
+                maximum=256,
+            ),
+            _strict_integer(
+                value.get("total_impact_count"), "impact aggregate total", default=0
+            ),
+            _strict_integer(
+                value.get("unique_affected_project_count"),
+                "impact aggregate affected projects",
+                default=0,
+            ),
+            _strict_integer(
+                value.get("direct_affected_project_count"),
+                "impact aggregate direct projects",
+                default=0,
+            ),
+            _strict_integer(
+                value.get("transitive_affected_project_count"),
+                "impact aggregate transitive projects",
+                default=0,
+            ),
+            tuple(
+                (
+                    ImpactCategory(str(name)),
+                    _strict_integer(
+                        count, "impact aggregate category count", default=0
+                    ),
+                )
+                for name, count in raw_categories.items()
+            ),
+            tuple(
+                (
+                    int(str(depth)),
+                    _strict_integer(
+                        count, "impact aggregate depth count", default=0
+                    ),
+                )
+                for depth, count in raw_depths.items()
+            ),
+            _strict_integer(
+                value.get("configured_max_depth"),
+                "impact aggregate configured depth",
+                default=1,
+            ),
+            _strict_integer(
+                value.get("maximum_observed_depth"),
+                "impact aggregate observed depth",
+                default=0,
+            ),
+            _strict_integer(
+                value.get("visited_node_count"),
+                "impact aggregate visited nodes",
+                default=0,
+            ),
+            _strict_integer(
+                value.get("visited_edge_count"),
+                "impact aggregate visited edges",
+                default=0,
+            ),
+            _strict_boolean(
+                value.get("traversal_truncated"),
+                "impact aggregate traversal truncation",
+                default=False,
+            ),
+            _strict_integer(
+                value.get("representative_total_count"),
+                "impact aggregate representative total",
+                default=0,
+            ),
+            _strict_integer(
+                value.get("representative_included_count"),
+                "impact aggregate representatives included",
+                default=0,
+            ),
+            _strict_integer(
+                value.get("representative_omitted_count"),
+                "impact aggregate representatives omitted",
+                default=0,
+            ),
+            _strict_boolean(
+                value.get("representative_complete"),
+                "impact aggregate representative completeness",
+                default=True,
+            ),
+            tuple(
+                ImpactCapability.from_dict(item)
+                for item in _mapping_items(
+                    value.get("capabilities"), "impact aggregate capabilities"
+                )
+            ),
+            _validated_evidence_index(raw_evidence),
+            _strings(
+                value.get("limitations"),
+                "impact aggregate limitations",
+                maximum_count=_MAX_LIMITATIONS,
+                maximum_length=_MAX_EXPLANATION,
+            ),
+            _safe_text(
+                value.get("producer_version", IMPACT_AGGREGATE_PRODUCER),
+                "impact aggregate producer",
+                maximum=128,
+            ),
+            _strict_integer(
+                value.get("schema_version"),
+                "impact aggregate schema",
+                default=IMPACT_AGGREGATE_SCHEMA_VERSION,
+            ),
+        )
+        if _strict_boolean(
+            value.get("traversal_complete"),
+            "impact aggregate traversal completeness",
+            default=result.traversal_complete,
+        ) != result.traversal_complete:
+            raise ValueError(
+                "impact aggregate traversal completeness is inconsistent"
+            )
+        if _strings(
+            value.get("evidence_ids"), "impact aggregate evidence IDs"
+        ) != result.evidence_ids:
+            raise ValueError("impact aggregate evidence IDs are inconsistent")
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class ImpactPredictionResponse:
     request: ImpactPredictionRequest
     resolution: SubjectResolution
@@ -2537,3 +3014,89 @@ class ImpactPredictionResponse:
         if returned != len(result.findings):
             raise ValueError("impact response returned count is inconsistent")
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class ImpactPredictionAnalysis:
+    """Additive PR151 envelope preserving the frozen PR136 response contract."""
+
+    response: ImpactPredictionResponse
+    aggregate: ImpactAggregate
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.response, ImpactPredictionResponse):
+            raise TypeError(
+                "impact prediction analysis requires an ImpactPredictionResponse"
+            )
+        if not isinstance(self.aggregate, ImpactAggregate):
+            raise TypeError(
+                "impact prediction analysis requires an ImpactAggregate"
+            )
+        if self.aggregate.input_fingerprint != self.response.input_fingerprint:
+            raise ValueError(
+                "impact prediction analysis fingerprints are inconsistent"
+            )
+        if self.aggregate.graph_digest != self.response.graph_digest:
+            raise ValueError(
+                "impact prediction analysis graph digests are inconsistent"
+            )
+        if self.aggregate.lineage != self.response.lineage:
+            raise ValueError(
+                "impact prediction analysis lineages are inconsistent"
+            )
+        if self.aggregate.total_impact_count != self.response.total_candidate_count:
+            raise ValueError(
+                "impact prediction analysis total counts are inconsistent"
+            )
+        if self.aggregate.representative_included_count != len(
+            self.response.findings
+        ):
+            raise ValueError(
+                "impact prediction analysis included counts are inconsistent"
+            )
+        if self.aggregate.representative_omitted_count != self.response.omitted_count:
+            raise ValueError(
+                "impact prediction analysis omitted counts are inconsistent"
+            )
+        if self.aggregate.visited_node_count != self.response.visited_node_count:
+            raise ValueError(
+                "impact prediction analysis visited-node counts are inconsistent"
+            )
+        if self.aggregate.visited_edge_count != self.response.visited_edge_count:
+            raise ValueError(
+                "impact prediction analysis visited-edge counts are inconsistent"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "response": self.response.to_dict(),
+            "aggregate": self.aggregate.to_dict(),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> ImpactPredictionAnalysis:
+        _reject_unknown(
+            value,
+            frozenset({"response", "aggregate"}),
+            "impact prediction analysis",
+        )
+        raw_response = value.get("response")
+        raw_aggregate = value.get("aggregate")
+        if not isinstance(raw_response, Mapping):
+            raise TypeError("impact prediction analysis response must be an object")
+        if not isinstance(raw_aggregate, Mapping):
+            raise TypeError(
+                "impact prediction analysis aggregate must be an object"
+            )
+        return cls(
+            ImpactPredictionResponse.from_dict(raw_response),
+            ImpactAggregate.from_dict(raw_aggregate),
+        )

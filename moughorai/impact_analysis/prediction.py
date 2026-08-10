@@ -6,6 +6,8 @@ from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import heapq
+import hashlib
+import json
 from pathlib import Path
 from types import MappingProxyType
 
@@ -51,6 +53,8 @@ from .models import (
     ImpactCategory,
     ImpactChangeKind,
     ImpactFinding,
+    ImpactAggregate,
+    ImpactPredictionAnalysis,
     ImpactPathStep,
     ImpactPredictionPath,
     ImpactPredictionRequest,
@@ -259,6 +263,11 @@ class ImpactPredictionService:
         )
 
     def predict(self, request: ImpactPredictionRequest) -> ImpactPredictionResponse:
+        return self.analyze(request).response
+
+    def analyze(self, request: ImpactPredictionRequest) -> ImpactPredictionAnalysis:
+        """Return the frozen PR136 response and complete PR151 aggregate together."""
+
         if not isinstance(request, ImpactPredictionRequest):
             raise TypeError("impact prediction request is invalid")
         with self._measurement.scope(
@@ -266,11 +275,12 @@ class ImpactPredictionService:
             consumer="impact-prediction",
             sample_key=self._resolver.graph_digest,
         ) as scope:
-            response = self._predict(request)
+            analysis = self._analyze(request)
+            response = analysis.response
             scope.add_units(response.visited_node_count + response.visited_edge_count)
             scope.add_objects_produced(len(response.findings))
             scope.set_objects_retained(len(response.findings))
-        return response
+        return analysis
 
     def risk_context_for_subject(
         self,
@@ -317,7 +327,7 @@ class ImpactPredictionService:
             )
         return context, evidence.freeze(), capability
 
-    def _predict(self, request: ImpactPredictionRequest) -> ImpactPredictionResponse:
+    def _analyze(self, request: ImpactPredictionRequest) -> ImpactPredictionAnalysis:
         if not isinstance(request, ImpactPredictionRequest):
             raise TypeError("impact prediction request is invalid")
         with self._measurement.scope(
@@ -348,11 +358,16 @@ class ImpactPredictionService:
                 for item in resolutions
                 for limitation in item.limitations
             }
-            return ImpactPredictionResponse(
+            capabilities = self._capabilities(request)
+            limitations = tuple(sorted({
+                *unresolved_limitations,
+                "No impact traversal was attempted unless every requested source resolved exactly.",
+            }))
+            response = ImpactPredictionResponse(
                 request,
                 resolution,
                 (),
-                self._capabilities(request),
+                capabilities,
                 BreakingChangeAssessment(
                     BreakingChangeState.NOT_EVALUATED,
                     request.change_kind,
@@ -364,12 +379,22 @@ class ImpactPredictionService:
                 fingerprint,
                 self._resolver.graph_digest,
                 self._snapshot_id,
-                limitations=tuple(sorted({
-                    *unresolved_limitations,
-                    "No impact traversal was attempted unless every requested source resolved exactly.",
-                })),
+                limitations=limitations,
                 additional_resolutions=additional_resolutions,
             )
+            aggregate = self._aggregate(
+                request,
+                fingerprint,
+                (),
+                selected_count=0,
+                visited_nodes=0,
+                visited_edges=0,
+                traversal_truncated=False,
+                capabilities=capabilities,
+                limitations=limitations,
+                source=None,
+            )
+            return ImpactPredictionAnalysis(response, aggregate)
 
         graph = self._resolver.graph
         sources = tuple(
@@ -504,11 +529,12 @@ class ImpactPredictionService:
             frozen_evidence = evidence.freeze()
             scope.add_units(len(frozen_evidence))
             scope.set_objects_retained(len(frozen_evidence))
+        capabilities = self._capabilities(request)
         response = ImpactPredictionResponse(
             request,
             resolution,
             findings,
-            self._capabilities(request),
+            capabilities,
             breaking,
             frozen_evidence,
             fingerprint,
@@ -522,6 +548,22 @@ class ImpactPredictionService:
             tuple(sorted(limitations)),
             additional_resolutions=additional_resolutions,
         )
+        aggregate = self._aggregate(
+            request,
+            fingerprint,
+            plans,
+            selected_count=len(selected),
+            visited_nodes=traversal.visited_nodes,
+            visited_edges=traversal.visited_edges + aggregation_edges,
+            traversal_truncated=(
+                traversal.truncated
+                or aggregation_truncated
+                or test_plans_truncated
+            ),
+            capabilities=capabilities,
+            limitations=tuple(sorted(limitations)),
+            source=sources[0],
+        )
         with self._measurement.scope(
             "impact_prediction.serialize",
             consumer="impact-prediction",
@@ -531,7 +573,137 @@ class ImpactPredictionService:
             scope.add_units(len(response.findings))
             scope.add_bytes(payload_size)
             scope.add_objects_produced(1)
-        return response
+        return ImpactPredictionAnalysis(response, aggregate)
+
+    def _aggregate(
+        self,
+        request: ImpactPredictionRequest,
+        fingerprint: str,
+        plans: Sequence[_CandidatePlan],
+        *,
+        selected_count: int,
+        visited_nodes: int,
+        visited_edges: int,
+        traversal_truncated: bool,
+        capabilities: tuple[ImpactCapability, ...],
+        limitations: tuple[str, ...],
+        source: SubjectCandidate | None,
+    ) -> ImpactAggregate:
+        """Aggregate all deduplicated plans before representative selection."""
+
+        category_counts = Counter(plan.category for plan in plans)
+        depth_counts = Counter(len(plan.hops) for plan in plans)
+        project_depths: dict[str, int] = {}
+        supporting_refs: set[str] = set()
+        reliability: list[float] = []
+        specificity: list[float] = []
+        for plan in plans:
+            candidate = self._resolver.candidate_for_graph_id(plan.target_graph_id)
+            if candidate is not None and candidate.kind is KnowledgeKind.PROJECT:
+                depth = len(plan.hops)
+                project_depths[candidate.canonical_id] = min(
+                    depth, project_depths.get(candidate.canonical_id, depth)
+                )
+            for hop in plan.hops:
+                supporting_refs.update(
+                    safe_edge_evidence_refs(hop.edge.evidence)
+                )
+                reliability.append(hop.policy.reliability)
+                specificity.append(hop.policy.specificity)
+
+        direct_projects = sum(depth == 1 for depth in project_depths.values())
+        transitive_projects = len(project_depths) - direct_projects
+        omitted_count = len(plans) - selected_count
+        aggregate_limitations = {
+            *limitations,
+            "Aggregate counts describe represented static relationships and do not prove runtime usage.",
+        }
+        if traversal_truncated:
+            aggregate_limitations.add(
+                "Traversal reached a deterministic bound; aggregate counts are exact only within the represented traversal."
+            )
+
+        evidence = EvidenceIndex()
+        if source is not None:
+            support_digest = hashlib.sha256(
+                json.dumps(
+                    sorted(supporting_refs),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            record = EvidenceRecord.create(
+                EvidenceKind.ANALYSIS_RESULT,
+                source.canonical_id,
+                "atlas-pr151/1",
+                self._snapshot_id,
+                scope=source.project or "repository",
+                language=source.language,
+                detail={
+                    "derivation": "deduplicated_impact_plans",
+                    "graph_digest": self._resolver.graph_digest,
+                    "input_fingerprint": fingerprint,
+                    "supporting_reference_count": len(supporting_refs),
+                    "supporting_reference_digest": support_digest,
+                    "total_impact_count": len(plans),
+                    "unique_affected_project_count": len(project_depths),
+                    "direct_affected_project_count": direct_projects,
+                    "transitive_affected_project_count": transitive_projects,
+                    "category_counts_digest": hashlib.sha256(
+                        json.dumps(
+                            sorted(
+                                (category.value, count)
+                                for category, count in category_counts.items()
+                            ),
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "depth_histogram_digest": hashlib.sha256(
+                        json.dumps(
+                            sorted(depth_counts.items()),
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "configured_max_depth": request.max_depth,
+                    "maximum_observed_depth": max(depth_counts, default=0),
+                    "visited_node_count": visited_nodes,
+                    "visited_edge_count": visited_edges,
+                    "traversal_complete": str(not traversal_truncated).lower(),
+                    "representative_total_count": len(plans),
+                    "representative_included_count": selected_count,
+                    "representative_omitted_count": omitted_count,
+                    "representative_complete": str(omitted_count == 0).lower(),
+                    "relationship_semantics": "declared_or_observed_static_relationships",
+                },
+                limitations=tuple(sorted(aggregate_limitations)),
+                reliability=min(reliability, default=1.0),
+                specificity=min(specificity, default=1.0),
+            )
+            evidence.add(record)
+
+        return ImpactAggregate(
+            fingerprint,
+            self._resolver.graph_digest,
+            self._snapshot_id,
+            len(plans),
+            len(project_depths),
+            direct_projects,
+            transitive_projects,
+            tuple(category_counts.items()),
+            tuple(depth_counts.items()),
+            request.max_depth,
+            max(depth_counts, default=0),
+            visited_nodes,
+            visited_edges,
+            traversal_truncated,
+            len(plans),
+            selected_count,
+            omitted_count,
+            omitted_count == 0,
+            capabilities,
+            evidence.freeze(),
+            tuple(sorted(aggregate_limitations)),
+        )
 
     def _resolve_with_scope(
         self,
