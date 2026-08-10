@@ -441,6 +441,30 @@ class StructuredExplanationService:
     ) -> None:
         source = subject if direction == "outgoing" else neighbor
         target = neighbor if direction == "outgoing" else subject
+        attributes = [
+            ExplanationAttribute("direction", direction),
+            ExplanationAttribute("relation", edge.relation.value),
+            ExplanationAttribute("neighbor_id", neighbor.canonical_id),
+            ExplanationAttribute("neighbor_kind", neighbor.kind.value),
+            ExplanationAttribute("producer_evidence_count", len(edge.evidence)),
+        ]
+        if edge.relation is KnowledgeRelation.DEPENDS_ON:
+            attributes.extend((
+                ExplanationAttribute(
+                    "canonical_source_subject_id", source.canonical_id
+                ),
+                ExplanationAttribute(
+                    "canonical_target_subject_id", target.canonical_id
+                ),
+                ExplanationAttribute(
+                    "subject_relative_role",
+                    (
+                        "DEPENDENCY_OF_SUBJECT"
+                        if direction == "outgoing"
+                        else "DEPENDENT_OF_SUBJECT"
+                    ),
+                ),
+            ))
         safe_upstream_refs = tuple(sorted({
             text for item in edge.evidence
             if (text := _safe_reference(item)) is not None
@@ -480,11 +504,7 @@ class StructuredExplanationService:
             ),
             priority=priority,
             attributes=(
-                ExplanationAttribute("direction", direction),
-                ExplanationAttribute("relation", edge.relation.value),
-                ExplanationAttribute("neighbor_id", neighbor.canonical_id),
-                ExplanationAttribute("neighbor_kind", neighbor.kind.value),
-                ExplanationAttribute("producer_evidence_count", len(edge.evidence)),
+                *attributes,
                 ExplanationAttribute(
                     "retained_producer_evidence_count", len(upstream_refs)
                 ),

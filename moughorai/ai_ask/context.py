@@ -916,10 +916,7 @@ def _compact_response_item(section_id: str, value: Mapping[str, object]) -> dict
             "capability_state", "limitations",
         ), additions={
             "subject": _compact_subject(value.get("subject")),
-            "path": _selected_mapping(path, (
-                "source_subject_id", "target_subject_id", "length",
-                "relationships", "evidence_ids", "truncated", "limitations",
-            )),
+            "path": _compact_impact_path(path),
             "score": _selected_mapping(score, (
                 "value", "evidence_ids", "explanation",
             )),
@@ -962,6 +959,53 @@ def _compact_response_item(section_id: str, value: Mapping[str, object]) -> dict
             "priority", "evidence_ids", "limitations",
         ))
     return _selected_mapping(value, tuple(sorted(value)))
+
+
+def _compact_impact_path(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    changed_subject = value.get("source_subject_id")
+    raw_steps = value.get("steps", ())
+    steps = []
+    if isinstance(raw_steps, Sequence) and not isinstance(
+        raw_steps, (str, bytes, bytearray)
+    ):
+        for raw_step in raw_steps:
+            if not isinstance(raw_step, Mapping):
+                continue
+            traversal_source = raw_step.get("source_subject_id")
+            traversal_target = raw_step.get("target_subject_id")
+            relation = raw_step.get("relation")
+            reverse = raw_step.get("reverse") is True
+            additions: dict[str, object] = {
+                "traversal_source_subject_id": traversal_source,
+                "traversal_target_subject_id": traversal_target,
+                "traversal": "reverse" if reverse else "forward",
+                "canonical_source_subject_id": (
+                    traversal_target if reverse else traversal_source
+                ),
+                "canonical_target_subject_id": (
+                    traversal_source if reverse else traversal_target
+                ),
+                "canonical_relation": relation,
+            }
+            if relation == "depends_on" and reverse:
+                additions["affected_subject_role"] = (
+                    "DEPENDENT_OF_CHANGED_SUBJECT"
+                    if traversal_source == changed_subject
+                    else "DEPENDENT_OF_TRAVERSAL_SOURCE"
+                )
+            step = _selected_mapping(
+                raw_step,
+                ("strength", "evidence_ids"),
+                additions=additions,
+            )
+            if step is not None:
+                steps.append(step)
+    return _selected_mapping(value, (
+        "source_subject_id", "target_subject_id", "length",
+        "relationships", "evidence_ids", "truncated", "limitations",
+    ), additions={"steps": steps})
 
 
 def _compact_response_extra(key: str, value: object) -> object:
