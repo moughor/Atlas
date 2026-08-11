@@ -20,6 +20,10 @@ from moughorai.ai_ask import (
     ChatRequest,
     ChatResult,
 )
+from moughorai.ai_ask.models import (
+    CapabilityGroundingStatus,
+    GroundingSummary,
+)
 from moughorai.semantic_evidence import EvidenceIndex, EvidenceKind, EvidenceRecord
 
 
@@ -151,6 +155,51 @@ def test_chat_leaf_models_have_exact_round_trips() -> None:
     assert selection.to_dict() == selection_payload
     assert ChatSelection.from_dict(selection_payload) == selection
 
+    statuses = (
+        CapabilityGroundingStatus(
+            "refactoring_advisor", True, True, False, False
+        ),
+        CapabilityGroundingStatus(
+            "impact_prediction", True, True, True, True
+        ),
+    )
+    summary = GroundingSummary(
+        False,
+        True,
+        False,
+        True,
+        ("impact_prediction",),
+        ("refactoring_advisor",),
+        statuses,
+    )
+    expected_summary = {
+        "schema_version": 1,
+        "provider_grounded": False,
+        "delivered_answer_grounded": True,
+        "request_complete": False,
+        "fallback_used": True,
+        "delivered_capabilities": ["impact_prediction"],
+        "omitted_requested_capabilities": ["refactoring_advisor"],
+        "capability_statuses": [
+            {
+                "capability": "impact_prediction",
+                "requested": True,
+                "computed": True,
+                "delivered": True,
+                "grounded": True,
+            },
+            {
+                "capability": "refactoring_advisor",
+                "requested": True,
+                "computed": True,
+                "delivered": False,
+                "grounded": False,
+            },
+        ],
+    }
+    assert summary.to_dict() == expected_summary
+    assert GroundingSummary.from_dict(expected_summary) == summary
+
 
 def test_chat_context_round_trip_and_reordered_inputs_are_deterministic() -> None:
     context = _context()
@@ -274,6 +323,60 @@ def test_grounded_result_requires_an_accepted_atlas_evidence_id() -> None:
     payload["grounded"] = False
     with pytest.raises(ValueError, match="grounding is inconsistent"):
         AskResult.from_dict(payload)
+
+
+def test_ask_result_grounding_summary_is_additive_strict_and_optional() -> None:
+    context = _context()
+    known = context.evidence_index.records[0].evidence_id
+    citations = CitationValidation((known,), (known,))
+    summary = GroundingSummary(True, True, True, False)
+    result = AskResult(
+        f"Supported by {known}.",
+        SNAPSHOT_ID,
+        None,
+        context,
+        citations,
+        grounding_summary=summary,
+    )
+
+    payload = result.to_dict()
+    assert payload["grounded"] is True
+    assert payload["grounding_summary"] == summary.to_dict()
+    assert AskResult.from_dict(payload).to_dict() == payload
+
+    legacy_payload = dict(payload)
+    legacy_payload.pop("grounding_summary")
+    restored_legacy = AskResult.from_dict(legacy_payload)
+    assert restored_legacy.grounding_summary is None
+    assert "grounding_summary" not in restored_legacy.to_dict()
+
+    malformed = dict(payload)
+    malformed["grounding_summary"] = {
+        **summary.to_dict(),
+        "schema_version": 2,
+    }
+    with pytest.raises(ValueError, match="unsupported grounding summary schema"):
+        AskResult.from_dict(malformed)
+
+    malformed = dict(payload)
+    malformed["grounding_summary"] = {
+        **summary.to_dict(),
+        "provider_grounded": "true",
+    }
+    with pytest.raises(TypeError, match="must be a boolean"):
+        AskResult.from_dict(malformed)
+
+    malformed = dict(payload)
+    malformed_summary = summary.to_dict()
+    malformed_summary.pop("provider_grounded")
+    malformed["grounding_summary"] = malformed_summary
+    with pytest.raises(ValueError, match="grounding summary is incomplete"):
+        AskResult.from_dict(malformed)
+
+    with pytest.raises(ValueError, match="canonical name"):
+        CapabilityGroundingStatus(
+            r"C:\private\capability", True, True, True, True
+        )
 
 
 def test_grounding_requires_retained_required_and_requested_sections() -> None:
