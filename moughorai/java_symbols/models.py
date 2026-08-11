@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 
 from moughorai.java_ast.ast_nodes import TypeKind
+from moughorai.java_ast.models import SourceSpan
 
 
 class SymbolKind(str, Enum):
@@ -31,6 +32,7 @@ class TypeSymbol(JavaSymbol):
     package_name: str
     modifiers: tuple[str, ...] = ()
     annotations: tuple[str, ...] = ()
+    type_parameter_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,10 @@ class CallableSymbol(JavaSymbol):
     modifiers: tuple[str, ...] = ()
     annotations: tuple[str, ...] = ()
     throws: tuple[str, ...] = ()
+    parameter_varargs: tuple[bool, ...] = ()
+    type_parameter_names: tuple[str, ...] = ()
+    declaration_span: SourceSpan | None = None
+    body_span: SourceSpan | None = None
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from moughorai.java_ast.models import SourceSpan
+
 
 @dataclass(frozen=True)
 class AstNode:
@@ -84,6 +86,10 @@ class ConstructorDeclaration(AstNode):
     modifiers: tuple[str, ...] = ()
     throws: tuple[str, ...] = ()
     annotation_nodes: tuple[Annotation, ...] = ()
+    type_parameters: str | None = None
+    type_parameter_names: tuple[str, ...] = ()
+    declaration_span: SourceSpan | None = None
+    body_span: SourceSpan | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,9 @@ class MethodDeclaration(AstNode):
     type_parameters: str | None = None
     throws: tuple[str, ...] = ()
     annotation_nodes: tuple[Annotation, ...] = ()
+    type_parameter_names: tuple[str, ...] = ()
+    declaration_span: SourceSpan | None = None
+    body_span: SourceSpan | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +123,7 @@ class TypeDeclaration(AstNode):
     methods: tuple[MethodDeclaration, ...] = ()
     nested_types: tuple[TypeDeclaration, ...] = ()
     annotation_nodes: tuple[Annotation, ...] = ()
+    type_parameter_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

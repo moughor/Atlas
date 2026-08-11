@@ -70,6 +70,7 @@ class JavaSymbolIndexBuilder:
                 package_name=package_name,
                 modifiers=declaration.modifiers,
                 annotations=declaration.annotations,
+                type_parameter_names=declaration.type_parameter_names,
             )
         )
 
@@ -101,6 +102,13 @@ class JavaSymbolIndexBuilder:
                     modifiers=constructor.modifiers,
                     annotations=constructor.annotations,
                     throws=constructor.throws,
+                    parameter_varargs=tuple(
+                        parameter.is_varargs
+                        for parameter in constructor.parameters
+                    ),
+                    type_parameter_names=constructor.type_parameter_names,
+                    declaration_span=constructor.declaration_span,
+                    body_span=constructor.body_span,
                 )
             )
 
@@ -119,6 +127,12 @@ class JavaSymbolIndexBuilder:
                     annotations=method.annotations,
                     throws=method.throws,
                     return_type=method.return_type,
+                    parameter_varargs=tuple(
+                        parameter.is_varargs for parameter in method.parameters
+                    ),
+                    type_parameter_names=method.type_parameter_names,
+                    declaration_span=method.declaration_span,
+                    body_span=method.body_span,
                 )
             )
 

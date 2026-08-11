@@ -23,5 +23,7 @@ class GlobalSymbolDatabaseBuilder:
             for attr in ('return_type','type_name'):
                 if hasattr(s,attr): meta[attr]=str(getattr(s,attr))
             if hasattr(s,'parameter_types'): meta['parameter_types']=','.join(getattr(s,'parameter_types'))
+            if hasattr(s, 'type_kind'):
+                meta['type_kind'] = getattr(s, 'type_kind').value
             out.append(GlobalSymbol.create(_MAP[s.kind],s.name,s.qualified_name,owner_id=known.get(s.owner or ''),source=s.source,metadata=meta))
         return GlobalSymbolDatabase(out)

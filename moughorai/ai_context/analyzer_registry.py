@@ -18,6 +18,16 @@ from moughorai.java_architecture import (
     JavaArchitectureGraph,
     JavaArchitectureService,
 )
+from moughorai.java_code_intelligence import (
+    CallableIndexBuilder,
+    CallableIndexDiagnostic,
+    CallableIndexEntry,
+    JavaCallableIndex,
+    PathScope,
+    SourceClassification,
+    classify_source,
+    create_callable_index,
+)
 from moughorai.java_security import JavaSecurityAnalyzer
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
 from moughorai.java_symbols import (
@@ -251,6 +261,7 @@ class JavaLanguageAnalyzer:
         self._parser = parser or JavaParser()
         self._symbol_builder = symbol_builder or JavaSymbolIndexBuilder()
         self._global_builder = global_builder or GlobalSymbolDatabaseBuilder()
+        self._callable_index = CallableIndexBuilder()
         self._architecture = architecture or JavaArchitectureService()
         self._workspace_scanner = workspace_scanner or JavaWorkspaceScanner()
         self._security_analyzer = security_analyzer or JavaSecurityAnalyzer()
@@ -268,12 +279,18 @@ class JavaLanguageAnalyzer:
             )
         ) or bool(project.option_map.get(GRADLE_SETTINGS_MEMBERSHIP_OPTION))
         diagnostics: list[Diagnostic] = []
+        callable_diagnostics: list[CallableIndexDiagnostic] = []
         paths, _excluded_data = select_compiled_java_sources(
             project.path,
             paths,
         )
+        workspace_module = self._workspace_scanner.scan_module(project.path)
+        java_source_roots = tuple(
+            root for root in workspace_module.source_roots
+            if root.language == 'java' and root.kind is not SourceRootKind.RESOURCE
+        )
         if maven_project:
-            module = self._workspace_scanner.scan_module(project.path)
+            module = workspace_module
             source_roots = tuple(
                 root.path.resolve()
                 for root in module.source_roots
@@ -305,6 +322,7 @@ class JavaLanguageAnalyzer:
                 ))
         units: list[object] = []
         sources: list[Path] = []
+        selected_source_count = len(paths)
         security_findings: tuple[object, ...] = ()
         security_omitted_findings = 0
         security_warning_count = 0
@@ -375,6 +393,9 @@ class JavaLanguageAnalyzer:
                 if not source_loaded:
                     security_read_failures += 1
                     security_warning_count += 1
+                callable_diagnostics.append(
+                    _callable_parse_diagnostic(project, path, exc)
+                )
                 diagnostics.append(Diagnostic(
                     "ATLAS-JAVA-PARSE", str(exc), DiagnosticSeverity.ERROR,
                     location=path, pass_name="java-language-analyzer",
@@ -423,13 +444,16 @@ class JavaLanguageAnalyzer:
                         tuple(units),
                         tuple(sources),
                         error,
+                        source_roots=java_source_roots,
+                        diagnostics=tuple(callable_diagnostics),
+                        selected_source_files=selected_source_count,
                     )
                     if gradle_project
                     else None
                 )
                 if isolated is None:
                     raise
-                isolated_units, symbols = isolated
+                isolated_units, symbols, callable_index = isolated
                 scope.add_units(len(isolated_units))
                 scope.add_objects_produced(len(symbols))
                 scope.set_objects_retained(len(symbols))
@@ -463,6 +487,7 @@ class JavaLanguageAnalyzer:
                         "security_producer_report",
                         partial_security_report,
                     )
+                    .with_artifact('java_callable_index', callable_index)
                     .with_diagnostics(diagnostics)
                 )
             symbols = _scope_symbols(
@@ -472,6 +497,26 @@ class JavaLanguageAnalyzer:
             scope.add_units(len(units))
             scope.add_objects_produced(len(index.symbols) + len(symbols))
             scope.set_objects_retained(len(symbols))
+        source_classifications = {
+            source.resolve(): classify_source(
+                source,
+                project.path,
+                java_source_roots,
+            ).classification
+            for source in sources
+        }
+        callable_index = self._callable_index.build(
+            index,
+            tuple(units),
+            tuple(sources),
+            symbols,
+            project_id=project.name,
+            project_root=project.path,
+            source_roots=java_source_roots,
+            lineage=f'project:{project.name}',
+            selected_source_files=selected_source_count,
+            diagnostics=tuple(callable_diagnostics),
+        )
         with self.measurement.scope(
             MeasurementPhase.ARCHITECTURE,
             consumer="java-analyzer",
@@ -481,7 +526,12 @@ class JavaLanguageAnalyzer:
             scope.add_units(len(units))
             scope.add_objects_produced(len(architecture.nodes) + len(architecture.edges))
             scope.set_objects_retained(len(architecture.nodes) + len(architecture.edges))
-        symbols = _with_java_relations(symbols, index, architecture)
+        symbols = _with_java_relations(
+            symbols,
+            index,
+            architecture,
+            source_classifications=source_classifications,
+        )
         security_producer_report = _build_security_producer_report(
             project_id=project.name,
             language="java",
@@ -500,6 +550,7 @@ class JavaLanguageAnalyzer:
                 "security_producer_report",
                 security_producer_report,
             )
+            .with_artifact('java_callable_index', callable_index)
             .with_diagnostics(diagnostics)
         )
 
@@ -509,7 +560,15 @@ class JavaLanguageAnalyzer:
         units: tuple[object, ...],
         sources: tuple[Path, ...],
         error: DuplicateTypeError,
-    ) -> tuple[tuple[object, ...], tuple[GlobalSymbol, ...]] | None:
+        *,
+        source_roots: tuple[object, ...],
+        diagnostics: tuple[CallableIndexDiagnostic, ...],
+        selected_source_files: int,
+    ) -> tuple[
+        tuple[object, ...],
+        tuple[GlobalSymbol, ...],
+        JavaCallableIndex,
+    ] | None:
         """Recover only when conventional Gradle source-set evidence is exact."""
         first_scope = _gradle_java_source_set(project.path, error.first_source)
         second_scope = _gradle_java_source_set(project.path, error.second_source)
@@ -529,6 +588,13 @@ class JavaLanguageAnalyzer:
 
         ordered_units: list[object] = []
         scoped_symbols: list[GlobalSymbol] = []
+        callable_entries: list[CallableIndexEntry] = []
+        callable_diagnostics = list(diagnostics)
+        represented_callables = 0
+        represented_methods = 0
+        represented_constructors = 0
+        unindexed_callables = 0
+        omitted_diagnostics = 0
         for source_set in sorted(grouped):
             entries = sorted(
                 grouped[source_set],
@@ -556,13 +622,54 @@ class JavaLanguageAnalyzer:
                 scope_id=scope_id,
                 metadata=evidence,
             )
-            scoped_symbols.extend(_with_java_relations(
+            source_classifications = {
+                source.resolve(): classify_source(
+                    source,
+                    project.path,
+                    source_roots,
+                ).classification
+                for source in scoped_sources
+            }
+            symbols = _with_java_relations(
                 symbols,
                 index,
                 JavaArchitectureGraph(),
-            ))
+                source_classifications=source_classifications,
+            )
+            scoped_symbols.extend(symbols)
+            partial_index = self._callable_index.build(
+                index,
+                scoped_units,
+                scoped_sources,
+                symbols,
+                project_id=project.name,
+                project_root=project.path,
+                source_roots=source_roots,
+                lineage=f'project:{project.name}',
+                selected_source_files=len(scoped_sources),
+            )
+            callable_entries.extend(partial_index.entries)
+            callable_diagnostics.extend(partial_index.diagnostics)
+            represented_callables += partial_index.coverage.represented_callables
+            represented_methods += partial_index.coverage.methods
+            represented_constructors += partial_index.coverage.constructors
+            unindexed_callables += partial_index.coverage.unindexed_callables
+            omitted_diagnostics += partial_index.coverage.omitted_diagnostic_count
             ordered_units.extend(scoped_units)
-        return tuple(ordered_units), tuple(scoped_symbols)
+        callable_index = create_callable_index(
+            lineage=f'project:{project.name}',
+            path_scope=PathScope.PROJECT,
+            entries=callable_entries,
+            diagnostics=callable_diagnostics,
+            selected_source_files=selected_source_files,
+            parsed_source_files=len(sources),
+            represented_callables=represented_callables,
+            unindexed_callables=unindexed_callables,
+            represented_methods=represented_methods,
+            represented_constructors=represented_constructors,
+            omitted_diagnostic_count=omitted_diagnostics,
+        )
+        return tuple(ordered_units), tuple(scoped_symbols), callable_index
 
 
 _VERSIONED_GRADLE_JAVA_PATH = re.compile(
@@ -724,6 +831,32 @@ class TypeScriptLanguageAnalyzer:
         ).with_diagnostics(diagnostics)
 
 
+def _callable_parse_diagnostic(
+    project: Project,
+    path: Path,
+    error: Exception,
+) -> CallableIndexDiagnostic:
+    try:
+        relative = path.resolve().relative_to(
+            project.path.resolve()
+        ).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        relative = None
+    token = getattr(error, 'token', None)
+    location = getattr(token, 'span', None)
+    position = getattr(location, 'start', None)
+    if position is None:
+        position = getattr(error, 'location', None)
+    return CallableIndexDiagnostic(
+        'parse_failure',
+        'Selected Java source could not be parsed or read.',
+        project.name,
+        source_path=relative,
+        line=getattr(position, 'line', None),
+        column=getattr(position, 'column', None),
+    )
+
+
 def _build_security_producer_report(
     *,
     project_id: str,
@@ -800,6 +933,11 @@ def _with_java_relations(
     symbols: tuple[GlobalSymbol, ...],
     index: JavaSymbolIndex,
     architecture: JavaArchitectureGraph,
+    *,
+    source_classifications: Mapping[
+        Path,
+        SourceClassification,
+    ] | None = None,
 ) -> tuple[GlobalSymbol, ...]:
     """Persist only resolved Java relations that survive recovery."""
     java_symbols = {
@@ -847,11 +985,18 @@ def _with_java_relations(
                     target.qualified_name
                 )
 
+    classifications = dict(source_classifications or {})
     enriched = []
     for symbol in symbols:
         metadata = dict(symbol.metadata)
         java_symbol = java_symbols.get((symbol.kind.value, symbol.qualified_name))
         if java_symbol is not None:
+            classification = (
+                classifications.get(java_symbol.source.resolve())
+                if java_symbol.source is not None
+                else None
+            ) or SourceClassification.UNKNOWN
+            metadata['source_classification'] = classification.value
             modifiers = tuple(sorted(set(getattr(java_symbol, "modifiers", ()))))
             annotations = tuple(sorted(set(getattr(java_symbol, "annotations", ()))))
             if annotations:

@@ -22,6 +22,7 @@ from moughorai.java_ast.ast_nodes import (
     TypeDeclaration,
 )
 from moughorai.java_ast.lexer import JavaLexer
+from moughorai.java_ast.models import SourceLocation, SourceSpan
 from moughorai.java_ast.token import JavaToken
 from moughorai.java_ast.token_type import JavaTokenType
 
@@ -102,8 +103,14 @@ class JavaParser:
             raise JavaParseError("Expected a type declaration", self._current())
 
         name = self._expect_identifier("Expected type name").lexeme
+        type_parameter_names: tuple[str, ...] = ()
         if self._at(JavaTokenType.LESS):
-            self._collect_balanced(JavaTokenType.LESS, JavaTokenType.GREATER)
+            type_parameter_names = self._type_parameter_names(
+                self._collect_balanced(
+                    JavaTokenType.LESS,
+                    JavaTokenType.GREATER,
+                )
+            )
         if keyword == "record" and self._at(JavaTokenType.LEFT_PAREN):
             self._collect_balanced(JavaTokenType.LEFT_PAREN, JavaTokenType.RIGHT_PAREN)
 
@@ -137,12 +144,19 @@ class JavaParser:
                     raise JavaParseError("Unterminated type body", self._current())
                 if self._at(JavaTokenType.SEMICOLON):
                     self._advance(); continue
+                member_start = self._current().span.start
                 member_annotations, member_annotation_nodes = self._parse_annotations()
                 member_modifiers = self._parse_modifiers()
                 if self._is_type_start():
                     nested.append(self._parse_type(member_annotations, member_modifiers, member_annotation_nodes))
                     continue
-                member = self._parse_member(name, member_annotations, member_modifiers, member_annotation_nodes)
+                member = self._parse_member(
+                    name,
+                    member_annotations,
+                    member_modifiers,
+                    member_annotation_nodes,
+                    member_start,
+                )
                 if isinstance(member, FieldDeclaration):
                     fields.append(member)
                 elif isinstance(member, ConstructorDeclaration):
@@ -162,9 +176,17 @@ class JavaParser:
             fields=tuple(fields), constructors=tuple(constructors),
             methods=tuple(methods), nested_types=tuple(nested),
             annotation_nodes=annotation_nodes,
+            type_parameter_names=type_parameter_names,
         )
 
-    def _parse_member(self, owner: str, annotations: tuple[str, ...], modifiers: tuple[str, ...], annotation_nodes: tuple[Annotation, ...] = ()):
+    def _parse_member(
+        self,
+        owner: str,
+        annotations: tuple[str, ...],
+        modifiers: tuple[str, ...],
+        annotation_nodes: tuple[Annotation, ...],
+        declaration_start: SourceLocation,
+    ):
         signature = self._collect_member_signature()
         if not signature:
             raise JavaParseError("Expected member declaration", self._current())
@@ -183,18 +205,46 @@ class JavaParser:
             throws = self._parse_throws(signature[close_index + 1:])
             prefix = list(signature[:name_index])
             type_parameters = None
+            type_parameter_names: tuple[str, ...] = ()
             if prefix and prefix[0].type == JavaTokenType.LESS:
                 end = self._matching_index(prefix, 0, JavaTokenType.LESS, JavaTokenType.GREATER)
                 type_parameters = self._join(prefix[:end + 1])
+                type_parameter_names = self._type_parameter_names(
+                    prefix[1:end]
+                )
                 prefix = prefix[end + 1:]
+            declaration_end, body_span = self._consume_member_terminator()
+            declaration_span = SourceSpan(declaration_start, declaration_end)
             if name == owner and not prefix:
-                result = ConstructorDeclaration(name, params, annotations, modifiers, throws, annotation_nodes)
+                result = ConstructorDeclaration(
+                    name=name,
+                    parameters=params,
+                    annotations=annotations,
+                    modifiers=modifiers,
+                    throws=throws,
+                    annotation_nodes=annotation_nodes,
+                    type_parameters=type_parameters,
+                    type_parameter_names=type_parameter_names,
+                    declaration_span=declaration_span,
+                    body_span=body_span,
+                )
             else:
                 return_type = self._join(prefix)
                 if not return_type:
                     raise JavaParseError("Expected method return type", signature[0])
-                result = MethodDeclaration(name, return_type, params, annotations, modifiers, type_parameters, throws, annotation_nodes)
-            self._consume_member_terminator()
+                result = MethodDeclaration(
+                    name=name,
+                    return_type=return_type,
+                    parameters=params,
+                    annotations=annotations,
+                    modifiers=modifiers,
+                    type_parameters=type_parameters,
+                    throws=throws,
+                    annotation_nodes=annotation_nodes,
+                    type_parameter_names=type_parameter_names,
+                    declaration_span=declaration_span,
+                    body_span=body_span,
+                )
             return result
 
         declaration = signature if assignment is None else signature[:assignment]
@@ -222,13 +272,40 @@ class JavaParser:
             elif t.type == JavaTokenType.GREATER and angle: angle -= 1
         return result
 
-    def _consume_member_terminator(self) -> None:
+    def _consume_member_terminator(
+        self,
+    ) -> tuple[SourceLocation, SourceSpan | None]:
         if self._at(JavaTokenType.SEMICOLON):
-            self._advance(); return
+            terminator = self._advance()
+            return terminator.span.end, None
         if self._at(JavaTokenType.LEFT_BRACE):
+            opening = self._current()
             self._collect_balanced(JavaTokenType.LEFT_BRACE, JavaTokenType.RIGHT_BRACE)
-            return
+            closing = self._tokens[self._position - 1]
+            return closing.span.end, SourceSpan(
+                opening.span.start,
+                closing.span.end,
+            )
         raise JavaParseError("Expected member body or ';'", self._current())
+
+    @classmethod
+    def _type_parameter_names(
+        cls,
+        tokens: Sequence[JavaToken],
+    ) -> tuple[str, ...]:
+        names: list[str] = []
+        for chunk in cls._split_top_level(tokens, JavaTokenType.COMMA):
+            name = next(
+                (
+                    token.lexeme
+                    for token in chunk
+                    if token.type is JavaTokenType.IDENTIFIER
+                ),
+                None,
+            )
+            if name is not None:
+                names.append(name)
+        return tuple(names)
 
     def _parse_parameters(self, tokens: Sequence[JavaToken]) -> tuple[ParameterDeclaration, ...]:
         chunks = self._split_top_level(tokens, JavaTokenType.COMMA)
