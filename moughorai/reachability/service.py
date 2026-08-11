@@ -7,6 +7,10 @@ import hashlib
 import json
 
 from moughorai.call_graph import CallGraph, CallSiteKind, ResolutionStatus
+from moughorai.java_code_intelligence.reachability_adapter import (
+    JavaReachabilityAdapter,
+)
+from moughorai.java_code_intelligence.test_evidence import TestRootKind
 from moughorai.knowledge_graph import (
     KnowledgeEdge,
     KnowledgeGraph,
@@ -96,6 +100,7 @@ class ReachabilityAnalysisService:
         symbol_metadata: Sequence[Mapping[str, object]] = (),
         repository_summary: Mapping[str, object] | None = None,
         call_graphs: Mapping[str, CallGraph] | None = None,
+        java_reachability: JavaReachabilityAdapter | None = None,
         evidence: ReachabilityEvidenceBundle | None = None,
         failed_projects: Sequence[str] = (),
         snapshot_lineage: str | None = None,
@@ -109,7 +114,8 @@ class ReachabilityAnalysisService:
         graph_digest = self._digest(graph.to_dict())
         configuration_fingerprint = self._digest(config.to_dict())
         fingerprint = self._fingerprint(
-            graph, metadata, summary, calls, bundle, failed_projects, config,
+            graph, metadata, summary, calls, java_reachability, bundle,
+            failed_projects, config,
         )
         cached = self._cache.get(fingerprint)
         if cached is not None:
@@ -122,6 +128,7 @@ class ReachabilityAnalysisService:
             metadata=metadata,
             summary=summary,
             call_graphs=calls,
+            java_reachability=java_reachability,
             bundle=bundle,
             failed_projects=tuple(sorted(set(map(str, failed_projects)))),
             lineage=lineage,
@@ -143,6 +150,7 @@ class ReachabilityAnalysisService:
         metadata: Mapping[str, Mapping[str, object]],
         summary: Mapping[str, object],
         call_graphs: Mapping[str, CallGraph],
+        java_reachability: JavaReachabilityAdapter | None,
         bundle: ReachabilityEvidenceBundle,
         failed_projects: tuple[str, ...],
         lineage: str,
@@ -155,14 +163,16 @@ class ReachabilityAnalysisService:
         nodes = {node.id: node for node in graph.nodes}
         subjects = tuple(node for node in graph.nodes if node.kind in self._SUBJECT_KINDS)
         projects = self._project_evidence(
-            subjects, summary, call_graphs, bundle, failed_projects, graph,
+            subjects, summary, call_graphs, java_reachability, bundle,
+            failed_projects, graph,
         )
         coverage_evidence = {
             project: all_evidence.add(self._coverage_evidence(item, lineage))
             for project, item in sorted(projects.items())
         }
         relations, relation_limitations = self._relations(
-            graph, nodes, call_graphs, all_evidence, lineage,
+            graph, nodes, call_graphs, java_reachability, all_evidence,
+            lineage,
         )
         adjacency: dict[str, tuple[ReachabilityRelation, ...]] = {}
         outgoing: dict[str, list[ReachabilityRelation]] = defaultdict(list)
@@ -174,7 +184,19 @@ class ReachabilityAnalysisService:
         inferred_roots, inferred_protections = self._discover_structured_evidence(
             subjects, metadata, summary,
         )
-        seeds = tuple(sorted(set((*bundle.roots, *inferred_roots))))
+        if java_reachability is not None:
+            test_subjects = {
+                item.subject_id
+                for item in java_reachability.test_evidence.records
+            }
+            inferred_roots = tuple(
+                item for item in inferred_roots
+                if item.subject_id not in test_subjects
+            )
+        java_test_roots = self._java_test_roots(java_reachability)
+        seeds = tuple(sorted(set((
+            *bundle.roots, *inferred_roots, *java_test_roots,
+        ))))
         protections = select_protections((*bundle.protections, *inferred_protections))
         roots, root_evidence = self._roots(
             seeds, nodes, all_evidence, lineage,
@@ -203,11 +225,21 @@ class ReachabilityAnalysisService:
             protection = protections.get(node.id)
             production_trace = production.get(node.id)
             test_trace = tests.get(node.id)
+            classification_project = project_capability
+            if (
+                java_reachability is not None
+                and production_trace is None
+                and test_trace is None
+            ):
+                classification_project = replace(
+                    project_capability,
+                    calls=CoverageStatus.UNAVAILABLE,
+                )
             state, limitations = self._classifier.classify(
                 node,
                 metadata.get(node.id, {}),
                 source_classification,
-                project_capability,
+                classification_project,
                 protection,
                 production_trace,
                 test_trace,
@@ -227,6 +259,9 @@ class ReachabilityAnalysisService:
                     production if scope == "production" else tests,
                     configuration.max_path_depth,
                     scope,
+                )
+                path = self._path_with_evidence_limitations(
+                    path, all_evidence,
                 )
                 paths[(scope, node.id)] = path
                 relationship_ids.extend(path.evidence_ids)
@@ -253,7 +288,7 @@ class ReachabilityAnalysisService:
                 root_ids=tuple(root_ids),
                 relationship_ids=tuple(relationship_ids),
                 protection_ids=tuple(protection_ids),
-                project=project_capability,
+                project=classification_project,
             )
             if state is ReachabilityState.LIKELY_DEAD and (
                 tier is not ConfidenceTier.HIGH
@@ -267,7 +302,7 @@ class ReachabilityAnalysisService:
                     node_id=node_id,
                     coverage_id=coverage_evidence[project],
                     root_ids=(), relationship_ids=(), protection_ids=(),
-                    project=project_capability,
+                    project=classification_project,
                 )
             finding = ReachabilityFinding(
                 node.id,
@@ -297,13 +332,28 @@ class ReachabilityAnalysisService:
             )
             for project, item in sorted(projects.items())
         )
-        coverage = self._coverage(subjects, project_coverage, truncated)
+        coverage = self._coverage(
+            subjects, project_coverage, truncated, java_reachability,
+        )
         capabilities = self._capabilities(project_coverage)
         report_limitations = set(coverage.limitations)
         if not relations:
             report_limitations.add(
                 "No reliable call relationships were available; missing calls were not treated as dead-code evidence."
             )
+        if java_reachability is not None:
+            report_limitations.add(
+                "Represented Java call reachability proves source relationships, not runtime execution or behavioral test coverage."
+            )
+            production_subjects = {
+                item.canonical_subject_id
+                for item in java_reachability.callable_index.entries
+                if item.source_classification.value == "production"
+            }
+            if test_seeds and not production_subjects.intersection(tests):
+                report_limitations.add(
+                    "No represented TEST-root path in this artifact reaches a production callable; this is not proof that no tests cover it."
+                )
         referenced = {
             evidence_id
             for item in roots
@@ -342,6 +392,7 @@ class ReachabilityAnalysisService:
         subjects: tuple[KnowledgeNode, ...],
         summary: Mapping[str, object],
         call_graphs: Mapping[str, CallGraph],
+        java_reachability: JavaReachabilityAdapter | None,
         bundle: ReachabilityEvidenceBundle,
         failed_projects: tuple[str, ...],
         graph: KnowledgeGraph,
@@ -355,7 +406,13 @@ class ReachabilityAnalysisService:
             if isinstance(item, Mapping) and str(item.get("name", ""))
         }
         explicit = {item.project: item for item in bundle.projects}
-        names = set(languages) | set(summary_projects) | set(explicit) | set(call_graphs) | set(failed_projects)
+        java_projects = {
+            item.project: item for item in java_reachability.projects
+        } if java_reachability is not None else {}
+        names = (
+            set(languages) | set(summary_projects) | set(explicit)
+            | set(call_graphs) | set(java_projects) | set(failed_projects)
+        )
         canonical_call_projects = {
             self._project(graph.get(edge.source))
             for edge in graph.edges
@@ -370,6 +427,25 @@ class ReachabilityAnalysisService:
                 name in call_graphs or name in canonical_call_projects
             ):
                 calls = CoverageStatus.PARTIAL
+            java_project = java_projects.get(name)
+            if java_project is not None:
+                incomplete = (
+                    java_project.bodies_unavailable > 0
+                    or java_project.retained_extraction_diagnostics > 0
+                    or java_project.polymorphic_call_sites > 0
+                    or java_project.ambiguous_call_sites > 0
+                    or java_project.unresolved_call_sites > 0
+                    or java_project.external_call_sites > 0
+                    or java_project.unsupported_call_sites > 0
+                )
+                calls = CoverageStatus.PARTIAL
+                limitations.add(
+                    "Java call coverage is represented-source evidence and does not establish runtime dispatch."
+                )
+                if incomplete:
+                    limitations.add(
+                        "Unavailable bodies or uncertain call sites reduce represented Java call coverage."
+                    )
             call_graph = call_graphs.get(name)
             if call_graph is not None and any(
                 item.status is ResolutionStatus.UNRESOLVED
@@ -381,6 +457,11 @@ class ReachabilityAnalysisService:
             roots = base.roots
             if roots is CoverageStatus.UNAVAILABLE and project_summary.get("entry_points"):
                 roots = CoverageStatus.PARTIAL
+            if java_project is not None and java_project.represented_test_roots:
+                roots = CoverageStatus.PARTIAL
+                limitations.add(
+                    "TEST roots are authoritative represented roots, not proof of test execution."
+                )
             frameworks = base.frameworks
             if frameworks is CoverageStatus.UNAVAILABLE and project_summary.get("framework_evidence"):
                 frameworks = CoverageStatus.PARTIAL
@@ -407,6 +488,7 @@ class ReachabilityAnalysisService:
         graph: KnowledgeGraph,
         nodes: Mapping[str, KnowledgeNode],
         call_graphs: Mapping[str, CallGraph],
+        java_reachability: JavaReachabilityAdapter | None,
         evidence: EvidenceIndex,
         lineage: str,
     ) -> tuple[tuple[ReachabilityRelation, ...], Mapping[str, tuple[str, ...]]]:
@@ -424,8 +506,39 @@ class ReachabilityAnalysisService:
                 evidence_id = evidence.add(self._edge_evidence(edge, nodes, lineage))
                 relations.add(ReachabilityRelation(edge.source, edge.target, "member_owner", evidence_id))
 
+        if java_reachability is not None:
+            for item in java_reachability.eligible_relations():
+                record = EvidenceRecord.create(
+                    EvidenceKind.ANALYSIS_RESULT,
+                    item.target,
+                    "moughorai.java-code-graph.v1",
+                    lineage,
+                    source_refs=(item.source, item.target, item.evidence_id),
+                    scope=f"project:{item.project}",
+                    language="java",
+                    detail={
+                        "relation": item.kind,
+                        "edge_kind": item.edge_kind.value,
+                        "confidence": (
+                            "possible" if item.kind.startswith("possible_")
+                            else "resolved"
+                        ),
+                    },
+                    limitations=item.limitations,
+                    reliability=item.reliability,
+                    specificity=item.specificity,
+                )
+                evidence_id = evidence.add(record)
+                relations.add(ReachabilityRelation(
+                    item.source, item.target, item.kind, evidence_id,
+                ))
+                limitations[item.project].update(item.limitations)
+
         lookup = self._method_lookup(graph)
-        for project, call_graph in sorted(call_graphs.items()):
+        specialized_call_graphs = (
+            call_graphs if java_reachability is None else {}
+        )
+        for project, call_graph in sorted(specialized_call_graphs.items()):
             for edge in call_graph.edges:
                 if edge.status not in {ResolutionStatus.RESOLVED, ResolutionStatus.POLYMORPHIC}:
                     continue
@@ -472,7 +585,11 @@ class ReachabilityAnalysisService:
             values = metadata.get(node.id, {})
             project = self._project(node)
             entry_point = str(values.get("entry_point", ""))
-            if entry_point:
+            if (
+                entry_point
+                and self._source_classification(values)
+                is not SourceClassification.TEST
+            ):
                 roots.append(ReachabilitySeed(
                     node.id,
                     RootCategory.APPLICATION,
@@ -517,6 +634,36 @@ class ReachabilityAnalysisService:
                 ))
         return tuple(roots), tuple(protections)
 
+    @staticmethod
+    def _java_test_roots(
+        java_reachability: JavaReachabilityAdapter | None,
+    ) -> tuple[ReachabilitySeed, ...]:
+        if java_reachability is None:
+            return ()
+        entries = {
+            item.canonical_subject_id: item
+            for item in java_reachability.callable_index.entries
+        }
+        roots = []
+        for item in java_reachability.roots:
+            entry = entries[item.subject_id]
+            simple_annotation = any(
+                "import binding is unavailable" in limitation
+                for limitation in item.limitations
+            )
+            roots.append(ReachabilitySeed(
+                item.subject_id,
+                RootCategory.TEST,
+                entry.project_id,
+                f"project:{entry.project_id}",
+                "moughorai.java-test-evidence.v1",
+                (item.subject_id, item.evidence_id),
+                item.limitations,
+                1.0 if item.root_kind is TestRootKind.TEST_APPLICATION_ROOT else 0.9,
+                0.9 if simple_annotation else 1.0,
+            ))
+        return tuple(sorted(roots))
+
     def _roots(
         self,
         seeds: tuple[ReachabilitySeed, ...],
@@ -560,6 +707,18 @@ class ReachabilityAnalysisService:
             ))
             evidence_ids[(seed.subject_id, seed.category)] = evidence_id
         return tuple(sorted(set(roots))), evidence_ids
+
+    @staticmethod
+    def _path_with_evidence_limitations(
+        path: ReachabilityPath,
+        evidence: EvidenceIndex,
+    ) -> ReachabilityPath:
+        limitations = set(path.limitations)
+        for evidence_id in path.evidence_ids:
+            record = evidence.get(evidence_id)
+            if record is not None:
+                limitations.update(record.limitations)
+        return replace(path, limitations=tuple(limitations))
 
     def _project_coverage(
         self,
@@ -607,8 +766,38 @@ class ReachabilityAnalysisService:
         subjects: tuple[KnowledgeNode, ...],
         projects: tuple[ProjectReachabilityCoverage, ...],
         truncated: bool,
+        java_reachability: JavaReachabilityAdapter | None = None,
     ) -> ReachabilityCoverage:
         subject_counts = Counter(node.kind.value for node in subjects)
+        if java_reachability is not None:
+            java = java_reachability.coverage
+            subject_counts.update({
+                "java_code_graph_present": 1,
+                "represented_callables": java.represented_callables,
+                "callables_with_bodies": java.callables_with_bodies,
+                "callable_bodies_unavailable": java.bodies_unavailable,
+                "call_extraction_failures": java.extraction_failures,
+                "represented_test_callables": java.represented_test_callables,
+                "represented_test_roots": java.represented_test_roots,
+                "production_roots": java.production_root_candidates,
+                "resolved_call_sites": java.resolved_call_sites,
+                "possible_call_edges": java.possible_edges,
+                "unresolved_call_sites": java.unresolved_call_sites,
+                "external_call_sites": java.external_call_sites,
+                "unsupported_call_sites": java.unsupported_call_sites,
+                "method_reference_sites": java.method_references,
+                "direct_test_to_production_calls": (
+                    java.direct_test_to_production_calls
+                ),
+                "projects_with_test_roots": java.projects_with_test_roots,
+                "projects_without_test_roots": java.projects_without_test_roots,
+                "projects_with_usable_call_evidence": (
+                    java.projects_with_usable_call_evidence
+                ),
+                "projects_without_usable_call_evidence": (
+                    java.projects_without_usable_call_evidence
+                ),
+            })
         supported: set[str] = set()
         partial: set[str] = set()
         limitations: set[str] = set()
@@ -628,6 +817,18 @@ class ReachabilityAnalysisService:
         )
         if truncated:
             limitations.add("Traversal was truncated at the configured node bound.")
+        if java_reachability is not None:
+            limitations.add(
+                "Java reachability is limited to represented PR157 targets; unresolved, external, unsupported, and dynamic calls do not traverse."
+            )
+            if java_reachability.coverage.possible_edges:
+                limitations.add(
+                    "Possible call and dispatch targets preserve uncertainty and are not resolved runtime targets."
+                )
+            if java_reachability.coverage.method_references:
+                limitations.add(
+                    "Method references are represented by PR157 but excluded from ordinary execution reachability."
+                )
         return ReachabilityCoverage(
             projects,
             tuple(supported),
@@ -845,6 +1046,7 @@ class ReachabilityAnalysisService:
         metadata: Mapping[str, Mapping[str, object]],
         summary: Mapping[str, object],
         calls: Mapping[str, CallGraph],
+        java_reachability: JavaReachabilityAdapter | None,
         bundle: ReachabilityEvidenceBundle,
         failed_projects: Sequence[str],
         config: ReachabilityConfiguration,
@@ -854,7 +1056,7 @@ class ReachabilityAnalysisService:
             "framework_evidence": summary.get("framework_evidence", ()),
             "entry_points": summary.get("entry_points", ()),
         }
-        return cls._digest({
+        payload = {
             "producer_version": cls.PRODUCER_VERSION,
             "schema_version": cls.SCHEMA_VERSION,
             "graph": graph.to_dict(),
@@ -866,7 +1068,12 @@ class ReachabilityAnalysisService:
             "evidence": bundle.to_dict(),
             "failed_projects": sorted(set(map(str, failed_projects))),
             "configuration": config.to_dict(),
-        })
+        }
+        if java_reachability is not None:
+            payload["java_reachability_input"] = (
+                java_reachability.input_fingerprint
+            )
+        return cls._digest(payload)
 
     @staticmethod
     def _digest(value: object) -> str:

@@ -30,6 +30,12 @@ from moughorai.java_code_intelligence.call_graph_producer import (
     merge_code_graphs,
 )
 from moughorai.java_code_intelligence.code_graph import JavaCodeGraph
+from moughorai.java_code_intelligence.reachability_adapter import (
+    build_java_reachability_adapter,
+)
+from moughorai.java_code_intelligence.test_evidence import (
+    create_java_test_evidence,
+)
 from moughorai.knowledge_graph import KnowledgeGraph
 from moughorai.reachability import ReachabilityAnalysisService
 from moughorai.risk_analysis import RiskAnalysisService
@@ -198,6 +204,25 @@ class SemanticContextCollector:
             lineage=f'semantic-graph:{graph_digest}',
         )
         context_data['java_code_graph'] = workspace_code_graph.to_dict()
+        java_test_evidence = create_java_test_evidence(
+            workspace_callable_index,
+            context_data['symbols'],
+            lineage=f'semantic-graph:{graph_digest}',
+        )
+        context_data['java_test_evidence'] = java_test_evidence.to_dict()
+        java_reachability = build_java_reachability_adapter(
+            workspace_callable_index,
+            workspace_code_graph,
+            java_test_evidence,
+        )
+        rooted_java_reachability = (
+            java_reachability
+            if (
+                java_reachability.coverage.represented_test_roots
+                or java_reachability.coverage.production_root_candidates
+            )
+            else None
+        )
         with self.measurement.scope(
             "security_intelligence.consolidation",
             consumer="semantic-collector",
@@ -263,6 +288,7 @@ class SemanticContextCollector:
                 symbol_metadata=context_data["symbols"],
                 repository_summary=context_data["repository_summary"],
                 call_graphs=call_graphs,
+                java_reachability=rooted_java_reachability,
             )
             scope.add_units(len(knowledge_graph.nodes))
             scope.add_objects_produced(
