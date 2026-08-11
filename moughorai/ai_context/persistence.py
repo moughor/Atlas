@@ -16,6 +16,11 @@ from moughorai.java_architecture import (
     JavaArchitectureGraph,
     UnresolvedArchitectureReference,
 )
+from moughorai.java_code_intelligence import (
+    JavaCallableIndex,
+    callable_index_from_dict,
+    callable_index_to_dict,
+)
 from moughorai.security_intelligence import SecurityProducerReport
 
 
@@ -61,6 +66,9 @@ def encode_analysis_result(value: Any) -> Any:
     )
     if security_report is not None:
         encoded["security_producer_report"] = security_report
+    callable_index = value.get_artifact('java_callable_index')
+    if isinstance(callable_index, JavaCallableIndex):
+        encoded['java_callable_index'] = callable_index_to_dict(callable_index)
     return encoded
 
 
@@ -110,6 +118,11 @@ def decode_analysis_result(value: Any) -> Any:
         document = document.with_artifact(
             "security_producer_report",
             SecurityProducerReport.from_dict(raw_security_report),
+        )
+    if 'java_callable_index' in value:
+        document = document.with_artifact(
+            'java_callable_index',
+            callable_index_from_dict(value['java_callable_index']),
         )
     return document.with_diagnostics(
         Diagnostic(

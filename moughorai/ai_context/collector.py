@@ -22,6 +22,10 @@ from moughorai.ai_git_context import GitContextError, GitContextService
 from moughorai.design_patterns import PatternDetectionService
 from moughorai.call_graph import CallGraph
 from moughorai.java_architecture import JavaArchitectureGraph
+from moughorai.java_code_intelligence import (
+    JavaCallableIndex,
+    merge_callable_indices,
+)
 from moughorai.knowledge_graph import KnowledgeGraph
 from moughorai.reachability import ReachabilityAnalysisService
 from moughorai.risk_analysis import RiskAnalysisService
@@ -77,6 +81,7 @@ class SemanticContextCollector:
         projects_with_symbols: set[str] = set()
         declared_dependencies: list[DeclaredDependency] = []
         java_architecture_graphs: dict[str, JavaArchitectureGraph] = {}
+        java_callable_indices: dict[str, JavaCallableIndex] = {}
         call_graphs: dict[str, CallGraph] = {}
         security_producer_reports: list[SecurityProducerReport] = []
         with self.measurement.scope(
@@ -97,6 +102,7 @@ class SemanticContextCollector:
                     types,
                     symbols,
                     java_architecture_graphs,
+                    java_callable_indices,
                     call_graphs,
                     security_producer_reports,
                 ):
@@ -161,6 +167,19 @@ class SemanticContextCollector:
                 len(knowledge_graph.nodes) + len(knowledge_graph.edges)
             )
         graph_digest = knowledge_graph.stable_digest()
+        workspace_callable_index = merge_callable_indices(
+            java_callable_indices,
+            workspace_root=self.service.workspace.root,
+            project_paths={
+                project.name: project.path
+                for project in self.service.workspace.projects
+            },
+            canonical_symbols=snapshot.symbols,
+            lineage=f'semantic-graph:{graph_digest}',
+        )
+        context_data['java_callable_index'] = (
+            workspace_callable_index.to_dict()
+        )
         with self.measurement.scope(
             "security_intelligence.consolidation",
             consumer="semantic-collector",
@@ -297,6 +316,7 @@ class SemanticContextCollector:
         types: dict[str, TypeTable],
         symbols: GlobalSymbolDatabase,
         java_architecture_graphs: dict[str, JavaArchitectureGraph],
+        java_callable_indices: dict[str, JavaCallableIndex],
         call_graphs: dict[str, CallGraph],
         security_producer_reports: list[SecurityProducerReport],
     ) -> bool:
@@ -307,6 +327,9 @@ class SemanticContextCollector:
             architecture = value.get_artifact("java_architecture_graph")
             if isinstance(architecture, JavaArchitectureGraph):
                 java_architecture_graphs[project] = architecture
+            callable_index = value.get_artifact('java_callable_index')
+            if isinstance(callable_index, JavaCallableIndex):
+                java_callable_indices[project] = callable_index
             call_graph = value.get_artifact("call_graph")
             if isinstance(call_graph, CallGraph):
                 call_graphs[project] = call_graph
