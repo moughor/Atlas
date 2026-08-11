@@ -23,6 +23,27 @@ class TypeKind(str, Enum):
     ANNOTATION = "annotation"
 
 
+class CallSyntaxKind(str, Enum):
+    """Represented executable-body call syntax."""
+
+    METHOD_INVOCATION = "method_invocation"
+    CONSTRUCTOR_INVOCATION = "constructor_invocation"
+    METHOD_REFERENCE = "method_reference"
+
+
+@dataclass(frozen=True)
+class CallSiteSyntax(AstNode):
+    """Source-safe syntactic call facts retained by the declaration parser."""
+
+    kind: CallSyntaxKind
+    member_name: str
+    span: SourceSpan
+    receiver: str | None = None
+    requested_owner: str | None = None
+    argument_hints: tuple[str, ...] = ()
+    unsupported_reason: str | None = None
+
+
 @dataclass(frozen=True)
 class PackageDeclaration(AstNode):
     name: str
@@ -90,6 +111,7 @@ class ConstructorDeclaration(AstNode):
     type_parameter_names: tuple[str, ...] = ()
     declaration_span: SourceSpan | None = None
     body_span: SourceSpan | None = None
+    call_sites: tuple[CallSiteSyntax, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -105,6 +127,7 @@ class MethodDeclaration(AstNode):
     type_parameter_names: tuple[str, ...] = ()
     declaration_span: SourceSpan | None = None
     body_span: SourceSpan | None = None
+    call_sites: tuple[CallSiteSyntax, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -26,6 +26,10 @@ from moughorai.java_code_intelligence import (
     JavaCallableIndex,
     merge_callable_indices,
 )
+from moughorai.java_code_intelligence.call_graph_producer import (
+    merge_code_graphs,
+)
+from moughorai.java_code_intelligence.code_graph import JavaCodeGraph
 from moughorai.knowledge_graph import KnowledgeGraph
 from moughorai.reachability import ReachabilityAnalysisService
 from moughorai.risk_analysis import RiskAnalysisService
@@ -82,6 +86,7 @@ class SemanticContextCollector:
         declared_dependencies: list[DeclaredDependency] = []
         java_architecture_graphs: dict[str, JavaArchitectureGraph] = {}
         java_callable_indices: dict[str, JavaCallableIndex] = {}
+        java_code_graphs: dict[str, JavaCodeGraph] = {}
         call_graphs: dict[str, CallGraph] = {}
         security_producer_reports: list[SecurityProducerReport] = []
         with self.measurement.scope(
@@ -103,6 +108,7 @@ class SemanticContextCollector:
                     symbols,
                     java_architecture_graphs,
                     java_callable_indices,
+                    java_code_graphs,
                     call_graphs,
                     security_producer_reports,
                 ):
@@ -180,6 +186,18 @@ class SemanticContextCollector:
         context_data['java_callable_index'] = (
             workspace_callable_index.to_dict()
         )
+        workspace_code_graph = merge_code_graphs(
+            java_code_graphs,
+            callable_index=workspace_callable_index,
+            workspace_root=self.service.workspace.root,
+            project_paths={
+                project.name: project.path
+                for project in self.service.workspace.projects
+            },
+            canonical_symbols=snapshot.symbols,
+            lineage=f'semantic-graph:{graph_digest}',
+        )
+        context_data['java_code_graph'] = workspace_code_graph.to_dict()
         with self.measurement.scope(
             "security_intelligence.consolidation",
             consumer="semantic-collector",
@@ -317,6 +335,7 @@ class SemanticContextCollector:
         symbols: GlobalSymbolDatabase,
         java_architecture_graphs: dict[str, JavaArchitectureGraph],
         java_callable_indices: dict[str, JavaCallableIndex],
+        java_code_graphs: dict[str, JavaCodeGraph],
         call_graphs: dict[str, CallGraph],
         security_producer_reports: list[SecurityProducerReport],
     ) -> bool:
@@ -330,6 +349,9 @@ class SemanticContextCollector:
             callable_index = value.get_artifact('java_callable_index')
             if isinstance(callable_index, JavaCallableIndex):
                 java_callable_indices[project] = callable_index
+            code_graph = value.get_artifact('java_code_graph')
+            if isinstance(code_graph, JavaCodeGraph):
+                java_code_graphs[project] = code_graph
             call_graph = value.get_artifact("call_graph")
             if isinstance(call_graph, CallGraph):
                 call_graphs[project] = call_graph

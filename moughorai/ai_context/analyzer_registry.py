@@ -28,6 +28,10 @@ from moughorai.java_code_intelligence import (
     classify_source,
     create_callable_index,
 )
+from moughorai.java_code_intelligence.call_graph_producer import (
+    JavaCodeGraphProducer,
+)
+from moughorai.java_code_intelligence.code_graph import JavaCodeGraph
 from moughorai.java_security import JavaSecurityAnalyzer
 from moughorai.java_symbols.builder import JavaSymbolIndexBuilder
 from moughorai.java_symbols import (
@@ -262,6 +266,7 @@ class JavaLanguageAnalyzer:
         self._symbol_builder = symbol_builder or JavaSymbolIndexBuilder()
         self._global_builder = global_builder or GlobalSymbolDatabaseBuilder()
         self._callable_index = CallableIndexBuilder()
+        self._code_graph = JavaCodeGraphProducer()
         self._architecture = architecture or JavaArchitectureService()
         self._workspace_scanner = workspace_scanner or JavaWorkspaceScanner()
         self._security_analyzer = security_analyzer or JavaSecurityAnalyzer()
@@ -453,7 +458,7 @@ class JavaLanguageAnalyzer:
                 )
                 if isolated is None:
                     raise
-                isolated_units, symbols, callable_index = isolated
+                isolated_units, symbols, callable_index, code_graph = isolated
                 scope.add_units(len(isolated_units))
                 scope.add_objects_produced(len(symbols))
                 scope.set_objects_retained(len(symbols))
@@ -488,6 +493,7 @@ class JavaLanguageAnalyzer:
                         partial_security_report,
                     )
                     .with_artifact('java_callable_index', callable_index)
+                    .with_artifact('java_code_graph', code_graph)
                     .with_diagnostics(diagnostics)
                 )
             symbols = _scope_symbols(
@@ -526,6 +532,14 @@ class JavaLanguageAnalyzer:
             scope.add_units(len(units))
             scope.add_objects_produced(len(architecture.nodes) + len(architecture.edges))
             scope.set_objects_retained(len(architecture.nodes) + len(architecture.edges))
+        code_graph = self._code_graph.build(
+            tuple(units),
+            tuple(sources),
+            callable_index,
+            architecture,
+            project_root=project.path,
+            lineage=f'project:{project.name}',
+        )
         symbols = _with_java_relations(
             symbols,
             index,
@@ -551,6 +565,7 @@ class JavaLanguageAnalyzer:
                 security_producer_report,
             )
             .with_artifact('java_callable_index', callable_index)
+            .with_artifact('java_code_graph', code_graph)
             .with_diagnostics(diagnostics)
         )
 
@@ -568,6 +583,7 @@ class JavaLanguageAnalyzer:
         tuple[object, ...],
         tuple[GlobalSymbol, ...],
         JavaCallableIndex,
+        JavaCodeGraph,
     ] | None:
         """Recover only when conventional Gradle source-set evidence is exact."""
         first_scope = _gradle_java_source_set(project.path, error.first_source)
@@ -587,6 +603,7 @@ class JavaLanguageAnalyzer:
             grouped.setdefault(source_set, []).append((source, unit))
 
         ordered_units: list[object] = []
+        ordered_sources: list[Path] = []
         scoped_symbols: list[GlobalSymbol] = []
         callable_entries: list[CallableIndexEntry] = []
         callable_diagnostics = list(diagnostics)
@@ -656,6 +673,7 @@ class JavaLanguageAnalyzer:
             unindexed_callables += partial_index.coverage.unindexed_callables
             omitted_diagnostics += partial_index.coverage.omitted_diagnostic_count
             ordered_units.extend(scoped_units)
+            ordered_sources.extend(scoped_sources)
         callable_index = create_callable_index(
             lineage=f'project:{project.name}',
             path_scope=PathScope.PROJECT,
@@ -669,7 +687,20 @@ class JavaLanguageAnalyzer:
             represented_constructors=represented_constructors,
             omitted_diagnostic_count=omitted_diagnostics,
         )
-        return tuple(ordered_units), tuple(scoped_symbols), callable_index
+        code_graph = self._code_graph.build(
+            tuple(ordered_units),
+            tuple(ordered_sources),
+            callable_index,
+            JavaArchitectureGraph(),
+            project_root=project.path,
+            lineage=f'project:{project.name}',
+        )
+        return (
+            tuple(ordered_units),
+            tuple(scoped_symbols),
+            callable_index,
+            code_graph,
+        )
 
 
 _VERSIONED_GRADLE_JAVA_PATH = re.compile(
