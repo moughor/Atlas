@@ -1528,10 +1528,29 @@ def ai_ask_command(
                 typer.echo(result.to_json())
             else:
                 typer.echo(result.answer)
-                if not result.grounded:
+                grounding = result.grounding_summary
+                if grounding is None:
+                    if not result.grounded:
+                        typer.echo(
+                            "warning: provider grounding citations were incomplete; "
+                            "use --json for validation details",
+                            err=True,
+                        )
+                elif not grounding.delivered_answer_grounded:
                     typer.echo(
-                        "warning: provider grounding citations were incomplete; "
+                        "warning: delivered answer grounding is incomplete; "
                         "use --json for validation details",
+                        err=True,
+                    )
+                elif not grounding.request_complete:
+                    omitted = (
+                        ", ".join(grounding.omitted_requested_capabilities)
+                        or "one or more required dimensions"
+                    )
+                    typer.echo(
+                        "notice: Atlas returned a grounded but incomplete answer; "
+                        f"omitted requested dimensions: {omitted}; "
+                        "use --json for status details",
                         err=True,
                     )
         finally:

@@ -18,7 +18,9 @@ from .safety import contains_unsafe_chat_content
 CHAT_PRODUCER_VERSION = "atlas-pr139/1"
 CHAT_SCHEMA_VERSION = 1
 CHAT_SELECTION_POLICY = "engineering-chat-context.v1"
+GROUNDING_SUMMARY_SCHEMA_VERSION = 1
 _EVIDENCE_ID = re.compile(r"evidence:[0-9a-f]{64}")
+_CAPABILITY_NAME = re.compile(r"[a-z][a-z0-9_]*")
 
 
 class _FrozenDict(dict[str, Any]):
@@ -327,6 +329,203 @@ class CitationValidation:
         if raw_valid is not None and _boolean(raw_valid, "citation validity") != result.valid:
             raise ValueError("serialized citation validity is inconsistent")
         return result
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class CapabilityGroundingStatus:
+    capability: str
+    requested: bool
+    computed: bool
+    delivered: bool
+    grounded: bool
+
+    def __post_init__(self) -> None:
+        capability = self.capability.strip()
+        if _CAPABILITY_NAME.fullmatch(capability) is None:
+            raise ValueError("grounding capability must be a canonical name")
+        object.__setattr__(self, "capability", capability)
+        for name in ("requested", "computed", "delivered", "grounded"):
+            object.__setattr__(
+                self,
+                name,
+                _boolean(getattr(self, name), f"capability grounding {name}"),
+            )
+        if self.delivered and not self.computed:
+            raise ValueError("delivered capability grounding must be computed")
+        if self.grounded and not self.delivered:
+            raise ValueError("grounded capability must be delivered")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "capability": self.capability,
+            "requested": self.requested,
+            "computed": self.computed,
+            "delivered": self.delivered,
+            "grounded": self.grounded,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> CapabilityGroundingStatus:
+        required = {"capability", "requested", "computed", "delivered", "grounded"}
+        if not required.issubset(value):
+            raise ValueError("capability grounding status is incomplete")
+        capability = value["capability"]
+        if not isinstance(capability, str):
+            raise TypeError("grounding capability must be a string")
+        return cls(
+            capability,
+            _boolean(value["requested"], "capability grounding requested"),
+            _boolean(value["computed"], "capability grounding computed"),
+            _boolean(value["delivered"], "capability grounding delivered"),
+            _boolean(value["grounded"], "capability grounding grounded"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GroundingSummary:
+    provider_grounded: bool
+    delivered_answer_grounded: bool
+    request_complete: bool
+    fallback_used: bool
+    delivered_capabilities: tuple[str, ...] = ()
+    omitted_requested_capabilities: tuple[str, ...] = ()
+    capability_statuses: tuple[CapabilityGroundingStatus, ...] = ()
+    schema_version: int = GROUNDING_SUMMARY_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        for name in (
+            "provider_grounded",
+            "delivered_answer_grounded",
+            "request_complete",
+            "fallback_used",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _boolean(getattr(self, name), f"grounding summary {name}"),
+            )
+        schema_version = _integer(
+            self.schema_version, "grounding summary schema version"
+        )
+        if schema_version != GROUNDING_SUMMARY_SCHEMA_VERSION:
+            raise ValueError("unsupported grounding summary schema")
+        delivered = _strings(
+            self.delivered_capabilities, "delivered grounding capabilities"
+        )
+        omitted = _strings(
+            self.omitted_requested_capabilities,
+            "omitted requested grounding capabilities",
+        )
+        if set(delivered).intersection(omitted):
+            raise ValueError("grounding capability scopes overlap")
+        if any(
+            not isinstance(item, CapabilityGroundingStatus)
+            for item in self.capability_statuses
+        ):
+            raise TypeError(
+                "grounding capability statuses must use CapabilityGroundingStatus"
+            )
+        statuses = tuple(sorted(self.capability_statuses))
+        if len({item.capability for item in statuses}) != len(statuses):
+            raise ValueError("grounding capability statuses must be unique")
+        expected_delivered = tuple(
+            item.capability for item in statuses if item.delivered
+        )
+        expected_omitted = tuple(
+            item.capability
+            for item in statuses
+            if item.requested and not item.delivered
+        )
+        if delivered != expected_delivered:
+            raise ValueError("delivered grounding capability scope is inconsistent")
+        if omitted != expected_omitted:
+            raise ValueError(
+                "omitted requested grounding capability scope is inconsistent"
+            )
+        if self.request_complete and (
+            not self.delivered_answer_grounded
+            or any(
+                item.requested and (not item.delivered or not item.grounded)
+                for item in statuses
+            )
+        ):
+            raise ValueError("grounding request completeness is inconsistent")
+        if self.provider_grounded and self.fallback_used:
+            raise ValueError("grounded provider response cannot use fallback")
+        if self.provider_grounded and not self.delivered_answer_grounded:
+            raise ValueError("grounded provider response must remain answer-grounded")
+        object.__setattr__(self, "delivered_capabilities", delivered)
+        object.__setattr__(self, "omitted_requested_capabilities", omitted)
+        object.__setattr__(self, "capability_statuses", statuses)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "provider_grounded": self.provider_grounded,
+            "delivered_answer_grounded": self.delivered_answer_grounded,
+            "request_complete": self.request_complete,
+            "fallback_used": self.fallback_used,
+            "delivered_capabilities": list(self.delivered_capabilities),
+            "omitted_requested_capabilities": list(
+                self.omitted_requested_capabilities
+            ),
+            "capability_statuses": [
+                item.to_dict() for item in self.capability_statuses
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> GroundingSummary:
+        required = {
+            "schema_version",
+            "provider_grounded",
+            "delivered_answer_grounded",
+            "request_complete",
+            "fallback_used",
+            "delivered_capabilities",
+            "omitted_requested_capabilities",
+            "capability_statuses",
+        }
+        if not required.issubset(value):
+            raise ValueError("grounding summary is incomplete")
+        raw_statuses = value["capability_statuses"]
+        if not isinstance(raw_statuses, Sequence) or isinstance(
+            raw_statuses, (str, bytes, bytearray)
+        ):
+            raise TypeError("grounding capability statuses must be an array")
+        if any(not isinstance(item, Mapping) for item in raw_statuses):
+            raise TypeError("grounding capability statuses must contain objects")
+        return cls(
+            _boolean(
+                value["provider_grounded"],
+                "grounding summary provider grounding",
+            ),
+            _boolean(
+                value["delivered_answer_grounded"],
+                "grounding summary delivered answer grounding",
+            ),
+            _boolean(
+                value["request_complete"],
+                "grounding summary request completeness",
+            ),
+            _boolean(
+                value["fallback_used"],
+                "grounding summary fallback usage",
+            ),
+            _strings(
+                value["delivered_capabilities"],
+                "delivered grounding capabilities",
+            ),
+            _strings(
+                value["omitted_requested_capabilities"],
+                "omitted requested grounding capabilities",
+            ),
+            tuple(CapabilityGroundingStatus.from_dict(item) for item in raw_statuses),
+            _integer(
+                value["schema_version"],
+                "grounding summary schema version",
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True, eq=False)

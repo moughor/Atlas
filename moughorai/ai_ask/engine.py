@@ -25,9 +25,11 @@ from .context import (
     validate_citations,
 )
 from .models import (
+    CapabilityGroundingStatus,
     ChatCapabilityState,
     ChatContext,
     CitationValidation,
+    GroundingSummary,
 )
 from .safety import contains_unsafe_chat_content, sanitize_chat_metadata
 
@@ -152,6 +154,7 @@ class AskResult:
     provider: str = ""
     model: str = ""
     limitations: tuple[str, ...] = ()
+    grounding_summary: GroundingSummary | None = None
 
     def __post_init__(self) -> None:
         answer = _serialized_string(self.answer, "ask result answer").strip()
@@ -228,6 +231,25 @@ class AskResult:
                 "context-bearing ask result limitations must be source-free"
             )
         object.__setattr__(self, "limitations", limitations)
+        if self.grounding_summary is not None:
+            if not isinstance(self.grounding_summary, GroundingSummary):
+                raise TypeError(
+                    "ask result grounding summary must use GroundingSummary"
+                )
+            if self.grounding_summary.request_complete != self.grounded:
+                raise ValueError(
+                    "ask result grounding summary conflicts with legacy grounding"
+                )
+            if (
+                self.grounding_summary.delivered_answer_grounded
+                and (
+                    not self.citations.valid
+                    or not self.citations.accepted_evidence_ids
+                )
+            ):
+                raise ValueError(
+                    "answer-grounded summary requires accepted valid citations"
+                )
 
     @property
     def grounded(self) -> bool:
@@ -302,7 +324,7 @@ class AskResult:
         return True
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "answer": self.answer,
             "snapshot_id": self.snapshot_id,
             "conversation_id": self.conversation_id,
@@ -313,6 +335,9 @@ class AskResult:
             "limitations": list(self.limitations),
             "grounded": self.grounded,
         }
+        if self.grounding_summary is not None:
+            result["grounding_summary"] = self.grounding_summary.to_dict()
+        return result
 
     def to_json(self) -> str:
         return json.dumps(
@@ -323,10 +348,15 @@ class AskResult:
     def from_dict(cls, value: Mapping[str, object]) -> AskResult:
         raw_context = value.get("context")
         raw_citations = value.get("citations", {})
+        raw_grounding_summary = value.get("grounding_summary")
         if raw_context is not None and not isinstance(raw_context, Mapping):
             raise TypeError("ask result context must be an object or null")
         if not isinstance(raw_citations, Mapping):
             raise TypeError("ask result citations must be an object")
+        if raw_grounding_summary is not None and not isinstance(
+            raw_grounding_summary, Mapping
+        ):
+            raise TypeError("ask result grounding summary must be an object")
         raw_limitations = value.get("limitations", ())
         if not isinstance(raw_limitations, Sequence) or isinstance(
             raw_limitations, (str, bytes, bytearray)
@@ -345,6 +375,9 @@ class AskResult:
             _serialized_string(value.get("provider", ""), "provider"),
             _serialized_string(value.get("model", ""), "model"),
             tuple(raw_limitations),
+            GroundingSummary.from_dict(raw_grounding_summary)
+            if isinstance(raw_grounding_summary, Mapping)
+            else None,
         )
         raw_grounded = value.get("grounded")
         if raw_grounded is not None and _serialized_boolean(
@@ -566,8 +599,10 @@ class AskEngine:
                 response_model,
                 tuple(limitations),
             )
+            provider_grounded = provider_result.grounded
+            fallback_used = False
             if (
-                not provider_result.grounded
+                not provider_grounded
                 and _eligible_for_deterministic_impact_fallback(context)
             ):
                 fallback = _deterministic_impact_fallback(context)
@@ -583,7 +618,8 @@ class AskEngine:
                     limitations.add(
                         "Provider grounding failed; Atlas discarded the provider interpretation and returned a deterministic impact fallback."
                     )
-            result = AskResult(
+                    fallback_used = True
+            result_without_summary = AskResult(
                 answer,
                 snapshot.snapshot_id,
                 conversation_id,
@@ -593,20 +629,41 @@ class AskEngine:
                 response_model,
                 tuple(limitations),
             )
+            grounding_summary = _derive_grounding_summary(
+                context,
+                provider_grounded=provider_grounded,
+                delivered_result=result_without_summary,
+                fallback_used=fallback_used,
+            )
+            result = AskResult(
+                answer,
+                snapshot.snapshot_id,
+                conversation_id,
+                context,
+                citations,
+                response_provider,
+                response_model,
+                tuple(limitations),
+                grounding_summary,
+            )
             if self.memory and conversation_id is not None and turn is not None:
+                message_references = {
+                    "citation_status": "valid" if result.grounded else "invalid",
+                    "context": context.context_digest,
+                    "kind": "answer",
+                    "snapshot": snapshot.snapshot_id,
+                    "turn": str(turn.id),
+                }
+                message_references.update(
+                    _grounding_summary_references(grounding_summary)
+                )
                 self.memory.complete_turn(
                     turn.id,
                     provider=response_provider,
                     model=response_model,
                     limitations=limitations,
                     message_content=answer,
-                    message_references={
-                        "citation_status": "valid" if result.grounded else "invalid",
-                        "context": context.context_digest,
-                        "kind": "answer",
-                        "snapshot": snapshot.snapshot_id,
-                        "turn": str(turn.id),
-                    },
+                    message_references=message_references,
                 )
             return result
         except Exception:
@@ -658,6 +715,98 @@ class AskEngine:
             + ("\n".join(transcript) if transcript else "(none)")
             + f"\nQuestion: {context.question}"
         )
+
+
+_OPTIONAL_ANSWER_CAPABILITIES = (
+    "impact_prediction",
+    "refactoring_advisor",
+    "security_intelligence",
+)
+
+
+def _derive_grounding_summary(
+    context: ChatContext,
+    *,
+    provider_grounded: bool,
+    delivered_result: AskResult,
+    fallback_used: bool,
+) -> GroundingSummary:
+    delivered_answer_grounded = provider_grounded
+    if fallback_used:
+        aggregate_evidence = {
+            evidence_id
+            for section in context.sections
+            if section.section_id == "impact_aggregate"
+            and section.capability == "impact_prediction"
+            for evidence_id in section.evidence_ids
+        }
+        delivered_answer_grounded = (
+            delivered_result.citations.valid
+            and bool(aggregate_evidence.intersection(
+                delivered_result.citations.accepted_evidence_ids
+            ))
+        )
+
+    statuses = []
+    for capability in context.capabilities:
+        if (
+            capability.name not in _OPTIONAL_ANSWER_CAPABILITIES
+            or capability.state is ChatCapabilityState.NOT_REQUESTED
+        ):
+            continue
+        computed = capability.state in {
+            ChatCapabilityState.AVAILABLE,
+            ChatCapabilityState.PARTIAL,
+        }
+        delivered = (
+            provider_grounded
+            or (
+                fallback_used
+                and delivered_answer_grounded
+                and capability.name == "impact_prediction"
+            )
+        )
+        statuses.append(CapabilityGroundingStatus(
+            capability.name,
+            requested=True,
+            computed=computed,
+            delivered=delivered,
+            grounded=delivered,
+        ))
+    statuses = sorted(statuses)
+    delivered_capabilities = tuple(
+        item.capability for item in statuses if item.delivered
+    )
+    omitted_capabilities = tuple(
+        item.capability for item in statuses if not item.delivered
+    )
+    return GroundingSummary(
+        provider_grounded,
+        delivered_answer_grounded,
+        delivered_result.grounded,
+        fallback_used,
+        delivered_capabilities,
+        omitted_capabilities,
+        tuple(statuses),
+    )
+
+
+def _grounding_summary_references(
+    summary: GroundingSummary,
+) -> dict[str, str]:
+    return {
+        "delivered_answer_grounded": str(
+            summary.delivered_answer_grounded
+        ).lower(),
+        "request_complete": str(summary.request_complete).lower(),
+        "fallback_used": str(summary.fallback_used).lower(),
+        "delivered_capabilities": (
+            ",".join(summary.delivered_capabilities) or "none"
+        ),
+        "omitted_requested_capabilities": (
+            ",".join(summary.omitted_requested_capabilities) or "none"
+        ),
+    }
 
 
 def _eligible_for_deterministic_impact_fallback(context: ChatContext) -> bool:

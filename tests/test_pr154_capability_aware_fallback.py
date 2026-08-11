@@ -257,6 +257,11 @@ def test_pure_impact_preserves_pr151_fixed_vectors_and_is_deterministic() -> Non
         PR151_FALLBACK_SHA256
     )
     assert results[0].grounded is True
+    assert results[0].grounding_summary is not None
+    assert results[0].grounding_summary.provider_grounded is False
+    assert results[0].grounding_summary.delivered_answer_grounded is True
+    assert results[0].grounding_summary.request_complete is True
+    assert results[0].grounding_summary.fallback_used is True
     assert PROVIDER_PROSE not in results[0].answer
     assert json.dumps(
         snapshot.to_dict(), sort_keys=True, separators=(",", ":")
@@ -307,6 +312,17 @@ def test_mixed_refactoring_primary_uses_scoped_deterministic_impact_fallback() -
     assert PROVIDER_PROSE not in result.answer
     assert "refactoring advice" not in result.answer.casefold()
     assert result.answer == results[1].answer
+    assert result.grounding_summary is not None
+    assert result.grounding_summary.provider_grounded is False
+    assert result.grounding_summary.delivered_answer_grounded is True
+    assert result.grounding_summary.request_complete is False
+    assert result.grounding_summary.fallback_used is True
+    assert result.grounding_summary.delivered_capabilities == (
+        "impact_prediction",
+    )
+    assert result.grounding_summary.omitted_requested_capabilities == (
+        "refactoring_advisor",
+    )
 
 
 def test_explicit_and_inferred_impact_are_equally_fallback_eligible() -> None:
@@ -415,6 +431,16 @@ def test_conversation_and_ask_serialization_remain_compatible(tmp_path) -> None:
     assert turn.context_digest == result.context.context_digest
     assert messages[-1].content == result.answer
     assert PROVIDER_PROSE not in messages[-1].content
+    assert messages[-1].references["citation_status"] == "invalid"
+    assert messages[-1].references["delivered_answer_grounded"] == "true"
+    assert messages[-1].references["request_complete"] == "false"
+    assert messages[-1].references["fallback_used"] == "true"
+    assert messages[-1].references["delivered_capabilities"] == (
+        "impact_prediction"
+    )
+    assert messages[-1].references["omitted_requested_capabilities"] == (
+        "refactoring_advisor"
+    )
     assert set(result.to_dict()) == {
         "answer",
         "snapshot_id",
@@ -425,6 +451,7 @@ def test_conversation_and_ask_serialization_remain_compatible(tmp_path) -> None:
         "model",
         "limitations",
         "grounded",
+        "grounding_summary",
     }
 
 
@@ -472,8 +499,15 @@ def test_cli_json_shape_and_mixed_fallback_remain_compatible(
         "model",
         "limitations",
         "grounded",
+        "grounding_summary",
     }
     assert payload["context"]["intent"] == "refactoring"
+    assert payload["grounded"] is False
+    assert payload["grounding_summary"][
+        "delivered_answer_grounded"
+    ] is True
+    assert payload["grounding_summary"]["request_complete"] is False
+    assert payload["grounding_summary"]["fallback_used"] is True
     assert payload["answer"].startswith("Atlas deterministic impact answer")
     assert "authoritative deterministic impact dimension" in payload["answer"]
     assert PROVIDER_PROSE not in payload["answer"]
