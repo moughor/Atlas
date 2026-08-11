@@ -8,6 +8,8 @@ from moughorai.java_ast.ast_nodes import (
     Annotation,
     AnnotationArgument,
     AnnotationDeclaration,
+    CallSiteSyntax,
+    CallSyntaxKind,
     ClassDeclaration,
     CompilationUnit,
     ConstructorDeclaration,
@@ -213,7 +215,9 @@ class JavaParser:
                     prefix[1:end]
                 )
                 prefix = prefix[end + 1:]
-            declaration_end, body_span = self._consume_member_terminator()
+            declaration_end, body_span, call_sites = (
+                self._consume_member_terminator()
+            )
             declaration_span = SourceSpan(declaration_start, declaration_end)
             if name == owner and not prefix:
                 result = ConstructorDeclaration(
@@ -227,6 +231,7 @@ class JavaParser:
                     type_parameter_names=type_parameter_names,
                     declaration_span=declaration_span,
                     body_span=body_span,
+                    call_sites=call_sites,
                 )
             else:
                 return_type = self._join(prefix)
@@ -244,6 +249,7 @@ class JavaParser:
                     type_parameter_names=type_parameter_names,
                     declaration_span=declaration_span,
                     body_span=body_span,
+                    call_sites=call_sites,
                 )
             return result
 
@@ -274,19 +280,366 @@ class JavaParser:
 
     def _consume_member_terminator(
         self,
-    ) -> tuple[SourceLocation, SourceSpan | None]:
+    ) -> tuple[
+        SourceLocation,
+        SourceSpan | None,
+        tuple[CallSiteSyntax, ...],
+    ]:
         if self._at(JavaTokenType.SEMICOLON):
             terminator = self._advance()
-            return terminator.span.end, None
+            return terminator.span.end, None, ()
         if self._at(JavaTokenType.LEFT_BRACE):
             opening = self._current()
-            self._collect_balanced(JavaTokenType.LEFT_BRACE, JavaTokenType.RIGHT_BRACE)
+            body_tokens = self._collect_balanced(
+                JavaTokenType.LEFT_BRACE,
+                JavaTokenType.RIGHT_BRACE,
+            )
             closing = self._tokens[self._position - 1]
-            return closing.span.end, SourceSpan(
-                opening.span.start,
+            return (
                 closing.span.end,
+                SourceSpan(opening.span.start, closing.span.end),
+                self._extract_call_sites(body_tokens),
             )
         raise JavaParseError("Expected member body or ';'", self._current())
+
+    @classmethod
+    def _extract_call_sites(
+        cls,
+        tokens: Sequence[JavaToken],
+    ) -> tuple[CallSiteSyntax, ...]:
+        findings: list[CallSiteSyntax] = []
+        consumed_parentheses: set[int] = set()
+
+        for index, token in enumerate(tokens):
+            if token.type is not JavaTokenType.DOUBLE_COLON:
+                continue
+            receiver_start, receiver = cls._qualified_receiver(tokens, index)
+            member = tokens[index + 1] if index + 1 < len(tokens) else None
+            if member is None or member.type not in {
+                JavaTokenType.IDENTIFIER,
+                JavaTokenType.KEYWORD,
+            }:
+                findings.append(CallSiteSyntax(
+                    CallSyntaxKind.METHOD_REFERENCE,
+                    '<unknown>',
+                    token.span,
+                    receiver=receiver,
+                    unsupported_reason='Method-reference member is unavailable.',
+                ))
+                continue
+            findings.append(CallSiteSyntax(
+                CallSyntaxKind.METHOD_REFERENCE,
+                member.lexeme,
+                SourceSpan(
+                    tokens[receiver_start].span.start,
+                    member.span.end,
+                ),
+                receiver=receiver,
+                requested_owner=cls._local_declared_type(
+                    tokens, receiver, receiver_start,
+                ),
+            ))
+
+        for index, token in enumerate(tokens):
+            if token.lexeme != 'new':
+                continue
+            opening = cls._constructor_opening(tokens, index + 1)
+            if opening is None:
+                findings.append(CallSiteSyntax(
+                    CallSyntaxKind.CONSTRUCTOR_INVOCATION,
+                    '<init>',
+                    token.span,
+                    unsupported_reason=(
+                        'Constructor type or arguments are unavailable.'
+                    ),
+                ))
+                continue
+            try:
+                closing = cls._matching_index(
+                    tokens,
+                    opening,
+                    JavaTokenType.LEFT_PAREN,
+                    JavaTokenType.RIGHT_PAREN,
+                )
+            except ValueError:
+                findings.append(CallSiteSyntax(
+                    CallSyntaxKind.CONSTRUCTOR_INVOCATION,
+                    '<init>',
+                    token.span,
+                    unsupported_reason='Constructor arguments are unbalanced.',
+                ))
+                continue
+            requested = cls._constructor_type(tokens[index + 1:opening])
+            findings.append(CallSiteSyntax(
+                CallSyntaxKind.CONSTRUCTOR_INVOCATION,
+                '<init>',
+                SourceSpan(token.span.start, tokens[closing].span.end),
+                requested_owner=requested,
+                argument_hints=cls._argument_hints(
+                    tokens[opening + 1:closing]
+                ),
+                unsupported_reason=(
+                    None
+                    if requested is not None
+                    else 'Constructor type syntax is unsupported.'
+                ),
+            ))
+            consumed_parentheses.add(opening)
+
+        excluded = {
+            'assert', 'catch', 'do', 'for', 'if', 'return', 'switch',
+            'synchronized', 'throw', 'try', 'while', 'yield',
+        }
+        for opening, token in enumerate(tokens):
+            if (
+                token.type is not JavaTokenType.LEFT_PAREN
+                or opening in consumed_parentheses
+                or opening == 0
+            ):
+                continue
+            member = tokens[opening - 1]
+            if member.type not in {
+                JavaTokenType.IDENTIFIER,
+                JavaTokenType.KEYWORD,
+            } or member.lexeme in excluded:
+                continue
+            if opening >= 2 and tokens[opening - 2].type is JavaTokenType.AT:
+                continue
+            try:
+                closing = cls._matching_index(
+                    tokens,
+                    opening,
+                    JavaTokenType.LEFT_PAREN,
+                    JavaTokenType.RIGHT_PAREN,
+                )
+            except ValueError:
+                findings.append(CallSiteSyntax(
+                    CallSyntaxKind.METHOD_INVOCATION,
+                    member.lexeme,
+                    member.span,
+                    unsupported_reason='Invocation arguments are unbalanced.',
+                ))
+                continue
+
+            if member.lexeme in {'this', 'super'}:
+                findings.append(CallSiteSyntax(
+                    CallSyntaxKind.CONSTRUCTOR_INVOCATION,
+                    '<init>',
+                    SourceSpan(member.span.start, tokens[closing].span.end),
+                    receiver=member.lexeme,
+                    requested_owner=member.lexeme,
+                    argument_hints=cls._argument_hints(
+                        tokens[opening + 1:closing]
+                    ),
+                ))
+                consumed_parentheses.add(opening)
+                continue
+
+            receiver = None
+            start = opening - 1
+            unsupported = None
+            if (
+                opening >= 2
+                and tokens[opening - 2].type is JavaTokenType.GREATER
+            ):
+                unsupported = (
+                    'Explicit generic invocation syntax is unsupported.'
+                )
+            elif opening >= 3 and tokens[opening - 2].type is JavaTokenType.DOT:
+                start, receiver = cls._qualified_receiver(tokens, opening - 2)
+                if receiver is None:
+                    unsupported = (
+                        'Invocation receiver expression is unsupported.'
+                    )
+                    start = opening - 1
+            findings.append(CallSiteSyntax(
+                CallSyntaxKind.METHOD_INVOCATION,
+                member.lexeme,
+                SourceSpan(tokens[start].span.start, tokens[closing].span.end),
+                receiver=receiver,
+                requested_owner=(
+                    receiver
+                    if receiver in {'this', 'super'}
+                    else cls._local_declared_type(tokens, receiver, start)
+                ),
+                argument_hints=cls._argument_hints(
+                    tokens[opening + 1:closing]
+                ),
+                unsupported_reason=unsupported,
+            ))
+
+        return tuple(sorted(
+            set(findings),
+            key=lambda item: (
+                item.span.start.offset,
+                item.span.end.offset,
+                item.kind.value,
+                item.member_name,
+                item.receiver or '',
+            ),
+        ))
+
+    @classmethod
+    def _local_declared_type(
+        cls,
+        tokens: Sequence[JavaToken],
+        receiver: str | None,
+        before: int,
+    ) -> str | None:
+        if receiver is None or '.' in receiver:
+            return None
+        matches: set[str] = set()
+        boundaries = {
+            JavaTokenType.SEMICOLON,
+            JavaTokenType.LEFT_BRACE,
+            JavaTokenType.RIGHT_BRACE,
+        }
+        for index in range(before):
+            if tokens[index].lexeme != receiver or index + 1 >= before:
+                continue
+            if tokens[index + 1].lexeme not in {'=', ';'}:
+                continue
+            start = index - 1
+            while start >= 0 and tokens[start].type not in boundaries:
+                start -= 1
+            declaration = list(tokens[start + 1:index])
+            while declaration and declaration[0].lexeme in {'final'}:
+                declaration.pop(0)
+            while (
+                len(declaration) >= 2
+                and declaration[-2].type is JavaTokenType.LEFT_BRACKET
+                and declaration[-1].type is JavaTokenType.RIGHT_BRACKET
+            ):
+                declaration = declaration[:-2]
+            if not declaration or any(
+                token.lexeme in {'=', '(', ')', '->'}
+                for token in declaration
+            ):
+                continue
+            candidate = cls._constructor_type(declaration)
+            if candidate is not None and candidate not in {
+                'boolean', 'byte', 'char', 'double', 'float', 'int',
+                'long', 'short', 'var',
+            }:
+                matches.add(candidate)
+        if len(matches) == 1:
+            return next(iter(matches))
+        return None
+
+    @staticmethod
+    def _qualified_receiver(
+        tokens: Sequence[JavaToken],
+        separator: int,
+    ) -> tuple[int, str | None]:
+        index = separator - 1
+        if index < 0 or tokens[index].type not in {
+            JavaTokenType.IDENTIFIER,
+            JavaTokenType.KEYWORD,
+        }:
+            return max(separator, 0), None
+        parts = [tokens[index].lexeme]
+        start = index
+        index -= 1
+        while (
+            index >= 1
+            and tokens[index].type is JavaTokenType.DOT
+            and tokens[index - 1].type in {
+                JavaTokenType.IDENTIFIER,
+                JavaTokenType.KEYWORD,
+            }
+        ):
+            parts.extend((tokens[index].lexeme, tokens[index - 1].lexeme))
+            start = index - 1
+            index -= 2
+        return start, ''.join(reversed(parts))
+
+    @staticmethod
+    def _constructor_opening(
+        tokens: Sequence[JavaToken],
+        start: int,
+    ) -> int | None:
+        angle = 0
+        for index in range(start, len(tokens)):
+            token = tokens[index]
+            if token.type is JavaTokenType.LESS:
+                angle += 1
+            elif token.type is JavaTokenType.GREATER and angle:
+                angle -= 1
+            elif token.type is JavaTokenType.LEFT_PAREN and angle == 0:
+                return index
+            elif token.type in {
+                JavaTokenType.SEMICOLON,
+                JavaTokenType.LEFT_BRACE,
+                JavaTokenType.RIGHT_BRACE,
+            }:
+                return None
+        return None
+
+    @staticmethod
+    def _constructor_type(tokens: Sequence[JavaToken]) -> str | None:
+        depth = 0
+        parts: list[str] = []
+        for token in tokens:
+            if token.type is JavaTokenType.LESS:
+                depth += 1
+                continue
+            if token.type is JavaTokenType.GREATER:
+                depth -= 1
+                if depth < 0:
+                    return None
+                continue
+            if depth:
+                continue
+            if token.type not in {
+                JavaTokenType.IDENTIFIER,
+                JavaTokenType.KEYWORD,
+                JavaTokenType.DOT,
+            }:
+                return None
+            parts.append(token.lexeme)
+        value = ''.join(parts)
+        return value or None
+
+    @classmethod
+    def _argument_hints(
+        cls,
+        tokens: Sequence[JavaToken],
+    ) -> tuple[str, ...]:
+        if not tokens:
+            return ()
+        return tuple(
+            cls._argument_hint(chunk)
+            for chunk in cls._split_top_level(tokens, JavaTokenType.COMMA)
+        )
+
+    @staticmethod
+    def _argument_hint(tokens: Sequence[JavaToken]) -> str:
+        if not tokens:
+            return 'unknown'
+        first = tokens[0]
+        literals = {
+            JavaTokenType.STRING_LITERAL: 'literal:String',
+            JavaTokenType.TEXT_BLOCK: 'literal:String',
+            JavaTokenType.CHARACTER_LITERAL: 'literal:char',
+            JavaTokenType.BOOLEAN_LITERAL: 'literal:boolean',
+            JavaTokenType.NULL_LITERAL: 'literal:null',
+            JavaTokenType.INTEGER_LITERAL: 'literal:int',
+            JavaTokenType.FLOAT_LITERAL: 'literal:double',
+        }
+        if first.type in literals and len(tokens) == 1:
+            return literals[first.type]
+        if first.lexeme == 'new':
+            opening = next((
+                index for index, token in enumerate(tokens[1:], start=1)
+                if token.type is JavaTokenType.LEFT_PAREN
+            ), None)
+            if opening is not None:
+                requested = JavaParser._constructor_type(tokens[1:opening])
+                if requested is not None:
+                    return f'new:{requested}'
+        if len(tokens) == 1 and first.type is JavaTokenType.IDENTIFIER:
+            return f'identifier:{first.lexeme}'
+        return 'unknown'
 
     @classmethod
     def _type_parameter_names(

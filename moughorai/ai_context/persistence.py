@@ -21,6 +21,11 @@ from moughorai.java_code_intelligence import (
     callable_index_from_dict,
     callable_index_to_dict,
 )
+from moughorai.java_code_intelligence.code_graph import (
+    JavaCodeGraph,
+    code_graph_from_dict,
+    code_graph_to_dict,
+)
 from moughorai.security_intelligence import SecurityProducerReport
 
 
@@ -69,6 +74,17 @@ def encode_analysis_result(value: Any) -> Any:
     callable_index = value.get_artifact('java_callable_index')
     if isinstance(callable_index, JavaCallableIndex):
         encoded['java_callable_index'] = callable_index_to_dict(callable_index)
+    code_graph = value.get_artifact('java_code_graph')
+    if isinstance(code_graph, JavaCodeGraph):
+        if (
+            not isinstance(callable_index, JavaCallableIndex)
+            or code_graph.callable_index_fingerprint
+            != callable_index.input_fingerprint
+        ):
+            raise ValueError(
+                'Java code graph is not bound to the persisted callable index'
+            )
+        encoded['java_code_graph'] = code_graph_to_dict(code_graph)
     return encoded
 
 
@@ -119,11 +135,22 @@ def decode_analysis_result(value: Any) -> Any:
             "security_producer_report",
             SecurityProducerReport.from_dict(raw_security_report),
         )
+    callable_index = None
     if 'java_callable_index' in value:
+        callable_index = callable_index_from_dict(value['java_callable_index'])
         document = document.with_artifact(
             'java_callable_index',
-            callable_index_from_dict(value['java_callable_index']),
+            callable_index,
         )
+    if 'java_code_graph' in value:
+        # The graph is optional and cannot be trusted without its PR156
+        # authority.  Preserve readability of legacy SemanticDocuments while
+        # failing closed by declining to construct an unbound graph.
+        if callable_index is not None:
+            document = document.with_artifact(
+                'java_code_graph',
+                code_graph_from_dict(value['java_code_graph'], callable_index),
+            )
     return document.with_diagnostics(
         Diagnostic(
             code=str(item["code"]),
