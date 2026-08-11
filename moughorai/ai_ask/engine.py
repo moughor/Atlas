@@ -27,7 +27,6 @@ from .context import (
 from .models import (
     ChatCapabilityState,
     ChatContext,
-    ChatIntent,
     CitationValidation,
 )
 from .safety import contains_unsafe_chat_content, sanitize_chat_metadata
@@ -567,7 +566,10 @@ class AskEngine:
                 response_model,
                 tuple(limitations),
             )
-            if not provider_result.grounded and context.intent is ChatIntent.IMPACT:
+            if (
+                not provider_result.grounded
+                and _eligible_for_deterministic_impact_fallback(context)
+            ):
                 fallback = _deterministic_impact_fallback(context)
                 if fallback is not None:
                     answer = fallback
@@ -656,6 +658,40 @@ class AskEngine:
             + ("\n".join(transcript) if transcript else "(none)")
             + f"\nQuestion: {context.question}"
         )
+
+
+def _eligible_for_deterministic_impact_fallback(context: ChatContext) -> bool:
+    impact_capability = next(
+        (
+            capability
+            for capability in context.capabilities
+            if capability.name == "impact_prediction"
+        ),
+        None,
+    )
+    if (
+        impact_capability is None
+        or impact_capability.state
+        not in {ChatCapabilityState.AVAILABLE, ChatCapabilityState.PARTIAL}
+    ):
+        return False
+    aggregate_section = next(
+        (
+            section
+            for section in context.sections
+            if section.section_id == "impact_aggregate"
+            and section.capability == "impact_prediction"
+        ),
+        None,
+    )
+    if aggregate_section is None or not aggregate_section.evidence_ids:
+        return False
+    available_evidence = {
+        record.evidence_id for record in context.evidence_index.records
+    }
+    if not set(aggregate_section.evidence_ids).issubset(available_evidence):
+        return False
+    return isinstance(aggregate_section.content.get("aggregate"), Mapping)
 
 
 def _deterministic_impact_fallback(context: ChatContext) -> str | None:
@@ -748,6 +784,20 @@ def _deterministic_impact_fallback(context: ChatContext) -> str | None:
             f"complete: {str(displayed_transitive == transitive).lower()}."
         ),
     ]
+    other_requested_capabilities = tuple(
+        capability.name
+        for capability in context.capabilities
+        if capability.name in {"refactoring_advisor", "security_intelligence"}
+        and capability.state is not ChatCapabilityState.NOT_REQUESTED
+    )
+    if other_requested_capabilities:
+        lines[3:3] = [
+            "",
+            "Fallback scope: Atlas is returning the authoritative deterministic impact dimension.",
+            "Other requested dimensions were not deterministically synthesized by this fallback: "
+            + ", ".join(other_requested_capabilities)
+            + ".",
+        ]
     for item in raw_findings:
         subject = item.get("subject")
         canonical_id = (
