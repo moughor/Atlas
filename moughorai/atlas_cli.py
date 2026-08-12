@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from enum import Enum
 import json
 import logging
 import os
@@ -93,6 +94,7 @@ from .ai_context import (
     decode_analysis_result,
     encode_analysis_result,
 )
+from .ai_context.process_execution import ProcessProjectAnalyzer
 from .llm import LlmClient, OllamaProvider
 from .workspace import (
     Project,
@@ -164,6 +166,13 @@ _tracemalloc_users = 0
 _tracemalloc_owned = False
 
 
+class AnalysisExecutor(str, Enum):
+    AUTO = "auto"
+    SERIAL = "serial"
+    THREAD = "thread"
+    PROCESS = "process"
+
+
 def _default_analyzer(service: WorkspaceService) -> Analyzer:
     return AnalyzerRegistry(measurement=service.measurement)
 
@@ -195,10 +204,56 @@ def _execute(
     workers: int,
     force: bool,
     recover: bool,
+    executor: AnalysisExecutor = AnalysisExecutor.AUTO,
 ) -> WorkspaceRunReport:
     orchestrator = WorkspaceAnalysisOrchestrator(context.service)
     selected = projects or context.service.workspace.names()
+    selected_executor = executor
+    if selected_executor is AnalysisExecutor.AUTO:
+        selected_executor = (
+            AnalysisExecutor.SERIAL
+            if workers == 1
+            else AnalysisExecutor.THREAD
+        )
+    if selected_executor is AnalysisExecutor.SERIAL and workers != 1:
+        raise ValueError("serial executor requires --workers 1")
+    if selected_executor is AnalysisExecutor.PROCESS:
+        if _analyzer_factory is not None:
+            raise ValueError(
+                "process executor supports only the built-in AnalyzerRegistry"
+            )
+        with ProcessProjectAnalyzer(workers) as analyzer:
+            return _execute_with_analyzer(
+                context,
+                orchestrator,
+                analyzer,
+                selected=selected,
+                workers=workers,
+                force=force,
+                recover=recover,
+            )
     analyzer = _analyzer(context.service)
+    return _execute_with_analyzer(
+        context,
+        orchestrator,
+        analyzer,
+        selected=selected,
+        workers=(1 if selected_executor is AnalysisExecutor.SERIAL else workers),
+        force=force,
+        recover=recover,
+    )
+
+
+def _execute_with_analyzer(
+    context: AtlasCliContext,
+    orchestrator: WorkspaceAnalysisOrchestrator,
+    analyzer: Analyzer,
+    *,
+    selected: tuple[str, ...],
+    workers: int,
+    force: bool,
+    recover: bool,
+) -> WorkspaceRunReport:
     if recover:
         manager = WorkspaceRecoveryManager(
             context.service,
@@ -217,6 +272,16 @@ def analyze(
     root: Annotated[Path, typer.Argument(help="Workspace root.")] = Path("."),
     project: Annotated[list[str] | None, typer.Option("--project", "-p", help="Project to analyze.")] = None,
     workers: Annotated[int, typer.Option("--workers", "-j", min=1, help="Maximum concurrent projects.")] = 1,
+    executor: Annotated[
+        AnalysisExecutor,
+        typer.Option(
+            "--executor",
+            help=(
+                "Project executor: auto preserves compatibility; serial is the "
+                "reference; process provides CPU scaling; thread is legacy."
+            ),
+        ),
+    ] = AnalysisExecutor.AUTO,
     force: Annotated[bool, typer.Option("--force", help="Ignore reusable results.")] = False,
     recover: Annotated[bool, typer.Option("--recover/--no-recover", help="Resume a valid interrupted run.")] = True,
     output_format: Annotated[OutputFormat, typer.Option("--format", help="Output format: text, json, jsonl, or sarif.")] = OutputFormat.TEXT,
@@ -274,13 +339,22 @@ def analyze(
                 enabled=profile_enabled,
                 capture_process_memory=profile_memory,
                 capture_python_memory=profile_python_memory,
-                worker_metrics_supported=True,
+                worker_metrics_supported=(
+                    executor is not AnalysisExecutor.PROCESS
+                ),
             ))
             try:
                 context = _context(root, measurement=measurement)
                 selected = tuple(project or ())
                 actual_workers = _adaptive_workers(context, selected, workers) if adaptive else workers
-                report = _execute(context, projects=selected, workers=actual_workers, force=force, recover=recover)
+                report = _execute(
+                    context,
+                    projects=selected,
+                    workers=actual_workers,
+                    force=force,
+                    recover=recover,
+                    executor=executor,
+                )
                 report = _apply_baseline_options(report, baseline=baseline, write_baseline=write_baseline)
                 report = _apply_diff_options(report, root, enabled=diff, base=diff_base, head=diff_head, staged=staged)
                 history = HistoryDatabase(root)

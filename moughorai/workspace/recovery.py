@@ -372,10 +372,14 @@ class WorkspaceRecoveryManager:
                     fail_fast=fail_fast,
                 )
             else:
+                # Execute the original request so the resumed report is a complete,
+                # canonical replacement for an uninterrupted report. Restored
+                # checkpoints are valid planner results and are therefore reused;
+                # only unfinished projects reach the analyzer.
                 run_report = self._run(
                     orchestrator,
                     analyzer,
-                    unfinished,
+                    journal.requested,
                     True,
                     False,
                     cancelled,

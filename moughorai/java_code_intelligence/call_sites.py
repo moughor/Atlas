@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from enum import Enum
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -41,9 +42,22 @@ def _is_java_structured_name(value: str) -> bool:
     )
 
 
-def _java_structured_text(value: object, label: str) -> str:
+@lru_cache(maxsize=65_536)
+def _cached_java_structured_name(value: str) -> bool:
+    return _is_java_structured_name(value)
+
+
+def _java_structured_text(
+    value: object,
+    label: str,
+    *,
+    cached: bool = False,
+) -> str:
     normalized = _text(value, label, 1_024)
-    if normalized != value or not _is_java_structured_name(normalized):
+    validator = (
+        _cached_java_structured_name if cached else _is_java_structured_name
+    )
+    if normalized != value or not validator(normalized):
         raise ValueError(f'{label} must be a structured name')
     return normalized
 
@@ -86,8 +100,13 @@ def _text(value: object, label: str, maximum: int = 1_024) -> str:
     return normalized
 
 
-def _relative_path(value: object) -> str:
+def _relative_path(value: object, *, cached: bool = False) -> str:
     text = _text(value, 'call-site path', 2_048)
+    validator = _cached_relative_path if cached else _validated_relative_path
+    return validator(text)
+
+
+def _validated_relative_path(text: str) -> str:
     if '\\' in text:
         raise ValueError('call-site path must use POSIX separators')
     path = PurePosixPath(text)
@@ -96,6 +115,11 @@ def _relative_path(value: object) -> str:
     ):
         raise ValueError('call-site path must be workspace-relative')
     return path.as_posix()
+
+
+@lru_cache(maxsize=16_384)
+def _cached_relative_path(text: str) -> str:
+    return _validated_relative_path(text)
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -112,8 +136,9 @@ class CallSiteRequest:
     owner_type_hints: tuple[str, ...]
     argument_hints: tuple[str, ...]
     limitations: tuple[str, ...] = ()
+    _cache_transport_validation: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _cache_transport_validation: bool) -> None:
         object.__setattr__(self, 'caller_subject_id', _text(
             self.caller_subject_id, 'caller canonical ID', 256,
         ))
@@ -123,7 +148,10 @@ class CallSiteRequest:
         object.__setattr__(self, 'project_id', _text(
             self.project_id, 'call-site project', 256,
         ))
-        object.__setattr__(self, 'source_path', _relative_path(self.source_path))
+        object.__setattr__(self, 'source_path', _relative_path(
+            self.source_path,
+            cached=_cache_transport_validation,
+        ))
         if not isinstance(self.source_range, SourceRange):
             raise TypeError('call-site source range is invalid')
         if not isinstance(self.invocation_kind, InvocationKind):
@@ -133,9 +161,17 @@ class CallSiteRequest:
         member = _text(self.member_name, 'invoked member', 256)
         receiver = self.receiver
         if receiver is not None:
-            receiver = _java_structured_text(receiver, 'call receiver')
+            receiver = _java_structured_text(
+                receiver,
+                'call receiver',
+                cached=_cache_transport_validation,
+            )
         owners = tuple(sorted(set(
-            _java_structured_text(item, 'owner type hint')
+            _java_structured_text(
+                item,
+                'owner type hint',
+                cached=_cache_transport_validation,
+            )
             for item in self.owner_type_hints
         )))
         arguments = tuple(

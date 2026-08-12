@@ -17,6 +17,13 @@ from .persistence import WorkspaceRestoreReport, WorkspaceStateStore
 from .service import WorkspaceService
 
 
+def _analyzer_error(exc: Exception) -> str:
+    preserved = getattr(exc, "analysis_error", None)
+    if isinstance(preserved, str) and preserved:
+        return preserved
+    return f"{type(exc).__name__}: {exc}"
+
+
 class ProjectRunStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
@@ -258,7 +265,7 @@ class WorkspaceAnalysisOrchestrator:
                 except Exception as exc:  # analyzer boundary
                     elapsed = (monotonic() - started) * 1000
                     return ProjectRun(
-                        project.name, ProjectRunStatus.FAILED, error=f"{type(exc).__name__}: {exc}", duration_ms=elapsed
+                        project.name, ProjectRunStatus.FAILED, error=_analyzer_error(exc), duration_ms=elapsed
                     )
                 elapsed = (monotonic() - started) * 1000
                 return ProjectRun(project.name, ProjectRunStatus.SUCCEEDED, value=value, duration_ms=elapsed)
@@ -290,7 +297,7 @@ class WorkspaceAnalysisOrchestrator:
                     return ProjectRun(
                         project.name,
                         ProjectRunStatus.FAILED,
-                        error=f"{type(exc).__name__}: {exc}",
+                        error=_analyzer_error(exc),
                         duration_ms=elapsed,
                     )
                 elapsed = (monotonic() - started) * 1000
@@ -430,7 +437,7 @@ class WorkspaceAnalysisOrchestrator:
                     scope.add_units(1)
             except Exception as exc:  # analyzer boundary
                 elapsed = (monotonic() - started) * 1000
-                run = ProjectRun(project.name, ProjectRunStatus.FAILED, error=f"{type(exc).__name__}: {exc}", duration_ms=elapsed)
+                run = ProjectRun(project.name, ProjectRunStatus.FAILED, error=_analyzer_error(exc), duration_ms=elapsed)
                 self._results.pop(project.name, None)
                 self.planner.invalidate((project.name,))
             else:

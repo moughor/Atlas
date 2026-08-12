@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import hashlib
 from importlib import metadata
 import json
 import os
@@ -44,6 +45,7 @@ def capture_analysis(
     checkout_identity: str | None = None,
     repeats: int = 3,
     workers: int = 1,
+    executor: str = "auto",
     timeout_seconds: int = 7_200,
     observed_at_utc: str | None = None,
     allow_unpinned: bool = False,
@@ -52,6 +54,7 @@ def capture_analysis(
     repository_tag: str | None = None,
     expected_project_count: int | None = None,
     expected_atlas_commit: str | None = None,
+    allow_dirty_atlas: bool = False,
     reset_atlas_state: bool = False,
     benchmark_version: str = "m1.1",
 ) -> BenchmarkManifest:
@@ -61,6 +64,8 @@ def capture_analysis(
     _positive(repeats, "benchmark repeats")
     _positive(workers, "benchmark workers")
     _positive(timeout_seconds, "analysis timeout")
+    if executor not in {"auto", "serial", "thread", "process"}:
+        raise ValueError("benchmark executor is invalid")
     if expected_project_count is not None:
         _positive(expected_project_count, "expected project count")
     if not isinstance(reset_atlas_state, bool):
@@ -70,7 +75,14 @@ def capture_analysis(
         expected_repository_commit,
         allow_unpinned=allow_unpinned,
     )
-    atlas_commit = _atlas_commit(expected_atlas_commit)
+    atlas_commit = (
+        _atlas_commit(expected_atlas_commit, allow_dirty=True)
+        if allow_dirty_atlas
+        else _atlas_commit(expected_atlas_commit)
+    )
+    atlas_candidate_digest = (
+        _atlas_worktree_digest() if allow_dirty_atlas else None
+    )
     provenance = _repository_provenance(
         root,
         git_backed=git_backed,
@@ -82,6 +94,11 @@ def capture_analysis(
         limitations.append(
             "Repository origin URL is unavailable or is not credential-free HTTPS; "
             "this record cannot become a golden baseline."
+        )
+    limitations.append(f"Analysis executor: {executor}.")
+    if atlas_candidate_digest is not None:
+        limitations.append(
+            "Atlas worktree candidate SHA-256: " + atlas_candidate_digest + "."
         )
     if checkout_identity is None:
         limitations.append(
@@ -100,6 +117,7 @@ def capture_analysis(
         report = _run_analysis(
             root,
             workers=workers,
+            executor=executor,
             timeout_seconds=timeout_seconds,
         )
         durations.append(max(1, round((perf_counter() - started) * 1_000)))
@@ -158,7 +176,7 @@ def capture_analysis(
         repository_commit,
         git_backed=git_backed,
     )
-    _verify_atlas_unchanged(atlas_commit)
+    _verify_atlas_unchanged(atlas_commit, atlas_candidate_digest)
     raw_hashes = {item.snapshot_sha256 for item in artifacts}
     if len(raw_hashes) > 1:
         limitations.append(
@@ -416,6 +434,7 @@ def _run_analysis(
     root: Path,
     *,
     workers: int,
+    executor: str,
     timeout_seconds: int,
 ) -> Mapping[str, object]:
     command = [
@@ -429,6 +448,8 @@ def _run_analysis(
         "--no-recover",
         "--workers",
         str(workers),
+        "--executor",
+        executor,
         "--format",
         "json",
     ]
@@ -730,14 +751,18 @@ def _git_config_value(root: Path, key: str) -> str | None:
     return completed.stdout.strip()
 
 
-def _atlas_commit(expected: str | None = None) -> str:
+def _atlas_commit(
+    expected: str | None = None,
+    *,
+    allow_dirty: bool = False,
+) -> str:
     commit = _git_head(_ATLAS_ROOT)
     if commit is None:
         raise ValueError("Atlas benchmark runner requires a Git checkout")
     if _git_top_level(_ATLAS_ROOT) != _ATLAS_ROOT:
         raise ValueError("Atlas benchmark runner root is not the Git top-level")
     dirty = _working_tree_status(_ATLAS_ROOT)
-    if dirty:
+    if dirty and not allow_dirty:
         raise ValueError("Atlas worktree has tracked or untracked modifications")
     if expected is not None:
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected) is None:
@@ -839,6 +864,41 @@ def _working_tree_status(root: Path) -> str:
     )
 
 
+def _atlas_worktree_digest() -> str:
+    """Fingerprint tracked patches and complete untracked candidate files."""
+
+    digest = hashlib.sha256()
+    completed = subprocess.run(
+        ["git", "-C", str(_ATLAS_ROOT), "diff", "--binary", "HEAD", "--"],
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("cannot fingerprint Atlas tracked candidate changes")
+    digest.update(completed.stdout)
+    untracked = _git_required(
+        _ATLAS_ROOT,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ).split("\0")
+    for relative in sorted(item for item in untracked if item):
+        path = (_ATLAS_ROOT / relative).resolve()
+        try:
+            path.relative_to(_ATLAS_ROOT)
+        except ValueError as exc:
+            raise RuntimeError(
+                "Atlas untracked candidate resolves outside the worktree"
+            ) from exc
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _verify_repository_unchanged(
     root: Path,
     expected: str | None,
@@ -856,12 +916,20 @@ def _verify_repository_unchanged(
         raise RuntimeError("benchmark repository changed during capture")
 
 
-def _verify_atlas_unchanged(expected: str) -> None:
+def _verify_atlas_unchanged(
+    expected: str,
+    expected_worktree_digest: str | None = None,
+) -> None:
     actual = _git_head(_ATLAS_ROOT)
     if actual != expected:
         raise RuntimeError("Atlas commit changed during benchmark capture")
-    if _working_tree_status(_ATLAS_ROOT):
+    if expected_worktree_digest is None and _working_tree_status(_ATLAS_ROOT):
         raise RuntimeError("Atlas worktree changed during benchmark capture")
+    if (
+        expected_worktree_digest is not None
+        and _atlas_worktree_digest() != expected_worktree_digest
+    ):
+        raise RuntimeError("Atlas worktree candidate changed during benchmark capture")
 
 
 def _replay_provenance(
@@ -1015,8 +1083,14 @@ def main(argv: list[str] | None = None) -> int:
     analyze = commands.add_parser("analyze", help="Run fresh Atlas analysis.")
     analyze.add_argument("repository_root", type=Path)
     analyze.add_argument("--workers", type=int, default=1)
+    analyze.add_argument(
+        "--executor",
+        choices=("auto", "serial", "thread", "process"),
+        default="auto",
+    )
     analyze.add_argument("--timeout-seconds", type=int, default=7_200)
     analyze.add_argument("--expected-project-count", type=int)
+    analyze.add_argument("--allow-dirty-atlas", action="store_true")
     analyze.add_argument("--reset-atlas-state", action="store_true")
     _common_capture_options(analyze)
     replay = commands.add_parser("replay", help="Replay an existing ASS artifact.")
@@ -1040,6 +1114,7 @@ def main(argv: list[str] | None = None) -> int:
             checkout_identity=arguments.checkout_identity,
             repeats=arguments.repeats,
             workers=arguments.workers,
+            executor=arguments.executor,
             timeout_seconds=arguments.timeout_seconds,
             observed_at_utc=arguments.observed_at,
             allow_unpinned=arguments.allow_unpinned,
@@ -1048,6 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
             repository_tag=arguments.repository_tag,
             expected_project_count=arguments.expected_project_count,
             expected_atlas_commit=arguments.expected_atlas_commit,
+            allow_dirty_atlas=arguments.allow_dirty_atlas,
             reset_atlas_state=arguments.reset_atlas_state,
             benchmark_version=arguments.benchmark_version,
         )
