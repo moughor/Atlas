@@ -476,8 +476,8 @@ class EngineeringChatContextBuilder:
                 configuration=CodeIntelligenceConfiguration(
                     max_depth=6,
                     max_nodes=1_024,
-                    max_direct_relationships=max(1, min(3, result_limit)),
-                    max_paths_per_section=max(1, min(3, result_limit)),
+                    max_direct_relationships=max(1, min(2, result_limit)),
+                    max_paths_per_section=max(1, min(2, result_limit)),
                     max_limitation_representatives=1,
                     max_candidates_per_call_site=1,
                 ),
