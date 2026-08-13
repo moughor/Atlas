@@ -27,6 +27,9 @@ from moughorai.java_code_intelligence.code_graph import (
     code_graph_from_dict,
     code_graph_to_dict,
 )
+from moughorai.java_code_intelligence._validation import (
+    reconstruction_validation_scope,
+)
 from moughorai.python_semantics import PythonModule
 from moughorai.security_intelligence import SecurityProducerReport
 
@@ -140,6 +143,11 @@ def decode_analysis_result(value: Any) -> Any:
     """Restore semantic results and pass through pre-PR121 persisted values."""
     if not isinstance(value, Mapping) or value.get("$type") != _DOCUMENT_MARKER:
         return value
+    with reconstruction_validation_scope():
+        return _decode_semantic_document(value)
+
+
+def _decode_semantic_document(value: Mapping[str, Any]) -> SemanticDocument:
     metadata = dict(value.get("metadata", {}))
     if isinstance(metadata.get("dependencies"), list):
         metadata["dependencies"] = tuple(metadata["dependencies"])

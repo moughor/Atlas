@@ -7,6 +7,8 @@ from enum import Enum
 from pathlib import PurePosixPath
 import re
 
+from ._validation import validated_text
+
 
 CALLABLE_INDEX_FORMAT = 'moughorai.java-callable-index.v1'
 CALLABLE_INDEX_PRODUCER = 'atlas-pr156/1'
@@ -43,14 +45,7 @@ class PathScope(str, Enum):
 
 
 def _text(value: object, label: str, *, maximum: int = 4_096) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f'{label} must be a string')
-    normalized = value.strip()
-    if not normalized or len(normalized) > maximum:
-        raise ValueError(f'{label} is empty or oversized')
-    if any(ord(character) < 32 for character in normalized):
-        raise ValueError(f'{label} contains control characters')
-    return normalized
+    return validated_text(value, label, maximum)
 
 
 def _relative_path(value: object, label: str) -> str:

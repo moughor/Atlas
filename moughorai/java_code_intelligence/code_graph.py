@@ -315,6 +315,32 @@ def create_code_graph(
     extraction_failures: int,
     omitted_diagnostic_count: int = 0,
 ) -> JavaCodeGraph:
+    graph, _ = _create_code_graph_with_projection(
+        lineage=lineage,
+        path_scope=path_scope,
+        callable_index=callable_index,
+        call_sites=call_sites,
+        diagnostics=diagnostics,
+        callable_bodies_examined=callable_bodies_examined,
+        callable_bodies_unavailable=callable_bodies_unavailable,
+        extraction_failures=extraction_failures,
+        omitted_diagnostic_count=omitted_diagnostic_count,
+    )
+    return graph
+
+
+def _create_code_graph_with_projection(
+    *,
+    lineage: str,
+    path_scope: PathScope,
+    callable_index: JavaCallableIndex,
+    call_sites: Iterable[CallSiteEvidence],
+    diagnostics: Iterable[CodeGraphDiagnostic] = (),
+    callable_bodies_examined: int,
+    callable_bodies_unavailable: int,
+    extraction_failures: int,
+    omitted_diagnostic_count: int = 0,
+) -> tuple[JavaCodeGraph, dict[str, object]]:
     if not isinstance(callable_index, JavaCallableIndex):
         raise TypeError('authoritative callable index is required')
     sites = tuple(sorted(set(call_sites), key=_site_sort_key))
@@ -364,7 +390,7 @@ def create_code_graph(
         coverage=coverage,
     )
     digest = _digest(payload)
-    return JavaCodeGraph(
+    graph = JavaCodeGraph(
         lineage,
         path_scope,
         callable_index.input_fingerprint,
@@ -375,6 +401,7 @@ def create_code_graph(
         digest,
         f'java-code-graph:{digest}',
     )
+    return graph, payload
 
 
 def code_graph_to_dict(value: JavaCodeGraph) -> dict[str, object]:
@@ -391,6 +418,13 @@ def code_graph_to_dict(value: JavaCodeGraph) -> dict[str, object]:
     )
     if _digest(projection) != value.digest:
         raise ValueError('Java code graph digest is inconsistent')
+    return _code_graph_envelope(value, projection)
+
+
+def _code_graph_envelope(
+    value: JavaCodeGraph,
+    projection: Mapping[str, object],
+) -> dict[str, object]:
     return {
         'format': value.format,
         'schema_version': value.schema_version,
@@ -471,7 +505,7 @@ def code_graph_from_dict(
         for item in _array(root['diagnostics'], 'diagnostic rows')
     )
     coverage = _coverage(root['coverage'])
-    rebuilt = create_code_graph(
+    rebuilt, projection = _create_code_graph_with_projection(
         lineage=_string(root['lineage'], 'lineage'),
         path_scope=PathScope(_string(root['path_scope'], 'path scope')),
         callable_index=callable_index,
@@ -482,7 +516,7 @@ def code_graph_from_dict(
         extraction_failures=coverage.extraction_failures,
         omitted_diagnostic_count=coverage.omitted_diagnostic_count,
     )
-    if code_graph_to_dict(rebuilt) != dict(root):
+    if _code_graph_envelope(rebuilt, projection) != dict(root):
         raise ValueError(
             'Java code graph digest, ordering, tables, or coverage is inconsistent'
         )

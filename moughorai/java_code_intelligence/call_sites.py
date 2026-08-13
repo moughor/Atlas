@@ -22,6 +22,7 @@ from moughorai.java_ast.ast_nodes import (
 from moughorai.java_ast.lexer import JavaLexer
 
 from .models import JavaCallableIndex, SourcePosition, SourceRange
+from ._validation import validated_text
 
 
 _HINT = re.compile(r'(?:literal|identifier|new|type|primitive|unknown)(?::[^\s]+)?\Z')
@@ -90,14 +91,7 @@ class CallResolutionState(str, Enum):
 
 
 def _text(value: object, label: str, maximum: int = 1_024) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f'{label} must be a string')
-    normalized = value.strip()
-    if not normalized or len(normalized) > maximum:
-        raise ValueError(f'{label} is empty or oversized')
-    if any(ord(character) < 32 for character in normalized):
-        raise ValueError(f'{label} contains control characters')
-    return normalized
+    return validated_text(value, label, maximum)
 
 
 def _relative_path(value: object, *, cached: bool = False) -> str:
