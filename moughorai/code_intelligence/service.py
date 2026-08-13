@@ -34,6 +34,8 @@ from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 
 from .models import (
     CODE_INTELLIGENCE_PRODUCER,
+    AmbiguousCallGroup,
+    BoundedAmbiguousCallGroups,
     BoundedPaths,
     BoundedRelationships,
     CodeCallRelationship,
@@ -77,6 +79,7 @@ class CodeIntelligenceConfiguration:
     max_paths_per_section: int = 64
     max_limitation_representatives: int = 8
     max_resolution_candidates: int = 12
+    max_candidates_per_call_site: int = 5
 
     def __post_init__(self) -> None:
         for name in (
@@ -86,6 +89,7 @@ class CodeIntelligenceConfiguration:
             "max_paths_per_section",
             "max_limitation_representatives",
             "max_resolution_candidates",
+            "max_candidates_per_call_site",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -454,6 +458,12 @@ class JavaCodeIntelligenceService:
             (item for item in incoming if item.edge_kind in _CONSERVATIVE_KINDS),
             configuration.max_direct_relationships,
         )
+        caller_possible_groups = _bounded_ambiguous_call_groups(
+            (item for item in incoming if item.edge_kind in _CONSERVATIVE_KINDS),
+            self._sites,
+            configuration.max_direct_relationships,
+            configuration.max_candidates_per_call_site,
+        )
         caller_references = _bounded_relationships(
             (
                 item for item in incoming
@@ -468,6 +478,12 @@ class JavaCodeIntelligenceService:
         callee_possible = _bounded_relationships(
             (item for item in outgoing if item.edge_kind in _CONSERVATIVE_KINDS),
             configuration.max_direct_relationships,
+        )
+        callee_possible_groups = _bounded_ambiguous_call_groups(
+            (item for item in outgoing if item.edge_kind in _CONSERVATIVE_KINDS),
+            self._sites,
+            configuration.max_direct_relationships,
+            configuration.max_candidates_per_call_site,
         )
         callee_references = _bounded_relationships(
             (
@@ -627,6 +643,8 @@ class JavaCodeIntelligenceService:
             traceability,
             negative_test_statement,
             tuple(general_limitations),
+            direct_caller_conservative_groups=caller_possible_groups,
+            direct_callee_conservative_groups=callee_possible_groups,
         )
 
     def _reverse_traversal(
@@ -923,6 +941,71 @@ def _bounded_relationships(
 ) -> BoundedRelationships:
     items = tuple(sorted(values))
     return BoundedRelationships(len(items), items[:maximum])
+
+
+def _bounded_ambiguous_call_groups(
+    values,
+    sites: Mapping[str, CallSiteEvidence],
+    maximum_groups: int,
+    maximum_candidates: int,
+) -> BoundedAmbiguousCallGroups:
+    relationships = tuple(values)
+    grouped: dict[tuple[object, ...], list[CodeCallRelationship]] = defaultdict(list)
+    for item in relationships:
+        site = sites[item.producer_evidence_id]
+        key = (
+            item.canonical_source,
+            item.project,
+            item.location,
+            item.producer_evidence_id,
+            site.request.invocation_kind,
+            site.state,
+            item.subject_relative_role,
+        )
+        grouped[key].append(item)
+
+    groups = []
+    for key, projections in grouped.items():
+        (
+            canonical_source,
+            project,
+            location,
+            evidence_id,
+            invocation_kind,
+            resolution_state,
+            role,
+        ) = key
+        candidates = tuple(sorted({
+            item.canonical_target for item in projections
+        }))
+        limitations = {
+            limitation
+            for item in projections
+            for limitation in item.limitations
+        }
+        limitations.add(
+            "Multiple represented targets may remain legal at this source call site; no candidate is proven as the runtime target."
+        )
+        groups.append(AmbiguousCallGroup(
+            canonical_source,
+            project,
+            location,
+            evidence_id,
+            invocation_kind,
+            resolution_state,
+            role,
+            CodePathConfidence.CONSERVATIVE_REPRESENTED_PATH,
+            tuple(item.edge_kind for item in projections),
+            len(candidates),
+            candidates[:maximum_candidates],
+            tuple(limitations),
+        ))
+    ordered = tuple(sorted(groups, key=lambda item: item.sort_key))
+    return BoundedAmbiguousCallGroups(
+        len(ordered),
+        len(relationships),
+        ordered[:maximum_groups],
+    )
 
 
 def _bounded_paths(values, maximum: int) -> BoundedPaths:

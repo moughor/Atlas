@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .models import (
+    BoundedAmbiguousCallGroups,
     BoundedPaths,
     BoundedRelationships,
     JavaCodeIntelligenceResult,
@@ -43,11 +44,11 @@ def render_code_intelligence(result: JavaCodeIntelligenceResult) -> str:
         "direct callers:",
     ))
     _relationships(lines, "high-confidence", report.direct_callers_high_confidence)
-    _relationships(lines, "conservative", report.direct_callers_conservative)
+    _ambiguous_call_groups(lines, report.direct_caller_conservative_groups)
     _relationships(lines, "method-reference", report.direct_caller_method_references)
     lines.extend(("", "direct callees:"))
     _relationships(lines, "high-confidence", report.direct_callees_high_confidence)
-    _relationships(lines, "conservative", report.direct_callees_conservative)
+    _ambiguous_call_groups(lines, report.direct_callee_conservative_groups)
     _relationships(lines, "method-reference", report.direct_callee_method_references)
 
     lines.extend(("", "upstream change impact:"))
@@ -124,6 +125,43 @@ def _relationships(
             f"relation={item.relation} role={item.subject_relative_role.value} "
             f"edge={item.edge_kind.value} confidence={item.confidence.value} "
             f"evidence={item.producer_evidence_id} source={item.location.compact}"
+        )
+
+
+def _ambiguous_call_groups(
+    lines: list[str],
+    section: BoundedAmbiguousCallGroups,
+) -> None:
+    lines.append(
+        "conservative call sites: "
+        f"total-sites={section.call_site_count} "
+        f"included-sites={len(section.items)} "
+        f"omitted-sites={section.omitted_call_site_count} "
+        f"candidate-projections={section.candidate_projection_count} "
+        f"included-candidates={section.included_candidate_count} "
+        f"omitted-candidates={section.omitted_candidate_count}"
+    )
+    for item in section.items:
+        lines.append(
+            f"- source={item.location.compact} "
+            f"caller={item.canonical_source} "
+            f"project={item.project} "
+            f"evidence={item.producer_evidence_id} "
+            f"invocation={item.invocation_kind.value} "
+            f"resolution={item.resolution_state.value} "
+            f"role={item.subject_relative_role.value} "
+            f"confidence={item.confidence.value} "
+            f"candidates={item.total_candidate_count} "
+            f"included={item.included_candidate_count} "
+            f"omitted={item.omitted_candidate_count}"
+        )
+        candidates = ",".join(
+            f"{item.canonical_source} -> {target}"
+            for target in item.included_candidate_ids
+        ) or "none"
+        lines.append(f"  candidate-targets: {candidates}")
+        lines.append(
+            "  limitations: " + " | ".join(item.limitations)
         )
 
 

@@ -1040,8 +1040,8 @@ def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
     transitive_count = _bounded_code_total(transitive_upstream)
     callers = report.get('direct_callers')
     callees = report.get('direct_callees')
-    caller_count = _code_relationship_group_total(callers)
-    callee_count = _code_relationship_group_total(callees)
+    caller_counts = _code_relationship_counts(callers)
+    callee_counts = _code_relationship_counts(callees)
     lines = [
         'Atlas deterministic Java code-impact answer',
         '',
@@ -1051,8 +1051,14 @@ def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
         f'Canonical ID: {canonical_id}',
         'Direction contract: canonical CALLER -> CALLEE; impact traversal is reverse upstream from the changed callee.',
         '',
-        f'Direct represented callers: {caller_count}.',
-        f'Direct represented callees: {callee_count}.',
+        'Direct represented callers: '
+        f'{caller_counts[0]} high-confidence relationship(s), '
+        f'{caller_counts[1]} conservative source call site(s), '
+        f'{caller_counts[2]} candidate projection(s).',
+        'Direct represented callees: '
+        f'{callee_counts[0]} high-confidence relationship(s), '
+        f'{callee_counts[1]} conservative source call site(s), '
+        f'{callee_counts[2]} candidate projection(s).',
         f'Upstream impact: {direct_count} direct and {transitive_count} transitive.',
     ]
     _append_code_relationships(lines, 'caller', callers)
@@ -1126,13 +1132,27 @@ def _bounded_code_total(value: object) -> int:
     return total if isinstance(total, int) and not isinstance(total, bool) else 0
 
 
-def _code_relationship_group_total(value: object) -> int:
+def _code_relationship_counts(value: object) -> tuple[int, int, int]:
     if not isinstance(value, Mapping):
-        return 0
-    return sum(
-        _bounded_code_total(value.get(name))
-        for name in ('high_confidence', 'conservative')
-    )
+        return 0, 0, 0
+    high_confidence = _bounded_code_total(value.get('high_confidence'))
+    grouped = value.get('conservative_call_sites')
+    if isinstance(grouped, Mapping):
+        call_sites = grouped.get('call_site_count', 0)
+        projections = grouped.get('candidate_projection_count', 0)
+        safe_sites = (
+            call_sites
+            if isinstance(call_sites, int) and not isinstance(call_sites, bool)
+            else 0
+        )
+        safe_projections = (
+            projections
+            if isinstance(projections, int) and not isinstance(projections, bool)
+            else 0
+        )
+        return high_confidence, safe_sites, safe_projections
+    conservative = _bounded_code_total(value.get('conservative'))
+    return high_confidence, conservative, conservative
 
 
 def _append_code_relationships(
@@ -1164,6 +1184,41 @@ def _append_code_relationships(
                 f'confidence={confidence}; producer evidence={evidence}; '
                 f'source={source_ref}.'
             )
+    grouped = value.get('conservative_call_sites')
+    if not isinstance(grouped, Mapping):
+        return
+    call_sites = grouped.get('call_site_count', 0)
+    projections = grouped.get('candidate_projection_count', 0)
+    omitted_sites = grouped.get('omitted_call_site_count', 0)
+    omitted_candidates = grouped.get('omitted_candidate_count', 0)
+    lines.append(
+        f'- {label} conservative call sites: total-sites={call_sites}; '
+        f'candidate-projections={projections}; omitted-sites={omitted_sites}; '
+        f'omitted-candidates={omitted_candidates}.'
+    )
+    raw_groups = grouped.get('items', ())
+    if not isinstance(raw_groups, Sequence) or isinstance(
+        raw_groups, (str, bytes, bytearray)
+    ):
+        return
+    for item in raw_groups:
+        if not isinstance(item, Mapping):
+            continue
+        candidates = item.get('included_candidate_ids', ())
+        candidate_text = ','.join(map(str, candidates)) if isinstance(
+            candidates, Sequence
+        ) and not isinstance(candidates, (str, bytes, bytearray)) else 'none'
+        lines.append(
+            f"- {label} conservative call site: "
+            f"caller={item.get('canonical_source', 'unavailable')}; "
+            f"source={item.get('source_ref', 'unavailable')}; "
+            f"resolution={item.get('resolution_state', 'unknown')}; "
+            f"candidates={item.get('total_candidate_count', 0)}; "
+            f"included={item.get('included_candidate_count', 0)}; "
+            f"omitted={item.get('omitted_candidate_count', 0)}; "
+            f"candidate-targets={candidate_text}; "
+            f"producer evidence={item.get('producer_evidence_id', 'unavailable')}."
+        )
 
 
 def _append_code_paths(lines: list[str], label: str, value: object) -> None:

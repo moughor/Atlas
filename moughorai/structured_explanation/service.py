@@ -482,30 +482,101 @@ class StructuredExplanationService:
             limitations=report.subject.limitations,
         )
         relationship_sections = (
-            ('Direct high-confidence Java caller', report.direct_callers_high_confidence),
-            ('Direct conservative Java caller', report.direct_callers_conservative),
-            ('Java caller method reference', report.direct_caller_method_references),
-            ('Direct high-confidence Java callee', report.direct_callees_high_confidence),
-            ('Direct conservative Java callee', report.direct_callees_conservative),
-            ('Java callee method reference', report.direct_callee_method_references),
-            ('Direct represented TEST caller', report.direct_test_callers),
+            ('relationship', 'Direct high-confidence Java caller', report.direct_callers_high_confidence),
+            ('group', 'Direct conservative Java caller call site', report.direct_caller_conservative_groups),
+            ('relationship', 'Java caller method reference', report.direct_caller_method_references),
+            ('relationship', 'Direct high-confidence Java callee', report.direct_callees_high_confidence),
+            ('group', 'Direct conservative Java callee call site', report.direct_callee_conservative_groups),
+            ('relationship', 'Java callee method reference', report.direct_callee_method_references),
+            ('relationship', 'Direct represented TEST caller', report.direct_test_callers),
         )
         priority = 12
         omitted = 0
-        for title, section in relationship_sections:
-            omitted += section.omitted_count
-            for relationship in section.items:
-                self._add_code_relationship_fact(
-                    builder,
-                    subject,
-                    relationship,
-                    title=title,
-                    priority=priority,
-                    code_graph_fingerprint=trace.code_graph_fingerprint,
-                )
+        omitted_candidates = 0
+        for section_kind, title, section in relationship_sections:
+            if section_kind == 'group':
+                omitted += section.omitted_call_site_count
+                omitted_candidates += section.omitted_candidate_count
+            else:
+                omitted += section.omitted_count
+            for item in section.items:
+                if section_kind == 'group':
+                    self._add_code_call_group_fact(
+                        builder,
+                        subject,
+                        item,
+                        title=title,
+                        priority=priority,
+                        code_graph_fingerprint=trace.code_graph_fingerprint,
+                    )
+                else:
+                    self._add_code_relationship_fact(
+                        builder,
+                        subject,
+                        item,
+                        title=title,
+                        priority=priority,
+                        code_graph_fingerprint=trace.code_graph_fingerprint,
+                    )
                 priority += 1
         return self._add_code_path_and_limitation_facts(
-            builder, subject, report, priority, omitted,
+            builder, subject, report, priority, omitted, omitted_candidates,
+        )
+
+    def _add_code_call_group_fact(
+        self,
+        builder: _FactBuilder,
+        subject: SubjectCandidate,
+        group,
+        *,
+        title: str,
+        priority: int,
+        code_graph_fingerprint: str,
+    ) -> None:
+        candidates = ','.join(group.included_candidate_ids)
+        builder.add(
+            logical_key=(
+                f'java-call-site:{group.subject_relative_role.value}:'
+                f'{group.producer_evidence_id}'
+            ),
+            kind=ExplanationFactKind.RELATIONSHIP,
+            subject_id=subject.canonical_id,
+            title=title,
+            statement=(
+                f'Represented Java evidence groups {group.total_candidate_count} '
+                f'conservative target projection(s) for one '
+                f'{group.resolution_state.value} source call site; canonical '
+                f'direction remains caller-to-callee from {group.canonical_source}.'
+            ),
+            priority=priority,
+            attributes=(
+                ExplanationAttribute('canonical_source', group.canonical_source),
+                ExplanationAttribute('project', group.project),
+                ExplanationAttribute('canonical_relation', group.relation),
+                ExplanationAttribute('canonical_direction', group.canonical_direction),
+                ExplanationAttribute('subject_relative_role', group.subject_relative_role.value),
+                ExplanationAttribute('invocation_kind', group.invocation_kind.value),
+                ExplanationAttribute('resolution_state', group.resolution_state.value),
+                ExplanationAttribute('path_confidence', group.confidence.value),
+                ExplanationAttribute('source_ref', group.location.compact),
+                ExplanationAttribute('call_site_count', 1),
+                ExplanationAttribute('candidate_projection_count', group.total_candidate_count),
+                ExplanationAttribute('included_candidate_count', group.included_candidate_count),
+                ExplanationAttribute('omitted_candidate_count', group.omitted_candidate_count),
+                ExplanationAttribute('included_candidate_ids', candidates),
+            ),
+            evidence_kind=EvidenceKind.GRAPH_EDGE,
+            source_refs=(
+                group.producer_evidence_id,
+                group.location.compact,
+                group.canonical_source,
+                *group.included_candidate_ids,
+                code_graph_fingerprint,
+            ),
+            producer_ids=('moughorai.java-code-graph.v1', 'atlas-pr159/1'),
+            limitations=group.limitations,
+            reliability=0.70,
+            specificity=0.70,
         )
 
     def _add_code_relationship_fact(
@@ -633,6 +704,7 @@ class StructuredExplanationService:
         report,
         priority: int,
         omitted: int,
+        omitted_candidates: int,
     ) -> tuple[int, tuple[str, ...]]:
         path_sections = (
             ('Direct reverse upstream Java impact path', report.upstream_direct),
@@ -658,6 +730,11 @@ class StructuredExplanationService:
             code_limitations.add(
                 f'{omitted} code-intelligence relationship or path fact(s) '
                 'were omitted by deterministic section bounds.'
+            )
+        if omitted_candidates:
+            code_limitations.add(
+                f'{omitted_candidates} conservative candidate target '
+                'representative(s) were omitted inside grouped call-site facts.'
             )
         return omitted, tuple(sorted(code_limitations))
 

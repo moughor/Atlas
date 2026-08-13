@@ -479,6 +479,7 @@ class EngineeringChatContextBuilder:
                     max_direct_relationships=max(1, min(3, result_limit)),
                     max_paths_per_section=max(1, min(3, result_limit)),
                     max_limitation_representatives=1,
+                    max_candidates_per_call_site=1,
                 ),
             )
             report = result.report
@@ -497,7 +498,15 @@ class EngineeringChatContextBuilder:
             content = {
                 'producer': report.producer_version,
                 'input_fingerprint': report.input_fingerprint,
-                'report': _compact_code_impact_report(report.to_dict()),
+                'report': _compact_code_impact_report(
+                    report.to_dict(),
+                    conservative_callers=(
+                        report.direct_caller_conservative_groups.to_dict()
+                    ),
+                    conservative_callees=(
+                        report.direct_callee_conservative_groups.to_dict()
+                    ),
+                ),
             }
             section = ChatContextSection(
                 'code_impact',
@@ -989,6 +998,23 @@ def _code_impact_records(snapshot, report) -> tuple[EvidenceRecord, ...]:
 
     for item in relationships:
         add_site(item)
+    for group in (
+        *report.direct_caller_conservative_groups.items,
+        *report.direct_callee_conservative_groups.items,
+    ):
+        retained = producer_sites.setdefault(group.producer_evidence_id, {
+            'subject_id': group.canonical_source,
+            'project': group.project,
+            'source_refs': set(),
+            'reliability': 1.0,
+        })
+        retained['source_refs'].update((
+            group.location.compact,
+            trace.code_graph_fingerprint,
+        ))
+        retained['reliability'] = min(
+            float(retained['reliability']), 0.70,
+        )
     for path in (*paths, *test_paths):
         for item in path.steps:
             add_site(item)
@@ -1070,14 +1096,59 @@ def _compact_code_relationships(value: object) -> object:
     ), additions={'items': items})
 
 
-def _compact_code_relationship_groups(value: object) -> object:
+def _compact_ambiguous_call_groups(value: object) -> object:
     if not isinstance(value, Mapping):
         return None
-    return {
+    raw_items = value.get('items', ())
+    items = []
+    if isinstance(raw_items, Sequence) and not isinstance(
+        raw_items, (str, bytes, bytearray)
+    ):
+        for item in raw_items:
+            if not isinstance(item, Mapping):
+                continue
+            items.append(_selected_mapping(item, (
+                'canonical_source',
+                'source_ref',
+                'producer_evidence_id',
+                'resolution_state',
+                'total_candidate_count',
+                'omitted_candidate_count',
+                'included_candidate_ids',
+            )))
+    return _selected_mapping(value, (
+        'call_site_count',
+        'omitted_call_site_count',
+        'candidate_projection_count',
+        'omitted_candidate_count',
+    ), additions={
+        'confidence': 'conservative_represented_path',
+        'limitation': 'Runtime target remains unproven.',
+        'items': items,
+    })
+
+
+def _compact_code_relationship_groups(
+    value: object,
+    *,
+    conservative_groups: object = None,
+) -> object:
+    if not isinstance(value, Mapping):
+        return None
+    compact = {
         str(name): _compact_code_relationships(section)
         for name, section in sorted(value.items())
-        if isinstance(section, Mapping)
+        if isinstance(section, Mapping) and name != 'conservative'
     }
+    if conservative_groups is None:
+        conservative = value.get('conservative')
+        if isinstance(conservative, Mapping):
+            compact['conservative'] = _compact_code_relationships(conservative)
+    else:
+        compact['conservative_call_sites'] = _compact_ambiguous_call_groups(
+            conservative_groups
+        )
+    return dict(sorted(compact.items()))
 
 
 def _compact_code_path_section(
@@ -1128,7 +1199,12 @@ def _compact_code_path_section(
     ), additions={'items': items})
 
 
-def _compact_code_impact_report(value: Mapping[str, object]) -> dict[str, object]:
+def _compact_code_impact_report(
+    value: Mapping[str, object],
+    *,
+    conservative_callers: object = None,
+    conservative_callees: object = None,
+) -> dict[str, object]:
     subject = value.get('subject')
     compact_subject = _selected_mapping(subject, (
         'canonical_id',
@@ -1207,10 +1283,12 @@ def _compact_code_impact_report(value: Mapping[str, object]) -> dict[str, object
         'subject': compact_subject,
         'direction_contract': value.get('direction_contract'),
         'direct_callers': _compact_code_relationship_groups(
-            value.get('direct_callers')
+            value.get('direct_callers'),
+            conservative_groups=conservative_callers,
         ),
         'direct_callees': _compact_code_relationship_groups(
-            value.get('direct_callees')
+            value.get('direct_callees'),
+            conservative_groups=conservative_callees,
         ),
         'upstream_change_impact': compact_upstream,
         'represented_test_intelligence': compact_tests,

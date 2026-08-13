@@ -3,6 +3,8 @@
 from .models import (
     CODE_INTELLIGENCE_PRODUCER,
     CODE_INTELLIGENCE_SCHEMA_VERSION,
+    AmbiguousCallGroup,
+    BoundedAmbiguousCallGroups,
     BoundedPaths,
     BoundedRelationships,
     CodeCallRelationship,
@@ -29,6 +31,8 @@ from .service import CodeIntelligenceConfiguration, JavaCodeIntelligenceService
 __all__ = [
     "CODE_INTELLIGENCE_PRODUCER",
     "CODE_INTELLIGENCE_SCHEMA_VERSION",
+    "AmbiguousCallGroup",
+    "BoundedAmbiguousCallGroups",
     "BoundedPaths",
     "BoundedRelationships",
     "CodeCallRelationship",
