@@ -101,9 +101,13 @@ def _text(value: object, label: str, maximum: int = 1_024) -> str:
 
 
 def _relative_path(value: object, *, cached: bool = False) -> str:
-    text = _text(value, 'call-site path', 2_048)
-    validator = _cached_relative_path if cached else _validated_relative_path
-    return validator(text)
+    if cached:
+        if not isinstance(value, str):
+            raise TypeError('call-site path must be a string')
+        return _cached_relative_path(value)
+    return _validated_relative_path(
+        _text(value, 'call-site path', 2_048)
+    )
 
 
 def _validated_relative_path(text: str) -> str:
@@ -118,8 +122,10 @@ def _validated_relative_path(text: str) -> str:
 
 
 @lru_cache(maxsize=16_384)
-def _cached_relative_path(text: str) -> str:
-    return _validated_relative_path(text)
+def _cached_relative_path(value: str) -> str:
+    return _validated_relative_path(
+        _text(value, 'call-site path', 2_048)
+    )
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -195,6 +201,36 @@ class CallSiteRequest:
         if self.invocation_kind is InvocationKind.METHOD_REFERENCE:
             return None
         return len(self.argument_hints)
+
+    def with_source_path(self, source_path: str) -> 'CallSiteRequest':
+        '''Return this validated request with a validated replacement path.'''
+
+        normalized_path = _relative_path(source_path, cached=True)
+        if normalized_path == self.source_path:
+            return self
+
+        request = object.__new__(CallSiteRequest)
+        object.__setattr__(
+            request, 'caller_subject_id', self.caller_subject_id,
+        )
+        object.__setattr__(
+            request, 'caller_normalized_key', self.caller_normalized_key,
+        )
+        object.__setattr__(request, 'project_id', self.project_id)
+        object.__setattr__(request, 'source_path', normalized_path)
+        object.__setattr__(request, 'source_range', self.source_range)
+        object.__setattr__(
+            request, 'invocation_kind', self.invocation_kind,
+        )
+        object.__setattr__(request, 'receiver_kind', self.receiver_kind)
+        object.__setattr__(request, 'member_name', self.member_name)
+        object.__setattr__(request, 'receiver', self.receiver)
+        object.__setattr__(
+            request, 'owner_type_hints', self.owner_type_hints,
+        )
+        object.__setattr__(request, 'argument_hints', self.argument_hints)
+        object.__setattr__(request, 'limitations', self.limitations)
+        return request
 
 
 @dataclass(frozen=True, order=True, slots=True)

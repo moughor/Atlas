@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from moughorai.java_code_intelligence import call_graph_producer
 from moughorai.java_code_intelligence.call_sites import (
     CallResolutionState,
     CallSiteEvidence,
@@ -288,6 +289,259 @@ def test_order_digest_and_round_trip_are_deterministic() -> None:
     ), diagnostics)
     assert changed.digest != first.digest
     assert changed.input_fingerprint != first.input_fingerprint
+
+
+def test_validated_source_path_update_is_byte_compatible() -> None:
+    sites = _resolved_states_fixture()
+    reference_sites = []
+    optimized_sites = []
+
+    for site in sites:
+        source_path = f'module-a/{site.request.source_path}'
+        reference_request = replace(site.request, source_path=source_path)
+        optimized_request = site.request.with_source_path(source_path)
+        assert optimized_request == reference_request
+        assert optimized_request.source_range is site.request.source_range
+        assert (
+            optimized_request.owner_type_hints
+            is site.request.owner_type_hints
+        )
+        assert optimized_request.argument_hints is site.request.argument_hints
+        assert optimized_request.limitations is site.request.limitations
+
+        evidence_arguments = {
+            'target_subject_id': site.target_subject_id,
+            'declared_target_id': site.declared_target_id,
+            'candidate_target_ids': site.candidate_target_ids,
+            'limitations': site.limitations,
+        }
+        reference_sites.append(CallSiteEvidence.create(
+            reference_request, site.state, **evidence_arguments,
+        ))
+        optimized_sites.append(CallSiteEvidence.create(
+            optimized_request, site.state, **evidence_arguments,
+        ))
+
+    reference = _graph(reference_sites)
+    optimized = _graph(reversed(optimized_sites))
+    assert tuple(
+        item.evidence_id for item in optimized.call_sites
+    ) == tuple(item.evidence_id for item in reference.call_sites)
+    assert optimized.digest == reference.digest
+    assert code_graph_to_dict(optimized) == code_graph_to_dict(reference)
+    assert sites[0].request.with_source_path(
+        sites[0].request.source_path,
+    ) is sites[0].request
+
+
+@pytest.mark.parametrize('source_path', (
+    '/absolute/Caller.java',
+    '../outside/Caller.java',
+    'module/../outside/Caller.java',
+    'C:/absolute/Caller.java',
+    r'module\Caller.java',
+))
+def test_validated_source_path_update_rejects_unsafe_paths(
+    source_path: str,
+) -> None:
+    with pytest.raises(ValueError, match='call-site path'):
+        _request(1).with_source_path(source_path)
+
+
+def test_workspace_merge_reuses_paths_and_is_insertion_order_independent(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    requests = tuple(replace(
+        _request(number),
+        project_id='caller-project',
+        member_name='target',
+        receiver='demo.Target',
+        owner_type_hints=('demo.Target',),
+        limitations=(),
+    ) for number in (2, 1))
+
+    def entry_for_request(request, path):
+        return CallableIndexEntry(
+            request.caller_subject_id,
+            request.project_id,
+            NormalizedCallableIdentity(
+                'demo.Caller',
+                CallableKind.METHOD,
+                request.caller_normalized_key.split('#', 1)[1].split('(', 1)[0],
+                (),
+                (),
+                'void caller()',
+                request.caller_normalized_key,
+            ),
+            SourceClassification.PRODUCTION,
+            CallableSourceReference(
+                path, request.source_range, request.source_range,
+            ),
+            'class',
+        )
+
+    target_span = SourceRange(
+        SourcePosition(1, 1), SourcePosition(1, 20),
+    )
+    target_entry = CallableIndexEntry(
+        'method:target',
+        'target-project',
+        NormalizedCallableIdentity(
+            'demo.Target',
+            CallableKind.METHOD,
+            'target',
+            (),
+            (),
+            'void target()',
+            'java-callable:v1:demo.Target#target()',
+        ),
+        SourceClassification.PRODUCTION,
+        CallableSourceReference(
+            'src/main/java/demo/Target.java', target_span, target_span,
+        ),
+        'class',
+    )
+
+    def index(entries, scope, lineage):
+        entries = tuple(entries)
+        return create_callable_index(
+            lineage=lineage,
+            path_scope=scope,
+            entries=entries,
+            diagnostics=(),
+            selected_source_files=1,
+            parsed_source_files=1,
+            represented_callables=len(entries),
+            unindexed_callables=0,
+            represented_methods=len(entries),
+            represented_constructors=0,
+        )
+
+    caller_entries = tuple(
+        entry_for_request(request, request.source_path)
+        for request in requests
+    )
+    caller_index = index(
+        caller_entries, PathScope.PROJECT, 'project:caller-project',
+    )
+    target_index = index(
+        (target_entry,), PathScope.PROJECT, 'project:target-project',
+    )
+    workspace_index = index(
+        (
+            *(replace(
+                item,
+                source=replace(
+                    item.source,
+                    path=f'module-a/{item.source.path}',
+                ),
+            ) for item in caller_entries),
+            replace(
+                target_entry,
+                source=replace(
+                    target_entry.source,
+                    path=f'module-b/{target_entry.source.path}',
+                ),
+            ),
+        ),
+        PathScope.WORKSPACE,
+        'workspace:test',
+    )
+    local_sites = tuple(
+        CallResolver(caller_index.entries).resolve(request)
+        for request in requests
+    )
+    assert all(
+        item.state is CallResolutionState.EXTERNAL for item in local_sites
+    )
+
+    def project_graph(call_sites, callable_index, lineage):
+        call_sites = tuple(call_sites)
+        return create_code_graph(
+            lineage=lineage,
+            path_scope=PathScope.PROJECT,
+            callable_index=callable_index,
+            call_sites=call_sites,
+            callable_bodies_examined=len(call_sites),
+            callable_bodies_unavailable=0,
+            extraction_failures=0,
+        )
+
+    caller_forward = project_graph(
+        local_sites, caller_index, 'project:caller-project',
+    )
+    caller_reverse = project_graph(
+        reversed(local_sites), caller_index, 'project:caller-project',
+    )
+    target_graph = project_graph(
+        (), target_index, 'project:target-project',
+    )
+    project_paths = {
+        'caller-project': tmp_path / 'module-a',
+        'target-project': tmp_path / 'module-b',
+    }
+
+    original_join = call_graph_producer._join_relative
+    joins = []
+
+    def tracked_join(prefix, path):
+        joins.append((prefix, path))
+        return original_join(prefix, path)
+
+    monkeypatch.setattr(
+        call_graph_producer, '_join_relative', tracked_join,
+    )
+    first = call_graph_producer.merge_code_graphs(
+        {
+            'caller-project': caller_forward,
+            'target-project': target_graph,
+        },
+        callable_index=workspace_index,
+        workspace_root=tmp_path,
+        project_paths=project_paths,
+        canonical_symbols=(),
+        lineage='workspace:test',
+    )
+    second = call_graph_producer.merge_code_graphs(
+        {
+            'target-project': target_graph,
+            'caller-project': caller_reverse,
+        },
+        callable_index=workspace_index,
+        workspace_root=tmp_path,
+        project_paths=dict(reversed(tuple(project_paths.items()))),
+        canonical_symbols=(),
+        lineage='workspace:test',
+    )
+
+    assert joins == [
+        ('module-a', requests[0].source_path),
+        ('module-a', requests[0].source_path),
+    ]
+    assert all(
+        item.state is CallResolutionState.RESOLVED
+        and item.target_subject_id == 'method:target'
+        and item.request.source_path.startswith('module-a/')
+        for item in first.call_sites
+    )
+    expected_ids = {
+        item.request.caller_subject_id: item.evidence_id
+        for item in (
+            CallResolver(workspace_index.entries).resolve(
+                request.with_source_path(
+                    f'module-a/{request.source_path}',
+                )
+            )
+            for request in requests
+        )
+    }
+    assert {
+        item.request.caller_subject_id: item.evidence_id
+        for item in first.call_sites
+    } == expected_ids
+    assert code_graph_to_dict(first) == code_graph_to_dict(second)
+    assert first.digest == second.digest
 
 
 def test_compact_round_trip_preserves_all_logical_evidence_exactly() -> None:

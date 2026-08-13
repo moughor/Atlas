@@ -144,6 +144,7 @@ def merge_code_graphs(
 
     for project_id, graph in sorted(graphs.items()):
         prefix = prefixes.get(project_id)
+        rebased_paths: dict[str, str] = {}
         examined += graph.coverage.callable_bodies_examined
         unavailable += graph.coverage.callable_bodies_unavailable
         failures += graph.coverage.extraction_failures
@@ -157,11 +158,13 @@ def merge_code_graphs(
             ))
             continue
         for site in graph.call_sites:
-            request = replace(
-                site.as_request(),
-                source_path=_join_relative(
-                    prefix, site.request.source_path,
-                ),
+            source_path = site.request.source_path
+            rebased_path = rebased_paths.get(source_path)
+            if rebased_path is None:
+                rebased_path = _join_relative(prefix, source_path)
+                rebased_paths[source_path] = rebased_path
+            request = site.as_request().with_source_path(
+                rebased_path,
             )
             sites.append(resolver.resolve(request))
         for diagnostic in graph.diagnostics:
