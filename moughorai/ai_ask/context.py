@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import re
 
 from moughorai.ai_memory import ConversationMessage
+from moughorai.code_intelligence import CodeIntelligenceConfiguration
 from moughorai.impact_analysis import ImpactPredictionRequest, ImpactPredictionService
 from moughorai.knowledge_graph import KnowledgeKind
 from moughorai.prompts import TokenEstimator
@@ -14,7 +15,7 @@ from moughorai.security_intelligence import (
     SecurityIntelligenceService,
     SecurityScope,
 )
-from moughorai.semantic_evidence import EvidenceIndex, EvidenceRecord
+from moughorai.semantic_evidence import EvidenceIndex, EvidenceKind, EvidenceRecord
 from moughorai.semantic_search import SemanticSearchRequest, SemanticSearchService
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 from moughorai.structured_explanation import ExplanationRequest, StructuredExplanationService
@@ -45,6 +46,11 @@ MAXIMUM_OPTIONAL_CAPABILITIES = 3
 _EVIDENCE_CITATION = re.compile(r"evidence:[0-9a-f]{64}")
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 
+_CODE_IMPACT_WORDS = frozenset({
+    'call', 'called', 'callee', 'callees', 'caller', 'callers', 'calls',
+    'constructor', 'constructors', 'method', 'methods', 'modify', 'modifying',
+})
+
 _INTENT_WORDS = {
     ChatIntent.SECURITY: frozenset({
         "security", "secure", "vulnerability", "vulnerabilities", "secret",
@@ -65,8 +71,15 @@ _INTENT_WORDS = {
     ChatIntent.EXPLAIN: frozenset({"explain", "why", "how", "what"}),
 }
 
-_OPTIONAL_CAPABILITIES = ("impact_prediction", "refactoring_advisor", "security_intelligence")
+_OPTIONAL_CAPABILITIES = (
+    "impact_prediction",
+    "refactoring_advisor",
+    "security_intelligence",
+    'code_impact',
+)
 _CAPABILITY_ALIASES = {
+    'code_impact': 'code_impact',
+    'java_code_intelligence': 'code_impact',
     "impact": "impact_prediction",
     "impact_prediction": "impact_prediction",
     "refactor": "refactoring_advisor",
@@ -173,6 +186,7 @@ class EngineeringChatContextBuilder:
             raise ValueError("chat context token budget must be at least 256")
         safe_question = sanitize_chat_text(question)
         intent = classify_chat_intent(safe_question)
+        explicit_requested = requested_chat_capabilities('', capabilities)
         requested = requested_chat_capabilities(safe_question, capabilities)
         capability_map: dict[str, ChatCapability] = {
             name: ChatCapability(
@@ -229,7 +243,10 @@ class EngineeringChatContextBuilder:
         resolved_subject = None
         try:
             if selected_subject is not None:
-                explanation = StructuredExplanationService(snapshot).explain(
+                explanation = StructuredExplanationService(
+                    snapshot,
+                    include_code_intelligence=False,
+                ).explain(
                     ExplanationRequest(
                         selected_subject,
                         kind=selected_kind,
@@ -282,7 +299,31 @@ class EngineeringChatContextBuilder:
             ),
         )
 
+        if (
+            resolved_subject is not None
+            and resolved_subject.kind == 'method'
+            and (
+                'impact_prediction' in requested
+                or {
+                    item.casefold() for item in _WORD.findall(safe_question)
+                }.intersection(_CODE_IMPACT_WORDS)
+            )
+        ):
+            requested = tuple(sorted({*requested, 'code_impact'}))
+            if 'impact_prediction' not in explicit_requested:
+                requested = tuple(
+                    item for item in requested
+                    if item != 'impact_prediction'
+                )
+
         for capability in requested:
+            if capability == 'code_impact':
+                candidate, value = self._code_impact_section(
+                    snapshot, resolved_subject, result_limit,
+                )
+                candidates.append(candidate)
+                capability_map[capability] = value
+                continue
             if capability == "impact_prediction":
                 impact_candidates, value = self._impact_section(
                     snapshot, resolved_subject, result_limit
@@ -407,6 +448,84 @@ class EngineeringChatContextBuilder:
             (response.producer_version,),
             tuple(response.limitations),
         )
+
+    def _code_impact_section(self, snapshot, subject, result_limit):
+        if subject is None:
+            return _unavailable_section(
+                'code_impact',
+                'Java code impact',
+                'atlas-pr159/1',
+                'Java code impact requires one unambiguous canonical callable.',
+                4,
+            )
+        if subject.kind != 'method':
+            return _unavailable_section(
+                'code_impact',
+                'Java code impact',
+                'atlas-pr159/1',
+                'PR159 supports exact Java method and constructor subjects only.',
+                4,
+                ChatCapabilityState.UNSUPPORTED,
+            )
+        try:
+            result = ImpactPredictionService.from_snapshot(
+                snapshot
+            ).predict_code_impact(
+                subject.subject_id,
+                project=subject.project,
+                configuration=CodeIntelligenceConfiguration(
+                    max_depth=6,
+                    max_nodes=1_024,
+                    max_direct_relationships=max(1, min(3, result_limit)),
+                    max_paths_per_section=max(1, min(3, result_limit)),
+                    max_limitation_representatives=1,
+                ),
+            )
+            report = result.report
+            if report is None:
+                candidate, capability = _unavailable_section(
+                    'code_impact',
+                    'Java code impact',
+                    'atlas-pr159/1',
+                    'Compatible PR156, PR157, and PR158 callable evidence is unavailable.',
+                    4,
+                    _chat_state(result.resolution.status.value),
+                )
+                return candidate, capability
+            records = _code_impact_records(snapshot, report)
+            evidence_ids = tuple(item.evidence_id for item in records)
+            content = {
+                'producer': report.producer_version,
+                'input_fingerprint': report.input_fingerprint,
+                'report': _compact_code_impact_report(report.to_dict()),
+            }
+            section = ChatContextSection(
+                'code_impact',
+                'code_impact',
+                'Evidence-backed Java code impact',
+                content,
+                evidence_ids,
+                4,
+                1,
+                1,
+                0,
+            )
+            capability = ChatCapability(
+                'code_impact',
+                _chat_state(result.availability.value),
+                ('atlas-pr159/1',),
+                tuple(report.general_limitations[:2]),
+            )
+            return _CandidateSection(section, records, mandatory=True), capability
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return _unavailable_section(
+                'code_impact',
+                'Java code impact',
+                'atlas-pr159/1',
+                'Structured Java code impact is unavailable or incompatible with this snapshot.',
+                4,
+                ChatCapabilityState.INCOMPATIBLE,
+            )
 
     def _impact_section(self, snapshot, subject, result_limit):
         if subject is None:
@@ -804,6 +923,302 @@ def _records(index: EvidenceIndex, evidence_ids: Iterable[str]) -> tuple[Evidenc
         if record is not None:
             result.append(record)
     return tuple(result)
+
+
+def _code_impact_records(snapshot, report) -> tuple[EvidenceRecord, ...]:
+    trace = report.traceability
+
+    def refs(values) -> tuple[str, ...]:
+        return tuple(sorted(set(str(item) for item in values if str(item))))[:64]
+
+    relationships = (
+        *report.direct_callers_high_confidence.items,
+        *report.direct_callers_conservative.items,
+        *report.direct_caller_method_references.items,
+        *report.direct_callees_high_confidence.items,
+        *report.direct_callees_conservative.items,
+        *report.direct_callee_method_references.items,
+        *report.direct_test_callers.items,
+    )
+    paths = (
+        *report.upstream_direct.items,
+        *report.upstream_transitive.items,
+    )
+    test_paths = (
+        *report.high_confidence_test_paths.items,
+        *report.possible_test_paths.items,
+    )
+    summary = EvidenceRecord.create(
+        EvidenceKind.ANALYSIS_RESULT,
+        report.subject.canonical_id,
+        'atlas-pr159/1',
+        snapshot.snapshot_id,
+        source_refs=refs((
+            report.subject.source.compact,
+            trace.callable_index_fingerprint,
+            trace.code_graph_fingerprint,
+            trace.test_evidence_fingerprint,
+        )),
+        scope=f'project:{report.subject.project}',
+        language='java',
+        detail={
+            'capability': 'java_code_intelligence',
+            'runtime_execution_proven': False,
+        },
+        limitations=(),
+        reliability=0.95,
+        specificity=1.0,
+    )
+    producer_sites: dict[str, dict[str, object]] = {}
+
+    def add_site(item) -> None:
+        retained = producer_sites.setdefault(item.producer_evidence_id, {
+            'subject_id': item.canonical_source,
+            'project': item.project,
+            'source_refs': set(),
+            'reliability': 1.0,
+        })
+        retained['source_refs'].update((
+            item.location.compact,
+            trace.code_graph_fingerprint,
+        ))
+        retained['reliability'] = min(
+            float(retained['reliability']),
+            0.98 if item.confidence.value.startswith('high_') else 0.70,
+        )
+
+    for item in relationships:
+        add_site(item)
+    for path in (*paths, *test_paths):
+        for item in path.steps:
+            add_site(item)
+    producer_records = []
+    for evidence_id, item in sorted(producer_sites.items()):
+        producer_records.append(EvidenceRecord(
+            evidence_id,
+            EvidenceKind.GRAPH_EDGE,
+            str(item['subject_id']),
+            'atlas-pr157/1',
+            snapshot.snapshot_id,
+            tuple(sorted(item['source_refs'])),
+            f"project:{item['project']}",
+            'java',
+            (),
+            (),
+            float(item['reliability']),
+            1.0,
+        ))
+
+    roots: dict[str, object] = {}
+    for path in test_paths:
+        if path.root_evidence_id is not None:
+            roots[path.root_evidence_id] = path
+    root_records = tuple(
+        EvidenceRecord(
+            evidence_id,
+            EvidenceKind.GRAPH_NODE,
+            path.consumer_subject_id,
+            'atlas-pr158/1',
+            snapshot.snapshot_id,
+            (trace.test_evidence_fingerprint,),
+            f'project:{report.subject.project}',
+            'java',
+            (),
+            (),
+            0.95,
+            1.0,
+        )
+        for evidence_id, path in sorted(roots.items())
+    )
+    return (summary, *producer_records, *root_records)
+
+
+def _compact_code_relationship(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return None
+    location = value.get('location')
+    source_ref = location.get('source_ref') if isinstance(location, Mapping) else None
+    return _selected_mapping(value, (
+        'canonical_source',
+        'canonical_target',
+        'relation',
+        'subject_relative_role',
+        'edge_kind',
+        'producer_evidence_id',
+        'confidence',
+        'execution_eligible',
+        'runtime_invocation_proven',
+    ), additions={'source_ref': source_ref})
+
+
+def _compact_code_relationships(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return None
+    raw_items = value.get('items', ())
+    items = (
+        [
+            _compact_code_relationship(item)
+            for item in raw_items
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(raw_items, Sequence)
+        and not isinstance(raw_items, (str, bytes, bytearray))
+        else []
+    )
+    return _selected_mapping(value, (
+        'total_count', 'included_count', 'omitted_count',
+    ), additions={'items': items})
+
+
+def _compact_code_relationship_groups(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        str(name): _compact_code_relationships(section)
+        for name, section in sorted(value.items())
+        if isinstance(section, Mapping)
+    }
+
+
+def _compact_code_path_section(
+    value: object,
+    *,
+    include_steps: bool = True,
+) -> object:
+    if not isinstance(value, Mapping):
+        return None
+    raw_items = value.get('items', ())
+    items = []
+    if isinstance(raw_items, Sequence) and not isinstance(
+        raw_items, (str, bytes, bytearray)
+    ):
+        for item in raw_items:
+            if not isinstance(item, Mapping):
+                continue
+            raw_steps = item.get('steps', ())
+            steps = (
+                [
+                    _selected_mapping(step, (
+                        'canonical_source',
+                        'canonical_target',
+                        'edge_kind',
+                        'producer_evidence_id',
+                    ))
+                    for step in raw_steps
+                    if isinstance(step, Mapping)
+                ]
+                if isinstance(raw_steps, Sequence)
+                and not isinstance(raw_steps, (str, bytes, bytearray))
+                else []
+            )
+            items.append(_selected_mapping(item, (
+                'consumer_subject_id',
+                'subject_id',
+                'depth',
+                'confidence',
+                'traversal_direction',
+                'canonical_direction',
+                'canonical_relation',
+                'root_evidence_id',
+                'producer_evidence_ids',
+                'runtime_execution_proven',
+            ), additions={'steps': steps} if include_steps else None))
+    return _selected_mapping(value, (
+        'total_count', 'included_count', 'omitted_count',
+    ), additions={'items': items})
+
+
+def _compact_code_impact_report(value: Mapping[str, object]) -> dict[str, object]:
+    subject = value.get('subject')
+    compact_subject = _selected_mapping(subject, (
+        'canonical_id',
+        'project',
+        'kind',
+        'owner_type',
+        'name',
+        'display_name',
+        'source_classification',
+    ))
+    if isinstance(compact_subject, dict) and isinstance(subject, Mapping):
+        source = subject.get('source')
+        compact_subject['source_ref'] = (
+            source.get('source_ref') if isinstance(source, Mapping) else None
+        )
+    upstream = value.get('upstream_change_impact')
+    compact_upstream = None
+    if isinstance(upstream, Mapping):
+        compact_upstream = {
+            'direct': _compact_code_path_section(
+                upstream.get('direct'), include_steps=False,
+            ),
+            'transitive': _compact_code_path_section(upstream.get('transitive')),
+            'traversal': _selected_mapping(upstream.get('traversal'), (
+                'traversal_direction',
+                'canonical_direction',
+                'configured_max_depth',
+                'configured_max_nodes',
+                'visited_node_count',
+                'visited_edge_count',
+                'depth_histogram',
+                'truncated',
+            )),
+        }
+    tests = value.get('represented_test_intelligence')
+    compact_tests = None
+    if isinstance(tests, Mapping):
+        compact_tests = {
+            'direct_test_callers': _compact_code_relationships(
+                tests.get('direct_test_callers')
+            ),
+            'high_confidence_paths': _compact_code_path_section(
+                tests.get('high_confidence_paths'), include_steps=False,
+            ),
+            'possible_paths': _compact_code_path_section(
+                tests.get('possible_paths'), include_steps=False,
+            ),
+            'negative_statement': tests.get('negative_statement'),
+            'runtime_test_coverage_proven': False,
+        }
+    raw_limitations = value.get('limitations', ())
+    compact_limitations = []
+    if isinstance(raw_limitations, Sequence) and not isinstance(
+        raw_limitations, (str, bytes, bytearray)
+    ):
+        for item in raw_limitations[:8]:
+            if not isinstance(item, Mapping):
+                continue
+            compact_limitations.append(_selected_mapping(item, (
+                'category', 'total_count', 'included_count', 'omitted_count',
+            )))
+    raw_capabilities = value.get('capability_availability', ())
+    capabilities = (
+        [
+            _selected_mapping(item, (
+                'name', 'availability',
+            ))
+            for item in raw_capabilities
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(raw_capabilities, Sequence)
+        and not isinstance(raw_capabilities, (str, bytes, bytearray))
+        else []
+    )
+    return {
+        'subject': compact_subject,
+        'direction_contract': value.get('direction_contract'),
+        'direct_callers': _compact_code_relationship_groups(
+            value.get('direct_callers')
+        ),
+        'direct_callees': _compact_code_relationship_groups(
+            value.get('direct_callees')
+        ),
+        'upstream_change_impact': compact_upstream,
+        'represented_test_intelligence': compact_tests,
+        'limitations': compact_limitations,
+        'general_limitations': list(value.get('general_limitations', ()))[:12],
+        'capability_availability': capabilities,
+        'traceability': value.get('traceability'),
+    }
 
 
 def _response_section(

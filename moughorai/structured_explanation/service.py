@@ -8,6 +8,11 @@ import json
 import math
 import re
 
+from moughorai.code_intelligence import (
+    CodeIntelligenceConfiguration,
+    CodePathConfidence,
+    JavaCodeIntelligenceService,
+)
 from moughorai.knowledge_graph import (
     KnowledgeEdge,
     KnowledgeKind,
@@ -62,10 +67,14 @@ class StructuredExplanationService:
         *,
         resolver: CanonicalSubjectResolver | None = None,
         selector: StructuredExplanationSelector | None = None,
+        include_code_intelligence: bool = True,
     ) -> None:
         if not isinstance(snapshot, AtlasSemanticSnapshot):
             raise TypeError("structured explanations require an Atlas semantic snapshot")
+        if not isinstance(include_code_intelligence, bool):
+            raise TypeError('include_code_intelligence must be a boolean')
         self.snapshot = snapshot
+        self.include_code_intelligence = include_code_intelligence
         self.context = snapshot.semantic_context
         if resolver is None:
             self.resolver = CanonicalSubjectResolver.from_snapshot(snapshot)
@@ -115,7 +124,7 @@ class StructuredExplanationService:
         if not isinstance(request, ExplanationRequest):
             raise TypeError("explanation request must be an ExplanationRequest")
         fingerprint = self._fingerprint(request)
-        capabilities, capability_limitations = self._capabilities()
+        capabilities, capability_limitations = self._capabilities(request)
 
         if request.kind is not None:
             try:
@@ -346,6 +355,11 @@ class StructuredExplanationService:
         self._add_identity_fact(builder, subject)
         limitations: list[str] = []
         omitted_relation_count = 0
+        code_omitted, code_limitations = self._add_code_intelligence_facts(
+            builder, subject,
+        )
+        omitted_relation_count += code_omitted
+        limitations.extend(code_limitations)
         graph = self.resolver.graph
         if graph is not None:
             relations: list[tuple[str, KnowledgeEdge, SubjectCandidate]] = []
@@ -374,7 +388,7 @@ class StructuredExplanationService:
                     priority=20 + index,
                 )
             if total_relation_count > len(relations):
-                omitted_relation_count = total_relation_count - len(relations)
+                omitted_relation_count += total_relation_count - len(relations)
                 limitations.append(
                     f"{omitted_relation_count} direct canonical relationship(s) were omitted by the deterministic bound."
                 )
@@ -397,6 +411,357 @@ class StructuredExplanationService:
             omitted_relation_count,
             omitted_relation_count,
         )
+
+    def _add_code_intelligence_facts(
+        self,
+        builder: _FactBuilder,
+        subject: SubjectCandidate,
+    ) -> tuple[int, tuple[str, ...]]:
+        if (
+            not self.include_code_intelligence
+            or subject.kind is not KnowledgeKind.METHOD
+            or subject.language != 'java'
+        ):
+            return 0, ()
+        try:
+            result = JavaCodeIntelligenceService.from_snapshot(
+                self.snapshot
+            ).query(
+                subject.canonical_id,
+                configuration=CodeIntelligenceConfiguration(
+                    max_depth=6,
+                    max_nodes=1_024,
+                    max_direct_relationships=6,
+                    max_paths_per_section=6,
+                    max_limitation_representatives=2,
+                ),
+            )
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            return 0, (
+                'Java code intelligence could not be verified for this exact callable '
+                f'({type(exc).__name__}).',
+            )
+        if result.report is None:
+            return 0, tuple(sorted(set(result.limitations)))
+        return self._add_code_intelligence_sections(
+            builder, subject, result.report,
+        )
+
+    def _add_code_intelligence_sections(
+        self,
+        builder: _FactBuilder,
+        subject: SubjectCandidate,
+        report,
+    ) -> tuple[int, tuple[str, ...]]:
+        trace = report.traceability
+        builder.add(
+            logical_key=f'java-code-subject:{subject.canonical_id}',
+            kind=ExplanationFactKind.IDENTITY,
+            subject_id=subject.canonical_id,
+            title='Represented Java callable identity',
+            statement=(
+                f'PR156 identifies this exact {report.subject.kind.value} as '
+                f'{report.subject.display_name}.'
+            ),
+            priority=11,
+            attributes=(
+                ExplanationAttribute('callable_kind', report.subject.kind.value),
+                ExplanationAttribute(
+                    'source_classification',
+                    report.subject.source_classification.value,
+                ),
+                ExplanationAttribute('source_ref', report.subject.source.compact),
+            ),
+            evidence_kind=EvidenceKind.GRAPH_NODE,
+            source_refs=(
+                report.subject.canonical_id,
+                report.subject.source.compact,
+                trace.callable_index_fingerprint,
+            ),
+            producer_ids=('moughorai.java-callable-index.v1', 'atlas-pr159/1'),
+            limitations=report.subject.limitations,
+        )
+        relationship_sections = (
+            ('Direct high-confidence Java caller', report.direct_callers_high_confidence),
+            ('Direct conservative Java caller', report.direct_callers_conservative),
+            ('Java caller method reference', report.direct_caller_method_references),
+            ('Direct high-confidence Java callee', report.direct_callees_high_confidence),
+            ('Direct conservative Java callee', report.direct_callees_conservative),
+            ('Java callee method reference', report.direct_callee_method_references),
+            ('Direct represented TEST caller', report.direct_test_callers),
+        )
+        priority = 12
+        omitted = 0
+        for title, section in relationship_sections:
+            omitted += section.omitted_count
+            for relationship in section.items:
+                self._add_code_relationship_fact(
+                    builder,
+                    subject,
+                    relationship,
+                    title=title,
+                    priority=priority,
+                    code_graph_fingerprint=trace.code_graph_fingerprint,
+                )
+                priority += 1
+        return self._add_code_path_and_limitation_facts(
+            builder, subject, report, priority, omitted,
+        )
+
+    def _add_code_relationship_fact(
+        self,
+        builder: _FactBuilder,
+        subject: SubjectCandidate,
+        relationship,
+        *,
+        title: str,
+        priority: int,
+        code_graph_fingerprint: str,
+    ) -> None:
+        confidence = relationship.confidence
+        reliability = (
+            0.98
+            if confidence
+            is CodePathConfidence.HIGH_CONFIDENCE_REPRESENTED_PATH
+            else 0.70
+            if confidence
+            is CodePathConfidence.CONSERVATIVE_REPRESENTED_PATH
+            else 0.60
+        )
+        builder.add(
+            logical_key=(
+                f'java-call:{relationship.subject_relative_role.value}:'
+                f'{relationship.producer_evidence_id}:'
+                f'{relationship.canonical_target}'
+            ),
+            kind=ExplanationFactKind.RELATIONSHIP,
+            subject_id=subject.canonical_id,
+            title=title,
+            statement=(
+                f'Represented Java evidence records {relationship.canonical_source} '
+                f'calls {relationship.canonical_target}; the subject-relative role is '
+                f'{relationship.subject_relative_role.value}.'
+            ),
+            priority=priority,
+            attributes=(
+                ExplanationAttribute('canonical_source', relationship.canonical_source),
+                ExplanationAttribute('canonical_target', relationship.canonical_target),
+                ExplanationAttribute('canonical_relation', relationship.relation),
+                ExplanationAttribute('subject_relative_role', relationship.subject_relative_role.value),
+                ExplanationAttribute('edge_kind', relationship.edge_kind.value),
+                ExplanationAttribute('path_confidence', confidence.value),
+                ExplanationAttribute('execution_eligible', relationship.execution_eligible),
+                ExplanationAttribute('source_ref', relationship.location.compact),
+            ),
+            evidence_kind=EvidenceKind.GRAPH_EDGE,
+            source_refs=(
+                relationship.producer_evidence_id,
+                relationship.location.compact,
+                relationship.canonical_source,
+                relationship.canonical_target,
+                code_graph_fingerprint,
+            ),
+            producer_ids=('moughorai.java-code-graph.v1', 'atlas-pr159/1'),
+            limitations=relationship.limitations,
+            reliability=reliability,
+            specificity=reliability,
+        )
+
+    def _add_code_path_fact(
+        self,
+        builder: _FactBuilder,
+        subject: SubjectCandidate,
+        path,
+        *,
+        title: str,
+        priority: int,
+        code_graph_fingerprint: str,
+    ) -> None:
+        reliability = (
+            0.98
+            if path.confidence
+            is CodePathConfidence.HIGH_CONFIDENCE_REPRESENTED_PATH
+            else 0.70
+        )
+        source_refs = {
+            code_graph_fingerprint,
+            subject.canonical_id,
+            path.consumer_subject_id,
+            *path.producer_evidence_ids,
+            *(step.location.compact for step in path.steps),
+        }
+        builder.add(
+            logical_key=(
+                f'java-path:{path.traversal_direction.value}:'
+                f'{path.consumer_subject_id}:{subject.canonical_id}:'
+                f'{path.depth}:{path.producer_evidence_ids}'
+            ),
+            kind=ExplanationFactKind.RELATIONSHIP,
+            subject_id=subject.canonical_id,
+            title=title,
+            statement=(
+                f'Represented caller-to-callee edges form a depth-{path.depth} '
+                f'path from {path.consumer_subject_id} to {subject.canonical_id}; '
+                f'impact traversal is labeled {path.traversal_direction.value}.'
+            ),
+            priority=priority,
+            attributes=(
+                ExplanationAttribute('consumer_subject_id', path.consumer_subject_id),
+                ExplanationAttribute('subject_id', path.subject_id),
+                ExplanationAttribute('depth', path.depth),
+                ExplanationAttribute('canonical_direction', 'caller_to_callee'),
+                ExplanationAttribute('impact_traversal_direction', path.traversal_direction.value),
+                ExplanationAttribute('path_confidence', path.confidence.value),
+                ExplanationAttribute('root_evidence_id', path.root_evidence_id),
+            ),
+            evidence_kind=EvidenceKind.ANALYSIS_RESULT,
+            source_refs=source_refs,
+            producer_ids=(
+                'moughorai.java-code-graph.v1',
+                'moughorai.java-test-evidence.v1',
+                'atlas-pr159/1',
+            ),
+            limitations=path.limitations,
+            reliability=reliability,
+            specificity=reliability,
+        )
+
+    def _add_code_path_and_limitation_facts(
+        self,
+        builder: _FactBuilder,
+        subject: SubjectCandidate,
+        report,
+        priority: int,
+        omitted: int,
+    ) -> tuple[int, tuple[str, ...]]:
+        path_sections = (
+            ('Direct reverse upstream Java impact path', report.upstream_direct),
+            ('Transitive reverse upstream Java impact path', report.upstream_transitive),
+            ('High-confidence represented TEST path', report.high_confidence_test_paths),
+            ('Possible represented TEST path', report.possible_test_paths),
+        )
+        for title, section in path_sections:
+            omitted += section.omitted_count
+            for path in section.items:
+                self._add_code_path_fact(
+                    builder,
+                    subject,
+                    path,
+                    title=title,
+                    priority=priority,
+                    code_graph_fingerprint=report.traceability.code_graph_fingerprint,
+                )
+                priority += 1
+        self._add_code_limitation_facts(builder, subject, report, priority)
+        code_limitations = set(report.general_limitations)
+        if omitted:
+            code_limitations.add(
+                f'{omitted} code-intelligence relationship or path fact(s) '
+                'were omitted by deterministic section bounds.'
+            )
+        return omitted, tuple(sorted(code_limitations))
+
+    def _add_code_limitation_facts(
+        self,
+        builder: _FactBuilder,
+        subject: SubjectCandidate,
+        report,
+        priority: int,
+    ) -> None:
+        trace = report.traceability
+        for number, summary in enumerate(report.limitations):
+            source_refs = {
+                trace.code_graph_fingerprint,
+                *(item.producer_evidence_id for item in summary.representatives),
+                *(item.location.compact for item in summary.representatives),
+            }
+            builder.add(
+                logical_key=f'java-limit:{summary.category}:{subject.canonical_id}',
+                kind=ExplanationFactKind.LIMITATION,
+                subject_id=subject.canonical_id,
+                title=f'Java code evidence limitation: {summary.category}',
+                statement=(
+                    f'The bounded callable neighborhood contains '
+                    f'{summary.total_count} {summary.category} record(s); '
+                    f'{summary.omitted_count} representative record(s) are omitted.'
+                ),
+                priority=priority + number,
+                attributes=(
+                    ExplanationAttribute('category', summary.category),
+                    ExplanationAttribute('total_count', summary.total_count),
+                    ExplanationAttribute('included_count', len(summary.representatives)),
+                    ExplanationAttribute('omitted_count', summary.omitted_count),
+                ),
+                evidence_kind=EvidenceKind.ANALYSIS_RESULT,
+                source_refs=source_refs,
+                producer_ids=('moughorai.java-code-graph.v1', 'atlas-pr159/1'),
+                limitations=(
+                    'These records bound certainty and do not fabricate a represented target.',
+                ),
+                reliability=0.95,
+            )
+        offset = priority + len(report.limitations)
+        traversal = report.traversal
+        capability_states = {
+            item.name: item.availability.value
+            for item in report.capability_availability
+        }
+        builder.add(
+            logical_key=f'java-traversal:{subject.canonical_id}',
+            kind=ExplanationFactKind.METADATA,
+            subject_id=subject.canonical_id,
+            title='Bounded reverse Java impact traversal',
+            statement=(
+                f'PR159 visited {traversal.visited_node_count} node(s) and '
+                f'{traversal.visited_edge_count} execution-eligible edge(s) '
+                'by reverse upstream traversal while preserving caller-to-callee edges.'
+            ),
+            priority=offset,
+            attributes=(
+                ExplanationAttribute('canonical_direction', 'caller_to_callee'),
+                ExplanationAttribute('impact_traversal_direction', traversal.traversal_direction.value),
+                ExplanationAttribute('visited_node_count', traversal.visited_node_count),
+                ExplanationAttribute('visited_edge_count', traversal.visited_edge_count),
+                ExplanationAttribute('configured_max_depth', traversal.configured_max_depth),
+                ExplanationAttribute('truncated', traversal.truncated),
+                ExplanationAttribute('calls_availability', capability_states.get('calls', 'unavailable')),
+                ExplanationAttribute('tests_availability', capability_states.get('tests', 'unavailable')),
+                ExplanationAttribute('reachability_availability', capability_states.get('reachability', 'unavailable')),
+            ),
+            evidence_kind=EvidenceKind.ANALYSIS_RESULT,
+            source_refs=(
+                trace.callable_index_fingerprint,
+                trace.code_graph_fingerprint,
+                trace.test_evidence_fingerprint,
+                trace.reachability_fingerprint or 'reachability:unavailable',
+            ),
+            producer_ids=('atlas-pr131/1', 'atlas-pr159/1'),
+            limitations=report.general_limitations,
+        )
+        if report.negative_test_statement:
+            builder.add(
+                logical_key=f'java-no-test-path:{subject.canonical_id}',
+                kind=ExplanationFactKind.LIMITATION,
+                subject_id=subject.canonical_id,
+                title='Represented TEST reachability',
+                statement=report.negative_test_statement,
+                priority=offset + 1,
+                attributes=(
+                    ExplanationAttribute('runtime_test_coverage_proven', False),
+                    ExplanationAttribute('source_reachability_only', True),
+                ),
+                evidence_kind=EvidenceKind.ANALYSIS_RESULT,
+                source_refs=(
+                    trace.code_graph_fingerprint,
+                    trace.test_evidence_fingerprint,
+                    subject.canonical_id,
+                ),
+                producer_ids=('moughorai.java-test-evidence.v1', 'atlas-pr159/1'),
+                limitations=(
+                    'Absence of a represented TEST-root path cannot establish that code is untested or lacks runtime coverage.',
+                ),
+                reliability=0.95,
+            )
 
     def _add_identity_fact(
         self,
@@ -931,6 +1296,7 @@ class StructuredExplanationService:
 
     def _capabilities(
         self,
+        request: ExplanationRequest,
     ) -> tuple[tuple[ExplanationCapability, ...], tuple[str, ...]]:
         values: list[ExplanationCapability] = []
         limitations: list[str] = []
@@ -1183,6 +1549,77 @@ class StructuredExplanationService:
                 capability_limitations=(
                     "PR133 report selection omitted one or more structured items."
                 ,) if report_partial else (),
+            )
+
+        raw_callable_index = self.context.get('java_callable_index')
+        raw_code_graph = self.context.get('java_code_graph')
+        raw_test_evidence = self.context.get('java_test_evidence')
+        java_artifacts = (
+            raw_callable_index,
+            raw_code_graph,
+            raw_test_evidence,
+        )
+        java_code_requested = (
+            (
+                request.kind == KnowledgeKind.METHOD.value
+                or request.subject.startswith(('method:', 'constructor:'))
+            )
+            and (
+                request.language is None
+                or request.language.casefold() == 'java'
+            )
+            and any(isinstance(item, Mapping) for item in java_artifacts)
+        )
+        java_compatible = (
+            all(isinstance(item, Mapping) for item in java_artifacts)
+            and raw_callable_index.get('format')
+            == 'moughorai.java-callable-index.v1'
+            and raw_code_graph.get('format') == 'moughorai.java-code-graph.v1'
+            and raw_test_evidence.get('format')
+            == 'moughorai.java-test-evidence.v1'
+        )
+        if java_code_requested and java_compatible:
+            graph_coverage = _mapping(raw_code_graph.get('coverage'))
+            index_coverage = _mapping(raw_callable_index.get('coverage'))
+            test_coverage = _mapping(raw_test_evidence.get('coverage'))
+            partial = any(
+                _nonnegative_integer(graph_coverage.get(name))
+                for name in (
+                    'callable_bodies_unavailable',
+                    'extraction_failures',
+                    'polymorphic_call_sites',
+                    'ambiguous_call_sites',
+                    'unresolved_call_sites',
+                    'external_call_sites',
+                    'unsupported_call_sites',
+                )
+            ) or bool(
+                _nonnegative_integer(index_coverage.get('unindexed_callables'))
+            ) or not bool(
+                _nonnegative_integer(test_coverage.get('represented_test_roots'))
+            )
+            add(
+                'java_code_intelligence',
+                ExplanationAvailability.PARTIAL
+                if partial else ExplanationAvailability.AVAILABLE,
+                'atlas-pr159/1',
+                coverage=None if partial else 1.0,
+                capability_limitations=(
+                    'Detailed Java code intelligence activates only for an exact represented method or constructor.',
+                    'Represented source reachability does not prove runtime dispatch or runtime test coverage.',
+                ) + ((
+                    'Unavailable bodies or uncertain call and TEST-root evidence make Java code intelligence partial.',
+                ) if partial else ()),
+            )
+        elif java_code_requested:
+            add(
+                'java_code_intelligence',
+                ExplanationAvailability.UNAVAILABLE,
+                None,
+                capability_limitations=(
+                    'Compatible PR156, PR157, and PR158 Java artifacts are required for code intelligence.',
+                ),
+                incompatible=any(isinstance(item, Mapping) for item in java_artifacts),
             )
 
         build_targets_available = self.resolver.has_kind(KnowledgeKind.BUILD_TARGET)
