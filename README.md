@@ -202,6 +202,24 @@ supported surface and compatibility policy.
 M2 adds opt-in, source-free phase measurement to the normal analysis path without
 changing its stdout or semantic outputs:
 
+Project-local CPU scaling is opt-in and uses spawn-safe worker processes. Each
+worker owns its analyzer registry and Java parser; the parent retains dependency
+scheduling, recovery checkpoints, canonical integration, global reductions, and
+snapshot publication:
+
+```text
+atlas analyze . --executor serial --workers 1
+atlas analyze . --executor process --workers 2
+atlas analyze . --executor process --workers 4
+atlas analyze . --executor process --workers 8
+```
+
+`serial` is the deterministic reference. `auto` preserves the earlier CLI behavior,
+including legacy thread execution when more than one worker is requested without an
+explicit executor. CPU scaling measurements should use `process`; process-worker CPU
+and aggregate memory require process-tree observation rather than parent-only M2
+samples.
+
 ```text
 atlas analyze . --profile
 atlas analyze . --profile-output .atlas/measurements/atlas-profile.json

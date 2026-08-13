@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +27,46 @@ from moughorai.java_code_intelligence.code_graph import (
     code_graph_from_dict,
     code_graph_to_dict,
 )
+from moughorai.python_semantics import PythonModule
 from moughorai.security_intelligence import SecurityProducerReport
 
 
 _DOCUMENT_MARKER = "atlas.semantic-document.v1"
+
+
+def encode_analysis_result_bytes(value: Any) -> bytes:
+    """Encode one project result as canonical, source-free transport bytes."""
+    encoded = encode_analysis_result(value)
+    if not isinstance(encoded, Mapping) or encoded.get("$type") != _DOCUMENT_MARKER:
+        raise TypeError(
+            "process project analysis requires an Atlas SemanticDocument result"
+        )
+    try:
+        return json.dumps(
+            encoded,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("project analysis result is not canonical JSON") from exc
+
+
+def decode_analysis_result_bytes(value: bytes) -> SemanticDocument:
+    """Decode canonical project transport bytes through the recovery contract."""
+    if not isinstance(value, bytes):
+        raise TypeError("project analysis transport payload must be bytes")
+    try:
+        encoded = json.loads(value.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("project analysis transport payload is invalid") from exc
+    decoded = decode_analysis_result(encoded)
+    if not isinstance(decoded, SemanticDocument):
+        raise TypeError(
+            "project analysis transport payload is not an Atlas SemanticDocument"
+        )
+    return decoded
 
 
 def encode_analysis_result(value: Any) -> Any:
@@ -66,6 +103,17 @@ def encode_analysis_result(value: Any) -> Any:
             value.get_artifact("java_architecture_graph")
         ),
     }
+    if "python_modules" in value.artifacts:
+        encoded["python_modules"] = [
+            {
+                "name": item.name,
+                "source": str(item.source),
+                "imports": list(item.imports),
+                "docstring": item.docstring,
+            }
+            for item in value.get_artifact("python_modules", ())
+            if isinstance(item, PythonModule)
+        ]
     security_report = _encode_security_producer_report(
         value.get_artifact("security_producer_report")
     )
@@ -92,11 +140,14 @@ def decode_analysis_result(value: Any) -> Any:
     """Restore semantic results and pass through pre-PR121 persisted values."""
     if not isinstance(value, Mapping) or value.get("$type") != _DOCUMENT_MARKER:
         return value
+    metadata = dict(value.get("metadata", {}))
+    if isinstance(metadata.get("dependencies"), list):
+        metadata["dependencies"] = tuple(metadata["dependencies"])
     document = SemanticDocument(
         language=str(value["language"]),
         source="",
         syntax_tree=(),
-        metadata=dict(value.get("metadata", {})),
+        metadata=metadata,
     )
     document = document.with_artifact(
         "global_symbols",
@@ -121,6 +172,20 @@ def decode_analysis_result(value: Any) -> Any:
             for item in value.get("declared_dependencies", ())
         ),
     )
+    if "python_modules" in value:
+        document = document.with_artifact(
+            "python_modules",
+            tuple(
+                PythonModule(
+                    str(item["name"]),
+                    Path(str(item["source"])),
+                    tuple(map(str, item.get("imports", ()))),
+                    str(item.get("docstring", "")),
+                )
+                for item in value["python_modules"]
+                if isinstance(item, Mapping)
+            ),
+        )
     raw_architecture = value.get("java_architecture_graph")
     if isinstance(raw_architecture, Mapping):
         document = document.with_artifact(

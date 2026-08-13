@@ -685,6 +685,7 @@ def _call_site_row(
         tuple(reasons[index] for index in _refs(
             row[12], reasons, 'request limitation references',
         )),
+        _cache_transport_validation=True,
     )
     rebuilt = CallSiteEvidence.create(
         request,

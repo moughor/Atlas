@@ -1,5 +1,19 @@
 # Changelog
 
+## PERF1 deterministic process project extraction
+
+- Added opt-in `atlas analyze --executor process --workers N` execution with
+  project-sized Windows-spawn-safe tasks and one analyzer registry/Java parser per
+  worker process.
+- Reused the existing dependency-ready scheduler, failure propagation, recovery
+  checkpoints, and parent-only canonical integration; completion order, worker PID,
+  and timings never enter semantic output.
+- Transported project results through canonical source-free PR121/PR156/PR157
+  persistence bytes. PR158 test evidence and reachability remain parent-side global
+  reductions after callable/code-graph merge.
+- Retained serial execution as the deterministic reference and legacy thread mode
+  for compatibility; process execution is explicit and supports workers 1/2/4/8.
+
 ## PR145 Atlas runtime dependency ratchet
 
 - Replaced the remaining `prompts.semantic` compatibility-facade import with
