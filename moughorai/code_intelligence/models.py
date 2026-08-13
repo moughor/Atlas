@@ -8,6 +8,10 @@ from enum import Enum
 import hashlib
 import json
 
+from moughorai.java_code_intelligence.call_sites import (
+    CallResolutionState,
+    InvocationKind,
+)
 from moughorai.java_code_intelligence.code_graph import CodeGraphEdgeKind
 from moughorai.java_code_intelligence.models import (
     CallableKind,
@@ -306,6 +310,164 @@ class BoundedRelationships:
             "total_count": self.total_count,
             "included_count": len(self.items),
             "omitted_count": self.omitted_count,
+            "items": [item.to_dict() for item in self.items],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguousCallGroup:
+    """Bounded developer presentation for one conservative source call site."""
+
+    canonical_source: str
+    project: str
+    location: CodeSourceReference
+    producer_evidence_id: str
+    invocation_kind: InvocationKind
+    resolution_state: CallResolutionState
+    subject_relative_role: CodeRelationshipRole
+    confidence: CodePathConfidence
+    edge_kinds: tuple[CodeGraphEdgeKind, ...]
+    total_candidate_count: int
+    included_candidate_ids: tuple[str, ...]
+    limitations: tuple[str, ...] = ()
+    relation: str = "calls"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "canonical_source", _text(
+            self.canonical_source, "ambiguous call caller", 256,
+        ))
+        object.__setattr__(self, "project", _text(
+            self.project, "ambiguous call project", 256,
+        ))
+        if not isinstance(self.location, CodeSourceReference):
+            raise TypeError("ambiguous call source reference is invalid")
+        evidence = _text(
+            self.producer_evidence_id, "ambiguous call evidence ID", 96,
+        )
+        if not evidence.startswith("evidence:") or len(evidence) != 73:
+            raise ValueError("ambiguous call evidence ID is malformed")
+        if not isinstance(self.invocation_kind, InvocationKind):
+            raise TypeError("ambiguous call invocation kind is invalid")
+        if self.invocation_kind is InvocationKind.METHOD_REFERENCE:
+            raise ValueError("method references cannot be ambiguous execution groups")
+        if self.resolution_state not in {
+            CallResolutionState.AMBIGUOUS,
+            CallResolutionState.POLYMORPHIC,
+        }:
+            raise ValueError("ambiguous call group requires a conservative state")
+        if self.subject_relative_role not in {
+            CodeRelationshipRole.CALLER_OF_SUBJECT,
+            CodeRelationshipRole.CALLEE_OF_SUBJECT,
+        }:
+            raise ValueError("ambiguous call group requires a direct relationship role")
+        if self.confidence is not CodePathConfidence.CONSERVATIVE_REPRESENTED_PATH:
+            raise ValueError("ambiguous call group confidence must remain conservative")
+        edge_kinds = tuple(sorted(set(self.edge_kinds), key=lambda item: item.value))
+        if not edge_kinds or any(
+            item not in _CONSERVATIVE_KINDS for item in edge_kinds
+        ):
+            raise ValueError("ambiguous call group edge kinds must remain conservative")
+        total = _non_negative(self.total_candidate_count, "candidate projection total")
+        candidates = _strings(
+            self.included_candidate_ids, "included candidate target",
+        )
+        if total < len(candidates):
+            raise ValueError("ambiguous call candidate counts are inconsistent")
+        if self.relation != "calls":
+            raise ValueError("canonical Java code relationship must be calls")
+        object.__setattr__(self, "producer_evidence_id", evidence)
+        object.__setattr__(self, "edge_kinds", edge_kinds)
+        object.__setattr__(self, "included_candidate_ids", candidates)
+        object.__setattr__(self, "limitations", _strings(
+            self.limitations, "ambiguous call limitation",
+        ))
+
+    @property
+    def included_candidate_count(self) -> int:
+        return len(self.included_candidate_ids)
+
+    @property
+    def omitted_candidate_count(self) -> int:
+        return self.total_candidate_count - self.included_candidate_count
+
+    @property
+    def canonical_direction(self) -> str:
+        return "caller_to_callee"
+
+    @property
+    def sort_key(self) -> tuple[object, ...]:
+        return (
+            self.location.compact,
+            self.canonical_source,
+            self.producer_evidence_id,
+            self.invocation_kind.value,
+            self.resolution_state.value,
+            self.subject_relative_role.value,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "canonical_source": self.canonical_source,
+            "project": self.project,
+            "canonical_direction": self.canonical_direction,
+            "relation": self.relation,
+            "subject_relative_role": self.subject_relative_role.value,
+            "source_ref": self.location.compact,
+            "producer_evidence_id": self.producer_evidence_id,
+            "invocation_kind": self.invocation_kind.value,
+            "resolution_state": self.resolution_state.value,
+            "confidence": self.confidence.value,
+            "edge_kinds": [item.value for item in self.edge_kinds],
+            "total_candidate_count": self.total_candidate_count,
+            "included_candidate_count": self.included_candidate_count,
+            "omitted_candidate_count": self.omitted_candidate_count,
+            "included_candidate_ids": list(self.included_candidate_ids),
+            "limitations": list(self.limitations),
+            "runtime_invocation_proven": False,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedAmbiguousCallGroups:
+    call_site_count: int
+    candidate_projection_count: int
+    items: tuple[AmbiguousCallGroup, ...] = ()
+
+    def __post_init__(self) -> None:
+        call_sites = _non_negative(self.call_site_count, "conservative call-site total")
+        projections = _non_negative(
+            self.candidate_projection_count, "candidate projection total",
+        )
+        raw_items = tuple(self.items)
+        if any(not isinstance(item, AmbiguousCallGroup) for item in raw_items):
+            raise TypeError("bounded ambiguous calls contain invalid groups")
+        items = tuple(sorted(raw_items, key=lambda item: item.sort_key))
+        if call_sites < len(items):
+            raise ValueError("bounded ambiguous call-site total is inconsistent")
+        if projections < sum(item.total_candidate_count for item in items):
+            raise ValueError("bounded candidate projection total is inconsistent")
+        object.__setattr__(self, "items", items)
+
+    @property
+    def omitted_call_site_count(self) -> int:
+        return self.call_site_count - len(self.items)
+
+    @property
+    def included_candidate_count(self) -> int:
+        return sum(item.included_candidate_count for item in self.items)
+
+    @property
+    def omitted_candidate_count(self) -> int:
+        return self.candidate_projection_count - self.included_candidate_count
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "call_site_count": self.call_site_count,
+            "included_call_site_count": len(self.items),
+            "omitted_call_site_count": self.omitted_call_site_count,
+            "candidate_projection_count": self.candidate_projection_count,
+            "included_candidate_count": self.included_candidate_count,
+            "omitted_candidate_count": self.omitted_candidate_count,
             "items": [item.to_dict() for item in self.items],
         }
 
@@ -629,6 +791,12 @@ class JavaCodeIntelligenceReport:
     general_limitations: tuple[str, ...] = ()
     producer_version: str = CODE_INTELLIGENCE_PRODUCER
     schema_version: int = CODE_INTELLIGENCE_SCHEMA_VERSION
+    direct_caller_conservative_groups: BoundedAmbiguousCallGroups = (
+        BoundedAmbiguousCallGroups(0, 0)
+    )
+    direct_callee_conservative_groups: BoundedAmbiguousCallGroups = (
+        BoundedAmbiguousCallGroups(0, 0)
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.subject, CodeSubject):
@@ -648,6 +816,19 @@ class JavaCodeIntelligenceReport:
         )
         if any(not isinstance(item, (BoundedRelationships, BoundedPaths)) for item in bounded):
             raise TypeError("code intelligence bounded section is invalid")
+        groups = (
+            self.direct_caller_conservative_groups,
+            self.direct_callee_conservative_groups,
+        )
+        if any(not isinstance(item, BoundedAmbiguousCallGroups) for item in groups):
+            raise TypeError("code intelligence conservative call groups are invalid")
+        if (
+            self.direct_caller_conservative_groups.candidate_projection_count
+            != self.direct_callers_conservative.total_count
+            or self.direct_callee_conservative_groups.candidate_projection_count
+            != self.direct_callees_conservative.total_count
+        ):
+            raise ValueError("grouped and machine-level conservative counts disagree")
         object.__setattr__(self, "limitations", tuple(sorted(self.limitations)))
         capabilities = tuple(sorted(
             self.capability_availability, key=lambda item: item.name,
