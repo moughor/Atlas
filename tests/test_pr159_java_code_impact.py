@@ -38,7 +38,11 @@ from moughorai.java_code_intelligence.code_graph import (
 from moughorai.java_code_intelligence.persistence import callable_index_from_dict
 from moughorai.knowledge_graph import KnowledgeGraph, KnowledgeKind
 from moughorai.llm import LlmClient, LlmProviderError, RetryPolicy, ScriptedLlmProvider
-from moughorai.semantic_snapshot import AtlasSemanticSnapshot
+from moughorai.semantic_snapshot import (
+    AtlasSemanticSnapshot,
+    SemanticSnapshotStore,
+    SnapshotResolver,
+)
 from moughorai.structured_explanation import (
     ExplanationRequest,
     StructuredExplanationService,
@@ -50,6 +54,7 @@ from moughorai.workspace import (
     ProjectRunStatus,
     WorkspaceRunReport,
     WorkspaceService,
+    Workspace,
 )
 
 
@@ -697,3 +702,61 @@ def test_code_impact_cli_uses_existing_snapshot_without_source_output(
     }
     assert MAIN_SOURCE not in result.stdout
     assert str(pr159_fixture['root'].resolve()) not in result.stdout
+
+
+def test_pr160_active_resolution_preserves_pr159_code_impact_stdout(
+    pr159_fixture,
+    tmp_path,
+) -> None:
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    root = pr159_fixture['root']
+    external_store = SemanticSnapshotStore(
+        Workspace(root, ()),
+        directory=tmp_path / 'saved' / 'ass',
+    )
+    external_store.save(pr159_fixture['snapshot'])
+    saved = external_store.latest_path
+
+    explicit = CliRunner().invoke(
+        atlas_cli.app,
+        (
+            'code-impact',
+            changed.canonical_subject_id,
+            str(root),
+            '--snapshot',
+            str(saved),
+            '--project',
+            'app',
+            '--depth',
+            '2',
+            '--limit',
+            '2',
+            '--json',
+        ),
+    )
+    SnapshotResolver(root).activate(saved)
+    active = CliRunner().invoke(
+        atlas_cli.app,
+        (
+            'code-impact',
+            changed.canonical_subject_id,
+            str(root),
+            '--project',
+            'app',
+            '--depth',
+            '2',
+            '--limit',
+            '2',
+            '--json',
+        ),
+    )
+
+    assert explicit.exit_code == active.exit_code == 0
+    assert explicit.stdout == active.stdout
+    assert json.loads(active.stdout)['report']['direction_contract'] == {
+        'canonical_direction': 'caller_to_callee',
+        'canonical_relation': 'calls',
+        'impact_traversal_direction': 'reverse_upstream',
+    }
+    assert 'snapshot-resolution: explicit' in explicit.stderr
+    assert 'snapshot-resolution: configured-active' in active.stderr

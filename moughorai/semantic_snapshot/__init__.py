@@ -7,6 +7,14 @@ from .models import (
     SemanticSnapshotError,
 )
 from .store import SemanticSnapshotStore
+from .resolution import (
+    ACTIVE_SNAPSHOT_FORMAT,
+    ACTIVE_SNAPSHOT_REGISTRATION,
+    ACTIVE_SNAPSHOT_SCHEMA_VERSION,
+    SnapshotResolution,
+    SnapshotResolutionMethod,
+    SnapshotResolver,
+)
 
 __all__ = [
     "WorkspaceSemanticContext",
@@ -14,4 +22,10 @@ __all__ = [
     "AtlasSemanticSnapshot",
     "SemanticSnapshotError",
     "SemanticSnapshotStore",
+    "ACTIVE_SNAPSHOT_FORMAT",
+    "ACTIVE_SNAPSHOT_REGISTRATION",
+    "ACTIVE_SNAPSHOT_SCHEMA_VERSION",
+    "SnapshotResolution",
+    "SnapshotResolutionMethod",
+    "SnapshotResolver",
 ]
