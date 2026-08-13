@@ -37,7 +37,12 @@ from .measurement import (
 from .adaptive_scheduler import AdaptiveWorkspaceScheduler
 from .governance import GovernanceAuditLog, GovernanceError
 from .structured_logging import LogFormat, LogLevel, configure_logging, get_logger, log_event
-from .semantic_snapshot import SemanticSnapshotError, SemanticSnapshotStore
+from .semantic_snapshot import (
+    SemanticSnapshotError,
+    SemanticSnapshotStore,
+    SnapshotResolution,
+    SnapshotResolver,
+)
 from .knowledge_graph import KnowledgeKind, KnowledgeRelation
 from .code_intelligence import (
     CodeIntelligenceConfiguration,
@@ -131,7 +136,13 @@ ai_app = typer.Typer(
     help="Reason over verified Atlas semantic snapshots.",
     no_args_is_help=True,
 )
+snapshot_app = typer.Typer(
+    name="snapshot",
+    help="Resolve and register verified semantic snapshots for query commands.",
+    no_args_is_help=True,
+)
 app.add_typer(ai_app, name="ai")
+app.add_typer(snapshot_app, name="snapshot")
 _logger = get_logger("cli")
 
 
@@ -629,15 +640,94 @@ def _load_ai_snapshot(
     # Snapshot-backed AI commands must not rediscover or rescan the repository.
     # A minimal workspace supplies only the durable ASS location; all repository
     # facts come from the checksum-verified snapshot itself.
-    workspace = Workspace(root.expanduser().resolve(), ())
-    store = SemanticSnapshotStore(workspace, measurement=measurement)
-    loaded = store.load(snapshot)
-    if loaded is None:
-        target = snapshot or store.latest_path
-        raise SemanticSnapshotError(
-            f"semantic snapshot not found: {target}; run analysis snapshot creation first"
-        )
-    return loaded
+    resolution = SnapshotResolver(
+        root,
+        measurement=measurement,
+    ).resolve(snapshot)
+    _emit_snapshot_resolution(resolution)
+    return resolution.snapshot
+
+
+def _emit_snapshot_resolution(resolution: SnapshotResolution) -> None:
+    typer.echo(f"snapshot: {resolution.snapshot_path}", err=True)
+    typer.echo(f"snapshot-resolution: {resolution.method.value}", err=True)
+    typer.echo(f"snapshot-id: {resolution.snapshot.snapshot_id}", err=True)
+
+
+@snapshot_app.command("activate")
+def snapshot_activate_command(
+    snapshot: Annotated[
+        Path,
+        typer.Argument(help="Exact checksum-verified .ass snapshot to activate."),
+    ],
+    root: Annotated[
+        Path,
+        typer.Option("--root", help="Workspace root bound to this registration."),
+    ] = Path("."),
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print deterministic registration metadata."),
+    ] = False,
+) -> None:
+    """Persist one workspace-local active snapshot for read-only queries."""
+
+    def operation() -> None:
+        resolver = SnapshotResolver(root)
+        resolution = resolver.activate(snapshot)
+        payload = {
+            **resolution.to_dict(),
+            "registration_path": resolver.registration_path.as_posix(),
+        }
+        if json_output:
+            typer.echo(json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ))
+            return
+        typer.echo(f"snapshot: {resolution.snapshot_path}")
+        typer.echo(f"resolution: {resolution.method.value}")
+        typer.echo(f"snapshot-id: {resolution.snapshot.snapshot_id}")
+        typer.echo(f"workspace: {resolution.workspace_root}")
+        typer.echo(f"registration: {resolver.registration_path}")
+
+    _run_command(operation)
+
+
+@snapshot_app.command("status")
+def snapshot_status_command(
+    root: Annotated[
+        Path,
+        typer.Option("--root", help="Workspace root whose query snapshot is resolved."),
+    ] = Path("."),
+    snapshot: Annotated[
+        Path | None,
+        typer.Option("--snapshot", help="Resolve one explicit snapshot instead."),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print deterministic resolution metadata."),
+    ] = False,
+) -> None:
+    """Show the exact validated snapshot a query command will consume."""
+
+    def operation() -> None:
+        resolution = SnapshotResolver(root).resolve(snapshot)
+        if json_output:
+            typer.echo(json.dumps(
+                resolution.to_dict(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ))
+            return
+        typer.echo(f"snapshot: {resolution.snapshot_path}")
+        typer.echo(f"resolution: {resolution.method.value}")
+        typer.echo(f"snapshot-id: {resolution.snapshot.snapshot_id}")
+        typer.echo(f"workspace: {resolution.workspace_root}")
+
+    _run_command(operation)
 
 
 @app.command("change-review")
