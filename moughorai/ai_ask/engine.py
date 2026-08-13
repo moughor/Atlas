@@ -10,7 +10,7 @@ from moughorai.ai_memory import (
     ConversationRole,
     ConversationTurnStatus,
 )
-from moughorai.llm import LlmClient
+from moughorai.llm import LlmClient, LlmProviderError
 from moughorai.measurement import MeasurementSession
 from moughorai.prompts import PromptTemplateError, SemanticPromptBuilder
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
@@ -268,6 +268,16 @@ class AskResult:
             and section.content.get("resolution_origin") == "explicit"
             for section in self.context.sections
         )
+        code_subject = any(
+            section.section_id == 'code_impact'
+            and section.capability == 'code_impact'
+            and isinstance(section.content.get('report'), Mapping)
+            and isinstance(section.content['report'].get('subject'), Mapping)
+            and section.content['report']['subject'].get('canonical_id')
+            in self.context.subject_ids
+            for section in self.context.sections
+        )
+        explicit_subject = explicit_subject or code_subject
         searchable = {
             ChatCapabilityState.AVAILABLE,
             ChatCapabilityState.PARTIAL,
@@ -287,11 +297,15 @@ class AskResult:
         }
         if self.context.subject_ids:
             if (
-                capabilities.get("canonical_explanation") not in explainable
-                or "canonical_explanation" not in retained_capabilities
+                not code_subject
+                and (
+                    capabilities.get("canonical_explanation") not in explainable
+                    or "canonical_explanation" not in retained_capabilities
+                )
             ):
                 return False
         for name in (
+            'code_impact',
             "impact_prediction",
             "refactoring_advisor",
             "security_intelligence",
@@ -553,7 +567,68 @@ class AskEngine:
                 consumer="engineering-chat-provider",
                 sample_key=context.context_digest,
             ) as measured:
-                response = self.client.complete(prompt.request)
+                try:
+                    response = self.client.complete(prompt.request)
+                except LlmProviderError as provider_error:
+                    if not _eligible_for_deterministic_code_impact_fallback(
+                        context
+                    ):
+                        raise
+                    code_fallback = _deterministic_code_impact_fallback(context)
+                    impact_fallback = _deterministic_impact_fallback(context)
+                    fallback_parts = tuple(
+                        item for item in (code_fallback, impact_fallback) if item
+                    )
+                    if not fallback_parts:
+                        raise
+                    fallback_answer = '\n\n'.join(fallback_parts)
+                    fallback_citations = validate_citations(
+                        fallback_answer,
+                        (
+                            item.evidence_id
+                            for item in context.evidence_index.records
+                        ),
+                    )
+                    fallback_limitations = {
+                        *context.limitations,
+                        'The provider failed before returning a grounded answer; '
+                        'Atlas returned authoritative deterministic code-impact '
+                        f'evidence ({type(provider_error).__name__}).',
+                    }
+                    fallback_result = _code_provider_failure_result(
+                        context=context,
+                        snapshot=snapshot,
+                        conversation_id=conversation_id,
+                        answer=fallback_answer,
+                        citations=fallback_citations,
+                        provider=provider_name,
+                        model=provider_model,
+                        limitations=tuple(fallback_limitations),
+                    )
+                    if self.memory and turn is not None:
+                        summary = fallback_result.grounding_summary
+                        references = {
+                            'citation_status': (
+                                'valid' if fallback_result.grounded else 'invalid'
+                            ),
+                            'context': context.context_digest,
+                            'kind': 'answer',
+                            'snapshot': snapshot.snapshot_id,
+                            'turn': str(turn.id),
+                        }
+                        if summary is not None:
+                            references.update(
+                                _grounding_summary_references(summary)
+                            )
+                        self.memory.complete_turn(
+                            turn.id,
+                            provider=provider_name,
+                            model=provider_model,
+                            limitations=fallback_limitations,
+                            message_content=fallback_answer,
+                            message_references=references,
+                        )
+                    return fallback_result
                 measured.add_bytes(len(response.text.encode("utf-8")))
             response_required_redaction = contains_unsafe_chat_content(
                 response.text
@@ -601,6 +676,30 @@ class AskEngine:
             )
             provider_grounded = provider_result.grounded
             fallback_used = False
+            if (
+                not provider_grounded
+                and _eligible_for_deterministic_code_impact_fallback(context)
+            ):
+                code_fallback = _deterministic_code_impact_fallback(context)
+                impact_fallback = _deterministic_impact_fallback(context)
+                fallback_parts = tuple(
+                    item for item in (code_fallback, impact_fallback) if item
+                )
+                if fallback_parts:
+                    answer = '\n\n'.join(fallback_parts)
+                    citations = validate_citations(
+                        answer,
+                        (
+                            item.evidence_id
+                            for item in context.evidence_index.records
+                        ),
+                    )
+                    limitations.add(
+                        'Provider grounding failed; Atlas discarded the provider '
+                        'interpretation and returned authoritative deterministic '
+                        'code-impact evidence.'
+                    )
+                    fallback_used = True
             if (
                 not provider_grounded
                 and _eligible_for_deterministic_impact_fallback(context)
@@ -717,7 +816,48 @@ class AskEngine:
         )
 
 
+def _code_provider_failure_result(
+    *,
+    context: ChatContext,
+    snapshot: AtlasSemanticSnapshot,
+    conversation_id: int | None,
+    answer: str,
+    citations: CitationValidation,
+    provider: str,
+    model: str,
+    limitations: tuple[str, ...],
+) -> AskResult:
+    without_summary = AskResult(
+        answer,
+        snapshot.snapshot_id,
+        conversation_id,
+        context,
+        citations,
+        provider,
+        model,
+        limitations,
+    )
+    summary = _derive_grounding_summary(
+        context,
+        provider_grounded=False,
+        delivered_result=without_summary,
+        fallback_used=True,
+    )
+    return AskResult(
+        answer,
+        snapshot.snapshot_id,
+        conversation_id,
+        context,
+        citations,
+        provider,
+        model,
+        limitations,
+        summary,
+    )
+
+
 _OPTIONAL_ANSWER_CAPABILITIES = (
+    'code_impact',
     "impact_prediction",
     "refactoring_advisor",
     "security_intelligence",
@@ -732,7 +872,20 @@ def _derive_grounding_summary(
     fallback_used: bool,
 ) -> GroundingSummary:
     delivered_answer_grounded = provider_grounded
-    if fallback_used:
+    if fallback_used and _eligible_for_deterministic_code_impact_fallback(context):
+        fallback_evidence = {
+            evidence_id
+            for section in context.sections
+            if section.section_id in {'code_impact', 'impact_aggregate'}
+            for evidence_id in section.evidence_ids
+        }
+        delivered_answer_grounded = (
+            delivered_result.citations.valid
+            and bool(fallback_evidence.intersection(
+                delivered_result.citations.accepted_evidence_ids
+            ))
+        )
+    elif fallback_used:
         aggregate_evidence = {
             evidence_id
             for section in context.sections
@@ -766,6 +919,12 @@ def _derive_grounding_summary(
                 and capability.name == "impact_prediction"
             )
         )
+        if fallback_used:
+            delivered = _fallback_capability_delivered(
+                context,
+                capability.name,
+                delivered_result.citations.accepted_evidence_ids,
+            )
         statuses.append(CapabilityGroundingStatus(
             capability.name,
             requested=True,
@@ -791,6 +950,27 @@ def _derive_grounding_summary(
     )
 
 
+def _fallback_capability_delivered(
+    context: ChatContext,
+    capability: str,
+    accepted_evidence_ids,
+) -> bool:
+    section_ids = {
+        'code_impact': frozenset({'code_impact'}),
+        'impact_prediction': frozenset({'impact_aggregate'}),
+    }.get(capability, frozenset())
+    if not section_ids:
+        return False
+    evidence = {
+        evidence_id
+        for section in context.sections
+        if section.section_id in section_ids
+        and section.capability == capability
+        for evidence_id in section.evidence_ids
+    }
+    return bool(evidence.intersection(accepted_evidence_ids))
+
+
 def _grounding_summary_references(
     summary: GroundingSummary,
 ) -> dict[str, str]:
@@ -809,7 +989,212 @@ def _grounding_summary_references(
     }
 
 
+def _eligible_for_deterministic_code_impact_fallback(
+    context: ChatContext,
+) -> bool:
+    capability = next((
+        item for item in context.capabilities if item.name == 'code_impact'
+    ), None)
+    if (
+        capability is None
+        or capability.state
+        not in {ChatCapabilityState.AVAILABLE, ChatCapabilityState.PARTIAL}
+    ):
+        return False
+    section = next((
+        item for item in context.sections
+        if item.section_id == 'code_impact'
+        and item.capability == 'code_impact'
+    ), None)
+    if section is None or not section.evidence_ids:
+        return False
+    available = {
+        record.evidence_id for record in context.evidence_index.records
+    }
+    if not set(section.evidence_ids).issubset(available):
+        return False
+    return isinstance(section.content.get('report'), Mapping)
+
+
+def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
+    section = next((
+        item for item in context.sections
+        if item.section_id == 'code_impact'
+    ), None)
+    if section is None or not section.evidence_ids:
+        return None
+    report = section.content.get('report')
+    if not isinstance(report, Mapping):
+        return None
+    subject = report.get('subject')
+    upstream = report.get('upstream_change_impact')
+    tests = report.get('represented_test_intelligence')
+    if not isinstance(subject, Mapping) or not isinstance(upstream, Mapping):
+        return None
+    canonical_id = str(subject.get('canonical_id', 'unavailable'))
+    display_name = str(subject.get('display_name', canonical_id))
+    direct_upstream = upstream.get('direct')
+    transitive_upstream = upstream.get('transitive')
+    traversal = upstream.get('traversal')
+    direct_count = _bounded_code_total(direct_upstream)
+    transitive_count = _bounded_code_total(transitive_upstream)
+    callers = report.get('direct_callers')
+    callees = report.get('direct_callees')
+    caller_count = _code_relationship_group_total(callers)
+    callee_count = _code_relationship_group_total(callees)
+    lines = [
+        'Atlas deterministic Java code-impact answer',
+        '',
+        'Provider grounding failed, so the provider interpretation was discarded.',
+        '',
+        f'Subject: {display_name}',
+        f'Canonical ID: {canonical_id}',
+        'Direction contract: canonical CALLER -> CALLEE; impact traversal is reverse upstream from the changed callee.',
+        '',
+        f'Direct represented callers: {caller_count}.',
+        f'Direct represented callees: {callee_count}.',
+        f'Upstream impact: {direct_count} direct and {transitive_count} transitive.',
+    ]
+    _append_code_relationships(lines, 'caller', callers)
+    _append_code_relationships(lines, 'callee', callees)
+    _append_code_paths(lines, 'direct upstream', direct_upstream)
+    _append_code_paths(lines, 'transitive upstream', transitive_upstream)
+    if isinstance(traversal, Mapping):
+        visited_nodes = traversal.get('visited_node_count', 0)
+        visited_edges = traversal.get('visited_edge_count', 0)
+        truncated = str(traversal.get('truncated') is True).lower()
+        lines.append(
+            f'Traversal metrics: visited nodes={visited_nodes}, '
+            f'visited edges={visited_edges}, truncated={truncated}.'
+        )
+    lines.extend(('', 'Represented TEST reachability:'))
+    if isinstance(tests, Mapping):
+        direct_tests = _bounded_code_total(tests.get('direct_test_callers'))
+        high_tests = _bounded_code_total(tests.get('high_confidence_paths'))
+        possible_tests = _bounded_code_total(tests.get('possible_paths'))
+        lines.extend((
+            f'- Direct represented TEST callers: {direct_tests}.',
+            f'- High-confidence TEST-root paths: {high_tests}.',
+            f'- Possible TEST-root paths: {possible_tests}.',
+        ))
+        _append_code_paths(
+            lines,
+            'high-confidence represented TEST path',
+            tests.get('high_confidence_paths'),
+        )
+        _append_code_paths(
+            lines,
+            'possible represented TEST path',
+            tests.get('possible_paths'),
+        )
+        negative = tests.get('negative_statement')
+        if negative:
+            lines.append(f'- {negative}')
+    lines.extend((
+        '- This is represented TEST reachability, not runtime test coverage.',
+        '',
+        'What Atlas cannot prove:',
+        '- Runtime invocation, complete runtime dispatch, reflection, dependency-injection wiring, or framework dispatch.',
+        '- Runtime test execution or behavioral coverage from represented source reachability alone.',
+    ))
+    raw_limitations = report.get('limitations', ())
+    if isinstance(raw_limitations, Sequence) and not isinstance(
+        raw_limitations, (str, bytes, bytearray)
+    ):
+        for item in raw_limitations[:8]:
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(
+                f"- {item.get('category', 'limitation')}: "
+                f"total={item.get('total_count', 0)}, "
+                f"included={item.get('included_count', 0)}, "
+                f"omitted={item.get('omitted_count', 0)}."
+            )
+    limitations = report.get('general_limitations', ())
+    if isinstance(limitations, Sequence) and not isinstance(
+        limitations, (str, bytes, bytearray)
+    ):
+        lines.extend(f'- {item}' for item in limitations[:6])
+    lines.extend(('', 'Grounding evidence: ' + ' '.join(section.evidence_ids)))
+    return '\n'.join(lines)
+
+
+def _bounded_code_total(value: object) -> int:
+    if not isinstance(value, Mapping):
+        return 0
+    total = value.get('total_count', 0)
+    return total if isinstance(total, int) and not isinstance(total, bool) else 0
+
+
+def _code_relationship_group_total(value: object) -> int:
+    if not isinstance(value, Mapping):
+        return 0
+    return sum(
+        _bounded_code_total(value.get(name))
+        for name in ('high_confidence', 'conservative')
+    )
+
+
+def _append_code_relationships(
+    lines: list[str],
+    label: str,
+    value: object,
+) -> None:
+    if not isinstance(value, Mapping):
+        return
+    for group in ('high_confidence', 'conservative', 'method_references'):
+        section = value.get(group)
+        if not isinstance(section, Mapping):
+            continue
+        raw_items = section.get('items', ())
+        if not isinstance(raw_items, Sequence) or isinstance(
+            raw_items, (str, bytes, bytearray)
+        ):
+            continue
+        for item in raw_items:
+            if not isinstance(item, Mapping):
+                continue
+            source = item.get('canonical_source', 'unavailable')
+            target = item.get('canonical_target', 'unavailable')
+            confidence = item.get('confidence', 'unknown')
+            evidence = item.get('producer_evidence_id', 'unavailable')
+            source_ref = item.get('source_ref', 'unavailable')
+            lines.append(
+                f'- {label} {group}: {source} -> {target}; '
+                f'confidence={confidence}; producer evidence={evidence}; '
+                f'source={source_ref}.'
+            )
+
+
+def _append_code_paths(lines: list[str], label: str, value: object) -> None:
+    if not isinstance(value, Mapping):
+        return
+    raw_items = value.get('items', ())
+    if not isinstance(raw_items, Sequence) or isinstance(
+        raw_items, (str, bytes, bytearray)
+    ):
+        return
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            continue
+        consumer = item.get('consumer_subject_id', 'unavailable')
+        depth = item.get('depth', 0)
+        confidence = item.get('confidence', 'unknown')
+        traversal = item.get('traversal_direction', 'unknown')
+        evidence = item.get('producer_evidence_ids', ())
+        evidence_text = ','.join(map(str, evidence)) if isinstance(
+            evidence, Sequence
+        ) and not isinstance(evidence, (str, bytes, bytearray)) else 'unavailable'
+        lines.append(
+            f'- {label}: consumer={consumer}; depth={depth}; '
+            f'confidence={confidence}; traversal={traversal}; '
+            f'producer evidence={evidence_text}.'
+        )
+
+
 def _eligible_for_deterministic_impact_fallback(context: ChatContext) -> bool:
+    if _eligible_for_deterministic_code_impact_fallback(context):
+        return False
     impact_capability = next(
         (
             capability

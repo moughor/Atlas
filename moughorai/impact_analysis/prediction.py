@@ -11,6 +11,11 @@ import json
 from pathlib import Path
 from types import MappingProxyType
 
+from moughorai.code_intelligence import (
+    CodeIntelligenceConfiguration,
+    JavaCodeIntelligenceResult,
+    JavaCodeIntelligenceService,
+)
 from moughorai.knowledge_graph import (
     KnowledgeEdge,
     KnowledgeGraph,
@@ -188,6 +193,7 @@ class ImpactPredictionService:
         self._snapshot_id = snapshot_id
         self._analyzer_version = analyzer_version
         self._measurement = measurement or MeasurementSession()
+        self._semantic_context = semantic_context
         with self._measurement.scope(
             "impact_prediction.index",
             consumer="impact-prediction",
@@ -264,6 +270,25 @@ class ImpactPredictionService:
 
     def predict(self, request: ImpactPredictionRequest) -> ImpactPredictionResponse:
         return self.analyze(request).response
+
+    def predict_code_impact(
+        self,
+        subject: str,
+        *,
+        kind: str | None = None,
+        project: str | None = None,
+        configuration: CodeIntelligenceConfiguration | None = None,
+    ) -> JavaCodeIntelligenceResult:
+        service = JavaCodeIntelligenceService.from_context(
+            snapshot_id=self._snapshot_id,
+            semantic_context=self._semantic_context,
+        )
+        return service.query(
+            subject,
+            kind=kind,
+            project=project,
+            configuration=configuration,
+        )
 
     def analyze(self, request: ImpactPredictionRequest) -> ImpactPredictionAnalysis:
         """Return the frozen PR136 response and complete PR151 aggregate together."""

@@ -39,6 +39,11 @@ from .governance import GovernanceAuditLog, GovernanceError
 from .structured_logging import LogFormat, LogLevel, configure_logging, get_logger, log_event
 from .semantic_snapshot import SemanticSnapshotError, SemanticSnapshotStore
 from .knowledge_graph import KnowledgeKind, KnowledgeRelation
+from .code_intelligence import (
+    CodeIntelligenceConfiguration,
+    JavaCodeIntelligenceService,
+    render_code_intelligence,
+)
 from .semantic_search import (
     SemanticSearchRequest,
     SemanticSearchService,
@@ -970,7 +975,44 @@ def semantic_search_command(
     _run_command(operation)
 
 
-@app.command("impact")
+@app.command('code-impact')
+def java_code_impact_command(
+    subject: Annotated[str, typer.Argument(help='Exact canonical Java method or constructor ID.')],
+    root: Annotated[Path, typer.Argument(help='Workspace root containing the semantic snapshot.')] = Path('.'),
+    snapshot: Annotated[Path | None, typer.Option('--snapshot', help='Read a specific .ass snapshot instead of latest.ass.')] = None,
+    kind: Annotated[str | None, typer.Option('--kind', help='Constrain to method or constructor.')] = None,
+    project: Annotated[str | None, typer.Option('--project', help='Constrain the owning project.')] = None,
+    depth: Annotated[int, typer.Option('--depth', min=1, max=64, help='Maximum reverse upstream traversal depth.')] = 8,
+    max_nodes: Annotated[int, typer.Option('--max-nodes', min=1, max=100000, help='Maximum callable nodes visited by this bounded query.')] = 4096,
+    limit: Annotated[int, typer.Option('--limit', min=1, max=256, help='Maximum representatives retained per deterministic section.')] = 64,
+    json_output: Annotated[bool, typer.Option('--json', help='Print canonical deterministic JSON.')] = False,
+) -> None:
+    '''Query evidence-backed Java callable impact without rescanning or an LLM.'''
+
+    def operation() -> None:
+        loaded = _load_ai_snapshot(root, snapshot)
+        result = JavaCodeIntelligenceService.from_snapshot(loaded).query(
+            subject,
+            kind=kind,
+            project=project,
+            configuration=CodeIntelligenceConfiguration(
+                max_depth=depth,
+                max_nodes=max_nodes,
+                max_direct_relationships=limit,
+                max_paths_per_section=limit,
+                max_limitation_representatives=min(limit, 16),
+            ),
+        )
+        output = (
+            result.to_json() + '\n'
+            if json_output else render_code_intelligence(result)
+        )
+        typer.echo(output, nl=False)
+
+    _run_command(operation)
+
+
+@app.command('impact')
 def impact_prediction_command(
     subject: Annotated[str, typer.Argument(help="Canonical subject ID or exact repository subject name.")],
     root: Annotated[Path, typer.Argument(help="Workspace root containing the semantic snapshot.")] = Path("."),
