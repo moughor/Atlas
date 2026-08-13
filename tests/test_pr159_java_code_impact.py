@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
 
@@ -94,6 +95,43 @@ class TargetTest {
 '''
 
 
+HIGH_FANOUT_MAIN_SOURCE = '''package fanout;
+class FanoutReference { static void target() {} }
+class FanoutTarget {
+  static void leafOne() {}
+  static void leafTwo() {}
+  static void leafThree() {}
+  static void changed() {
+    leafOne();
+    leafTwo();
+    leafThree();
+    external.Library.call();
+    Class.forName(null);
+    FanoutReference::target;
+  }
+  static void upstreamOne() { changed(); }
+  static void upstreamTwo() { changed(); }
+  static void upstreamThree() { changed(); }
+  static void topOne() { upstreamOne(); }
+  static void topTwo() { upstreamTwo(); }
+  static void topThree() { upstreamThree(); }
+}
+'''
+
+
+HIGH_FANOUT_TEST_SOURCE = '''package fanout;
+@interface Test {}
+class FanoutTargetTest {
+  @Test void directOne() { FanoutTarget.changed(); }
+  @Test void directTwo() { FanoutTarget.changed(); }
+  @Test void directThree() { FanoutTarget.changed(); }
+  @Test void transitiveOne() { FanoutTarget.topOne(); }
+  @Test void transitiveTwo() { FanoutTarget.topTwo(); }
+  @Test void transitiveThree() { FanoutTarget.topThree(); }
+}
+'''
+
+
 @pytest.fixture(scope='module')
 def pr159_fixture(tmp_path_factory):
     root = tmp_path_factory.mktemp('pr159-java-code-impact')
@@ -139,6 +177,46 @@ def pr159_fixture(tmp_path_factory):
         'producer_graph': producer_graph,
         'index_bytes': _bytes(producer_index.to_dict()),
         'graph_bytes': _bytes(producer_graph.to_dict()),
+    }
+
+
+@pytest.fixture(scope='module')
+def pr162_high_fanout_fixture(tmp_path_factory):
+    root = tmp_path_factory.mktemp('pr162-high-fanout-code-impact')
+    project_root = root / 'app'
+    main = project_root / 'src/main/java/fanout/FanoutTarget.java'
+    test = project_root / 'src/test/java/fanout/FanoutTargetTest.java'
+    main.parent.mkdir(parents=True)
+    test.parent.mkdir(parents=True)
+    main.write_text(HIGH_FANOUT_MAIN_SOURCE, encoding='utf-8')
+    test.write_text(HIGH_FANOUT_TEST_SOURCE, encoding='utf-8')
+    (root / 'atlas.yaml').write_text(
+        'projects:\n  - name: app\n    path: app\n',
+        encoding='utf-8',
+    )
+    document = JavaLanguageAnalyzer().analyze(
+        Project('app', project_root),
+        (main, test),
+        {},
+    )
+    run_report = WorkspaceRunReport(
+        (ProjectRun('app', ProjectRunStatus.SUCCEEDED, document),),
+        ('app',),
+        ('app',),
+    )
+    payload = SemanticContextCollector(
+        WorkspaceService(root)
+    ).collect(run_report).context.to_dict()
+    snapshot = AtlasSemanticSnapshot.create(
+        WorkspaceSemanticContext(payload),
+        workspace_fingerprint='pr162-high-fanout-code-impact',
+        analyzer_version='test-pr162/1',
+    )
+    return {
+        'root': root,
+        'snapshot': snapshot,
+        'payload': payload,
+        'index': callable_index_from_dict(payload['java_callable_index']),
     }
 
 
@@ -541,6 +619,176 @@ def _ask_with_context(pr159_fixture, context, outcomes):
         ),
     )
     return result, provider
+
+
+def _nested_evidence_ids(value: object) -> set[str]:
+    result: set[str] = set()
+    if isinstance(value, Mapping):
+        for item in value.values():
+            result.update(_nested_evidence_ids(item))
+    elif isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        for item in value:
+            result.update(_nested_evidence_ids(item))
+    elif isinstance(value, str) and value.startswith('evidence:'):
+        result.add(value)
+    return result
+
+
+def test_default_ask_limit_is_budget_safe_for_high_fanout_code_impact(
+    pr162_high_fanout_fixture,
+) -> None:
+    pr159_fixture = pr162_high_fanout_fixture
+    changed = _entry(pr159_fixture, 'FanoutTarget', 'changed')
+    service = JavaCodeIntelligenceService.from_snapshot(
+        pr159_fixture['snapshot']
+    )
+    full_before = service.query(changed.canonical_subject_id)
+    assert full_before.report is not None
+    full_report = full_before.report
+
+    def build_context():
+        return EngineeringChatContextBuilder().build(
+            pr159_fixture['snapshot'],
+            question=(
+                'If I modify this method, what can be affected? Show direct and '
+                'transitive callers, what it calls, represented tests that reach '
+                'it, confidence, and anything Atlas cannot prove. Never reverse '
+                'call direction.'
+            ),
+            subject=changed.canonical_subject_id,
+            kind='method',
+            project='app',
+            language='java',
+            capabilities=('code_impact',),
+            result_limit=8,
+            token_budget=5_500,
+        )
+
+    first = build_context()
+    second = build_context()
+    assert first.to_json() == second.to_json()
+    assert first.selection.estimated_tokens <= 5_500
+    assert first.selection.estimated_tokens <= first.selection.token_budget
+
+    section = next(
+        item for item in first.sections if item.section_id == 'code_impact'
+    )
+    compact = section.content['report']
+    sections = (
+        (
+            compact['direct_callers']['high_confidence'],
+            full_report.direct_callers_high_confidence,
+        ),
+        (
+            compact['direct_callees']['high_confidence'],
+            full_report.direct_callees_high_confidence,
+        ),
+        (
+            compact['upstream_change_impact']['direct'],
+            full_report.upstream_direct,
+        ),
+        (
+            compact['upstream_change_impact']['transitive'],
+            full_report.upstream_transitive,
+        ),
+        (
+            compact['represented_test_intelligence']['direct_test_callers'],
+            full_report.direct_test_callers,
+        ),
+        (
+            compact['represented_test_intelligence']['high_confidence_paths'],
+            full_report.high_confidence_test_paths,
+        ),
+    )
+    for selected, complete in sections:
+        assert complete.total_count > 2
+        assert selected['total_count'] == complete.total_count
+        assert selected['included_count'] == 2
+        assert selected['omitted_count'] == complete.total_count - 2
+        assert len(selected['items']) == 2
+
+    assert compact['direction_contract'] == {
+        'canonical_direction': 'caller_to_callee',
+        'canonical_relation': 'calls',
+        'impact_traversal_direction': 'reverse_upstream',
+    }
+    assert all(
+        item['relation'] == 'calls'
+        and item['canonical_source'] != item['canonical_target']
+        for side in ('direct_callers', 'direct_callees')
+        for group in compact[side].values()
+        if isinstance(group, Mapping)
+        for item in group.get('items', ())
+    )
+    assert all(
+        item['traversal_direction'] == 'reverse_upstream'
+        and item['canonical_direction'] == 'caller_to_callee'
+        for name in ('direct', 'transitive')
+        for item in compact['upstream_change_impact'][name]['items']
+    )
+    assert all(
+        item['traversal_direction'] == 'forward_test_reachability'
+        and item['canonical_direction'] == 'caller_to_callee'
+        for item in compact['represented_test_intelligence'][
+            'high_confidence_paths'
+        ]['items']
+    )
+    assert compact['represented_test_intelligence'][
+        'runtime_test_coverage_proven'
+    ] is False
+
+    categories = {item['category'] for item in compact['limitations']}
+    assert {'external_sites', 'unsupported_sites', 'method_references'} <= categories
+    assert compact['general_limitations']
+    selected_evidence = set(section.evidence_ids)
+    assert selected_evidence
+    assert _nested_evidence_ids(compact) <= selected_evidence
+    assert selected_evidence == {
+        item.evidence_id for item in first.evidence_index.records
+    }
+
+    def failed_ask(message: str):
+        return AskEngine(
+            LlmClient(
+                ScriptedLlmProvider((LlmProviderError(message),)),
+                RetryPolicy(maximum_attempts=1),
+            ),
+            context_builder=_StaticContextBuilder(first),
+        ).ask(
+            pr159_fixture['snapshot'],
+            AskRequest(
+                'If I modify this method, what can be affected?',
+                subject=changed.canonical_subject_id,
+                kind='method',
+                project='app',
+                language='java',
+                capabilities=('code_impact',),
+                result_limit=8,
+                maximum_input_tokens=20_000,
+            ),
+        )
+
+    failed = failed_ask('provider unavailable')
+    repeated = failed_ask('different provider failure')
+    assert failed.context.context_digest == repeated.context.context_digest
+    assert failed.answer.encode('utf-8') == repeated.answer.encode('utf-8')
+    assert 'CALLER -> CALLEE' in failed.answer
+    assert 'impact traversal is reverse upstream' in failed.answer
+    assert 'Represented TEST reachability:' in failed.answer
+    assert 'external_sites:' in failed.answer
+    assert 'unsupported_sites:' in failed.answer
+    assert failed.grounding_summary is not None
+    assert failed.grounding_summary.provider_grounded is False
+    assert failed.grounding_summary.delivered_answer_grounded is True
+    assert failed.grounding_summary.request_complete is True
+    assert failed.grounding_summary.fallback_used is True
+
+    full_after = JavaCodeIntelligenceService.from_snapshot(
+        pr159_fixture['snapshot']
+    ).query(changed.canonical_subject_id)
+    assert full_before.to_json() == full_after.to_json()
 
 
 def test_ask_context_is_bounded_and_provider_failure_preserves_code_evidence(
