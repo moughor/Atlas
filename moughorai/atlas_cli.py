@@ -46,6 +46,7 @@ from .semantic_snapshot import (
 from .knowledge_graph import KnowledgeKind, KnowledgeRelation
 from .code_intelligence import (
     CodeIntelligenceConfiguration,
+    CodeSubjectResolutionStatus,
     JavaCodeIntelligenceService,
     render_code_intelligence,
 )
@@ -2192,6 +2193,179 @@ def _runtime_statistics_json(session: RepositoryRuntimeSession) -> str:
     )
 
 
+_SESSION_SEARCH_DEFAULT_LIMIT = 10
+_SESSION_SEARCH_MAXIMUM_LIMIT = 20
+_SESSION_SEARCH_CONFIGURATION = CodeIntelligenceConfiguration(
+    max_depth=1,
+    max_nodes=1,
+    max_direct_relationships=1,
+    max_paths_per_section=1,
+    max_limitation_representatives=1,
+    max_resolution_candidates=1,
+    max_candidates_per_call_site=1,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionSearchResult:
+    canonical_subject_id: str
+    project: str | None
+    qualified_name: str
+    kind: str
+    language: str
+    exact_java_method: bool = False
+
+
+class _SessionSubjectDiscovery:
+    '''Bounded, non-semantic selection state for one interactive session.'''
+
+    def __init__(self) -> None:
+        self._results: tuple[_SessionSearchResult, ...] = ()
+
+    @property
+    def results(self) -> tuple[_SessionSearchResult, ...]:
+        return self._results
+
+    def replace(self, results: tuple[_SessionSearchResult, ...]) -> None:
+        if len(results) > _SESSION_SEARCH_MAXIMUM_LIMIT:
+            raise ValueError('session search result state exceeds its bound')
+        self._results = tuple(results)
+
+    def select(self, ordinal: int) -> _SessionSearchResult:
+        if not self._results:
+            raise ValueError('run /search before /use')
+        if ordinal < 1 or ordinal > len(self._results):
+            raise ValueError(
+                f'search result must be between 1 and {len(self._results)}'
+            )
+        return self._results[ordinal - 1]
+
+    def clear(self) -> None:
+        self._results = ()
+
+
+def _parse_session_search(line: str) -> tuple[str, int]:
+    payload = line.removeprefix('/search').strip()
+    if not payload:
+        raise ValueError('usage: /search <text> [limit]')
+    query = payload
+    limit = _SESSION_SEARCH_DEFAULT_LIMIT
+    parts = payload.rsplit(maxsplit=1)
+    if len(parts) == 2:
+        candidate = parts[1]
+        explicit_limit = candidate.startswith('limit=')
+        raw_limit = candidate.removeprefix('limit=') if explicit_limit else candidate
+        numeric_limit = raw_limit.lstrip('+-').isdigit()
+        if explicit_limit or numeric_limit:
+            if not numeric_limit:
+                raise ValueError('search limit must be an integer between 1 and 20')
+            query = parts[0].strip()
+            limit = int(raw_limit)
+    if not query:
+        raise ValueError('usage: /search <text> [limit]')
+    if not 1 <= limit <= _SESSION_SEARCH_MAXIMUM_LIMIT:
+        raise ValueError('search limit must be between 1 and 20')
+    return query, limit
+
+
+def _authoritative_session_search_result(runtime, hit) -> _SessionSearchResult:
+    if hit.canonical_subject_id.startswith(('method:', 'constructor:')):
+        java = runtime.java_code_intelligence.query(
+            hit.canonical_subject_id,
+            configuration=_SESSION_SEARCH_CONFIGURATION,
+        )
+        subject = java.resolution.subject
+        if (
+            java.resolution.status is CodeSubjectResolutionStatus.RESOLVED
+            and subject is not None
+        ):
+            parameters = subject.normalized_key.rpartition('(')[2].removesuffix(')')
+            parameter_display = '...' if parameters else ''
+            qualified_name = (
+                f'{subject.owner_type}#{subject.name}({parameter_display})'
+            )
+            return _SessionSearchResult(
+                subject.canonical_id,
+                subject.project,
+                qualified_name,
+                subject.kind.value,
+                'java',
+                subject.kind.value == 'method',
+            )
+    return _SessionSearchResult(
+        hit.canonical_subject_id,
+        hit.project,
+        hit.qualified_name,
+        hit.kind.value,
+        hit.language,
+    )
+
+
+def _session_search(
+    session: RepositoryRuntimeSession,
+    snapshot,
+    query: str,
+    limit: int,
+) -> tuple[_SessionSearchResult, ...]:
+    runtime = session.runtime_for(snapshot)
+    response = runtime.semantic_search.search_semantic(
+        SemanticSearchRequest(query, limit=limit),
+    )
+    results = tuple(
+        _authoritative_session_search_result(runtime, hit)
+        for hit in response.hits
+    )
+    if not results:
+        typer.echo('No canonical subjects found.')
+        return results
+    for ordinal, result in enumerate(results, start=1):
+        project = result.project or 'unknown'
+        typer.echo(
+            f'{ordinal}.\n'
+            f'  id: {result.canonical_subject_id}\n'
+            f'  project: {project}\n'
+            f'  name: {result.qualified_name}\n'
+            f'  kind: {result.kind}\n'
+            f'  language: {result.language}'
+        )
+    typer.echo(
+        f'showing {len(results)} of {response.total_candidate_count} results'
+    )
+    if response.omitted_count:
+        typer.echo(
+            'request more with /search <text> <limit> (maximum 20)'
+        )
+    return results
+
+
+def _session_use(
+    session: RepositoryRuntimeSession,
+    snapshot,
+    selection: _SessionSearchResult,
+) -> tuple[str, str]:
+    if not selection.exact_java_method or selection.project is None:
+        raise ValueError(
+            'selected result is not an exact represented Java method'
+        )
+    result = session.runtime_for(snapshot).java_code_intelligence.query(
+        selection.canonical_subject_id,
+        kind='method',
+        project=selection.project,
+        configuration=_SESSION_SEARCH_CONFIGURATION,
+    )
+    subject = result.resolution.subject
+    if (
+        result.resolution.status is not CodeSubjectResolutionStatus.RESOLVED
+        or subject is None
+        or subject.canonical_id != selection.canonical_subject_id
+        or subject.project != selection.project
+    ):
+        raise ValueError(
+            'selected result no longer matches authoritative Java identity'
+        )
+    return subject.canonical_id, subject.project
+
+
 def _session_explain(
     engine: ExplainEngine,
     snapshot,
@@ -2277,6 +2451,7 @@ def ai_session_command(
         loaded = _load_ai_snapshot(root, snapshot)
         provider = (_ai_provider_factory or OllamaProvider)()
         runtime_session = RepositoryRuntimeSession(workspace_root=root)
+        discovery = _SessionSubjectDiscovery()
         current_subject = subject
         current_project = project
         conversation_id = None
@@ -2291,7 +2466,7 @@ def ai_session_command(
             )
             explain_engine = ExplainEngine(runtime_session=runtime_session)
             typer.echo(
-                'Atlas session ready. Use /help, /subject, /project, '
+                'Atlas session ready. Use /help, /search, /subject, /project, '
                 '/explain, /impact, /stats, or /exit.'
             )
             while True:
@@ -2299,13 +2474,43 @@ def ai_session_command(
                 if not line:
                     continue
                 if line in {'/exit', '/quit'}:
+                    discovery.clear()
                     typer.echo('Atlas session closed.')
                     break
                 if line == '/help':
                     typer.echo(
+                        '/search <text> [limit] find canonical subjects; '
+                        '/use <n> select a Java method from the latest search; '
                         '/subject <canonical-id>; /project <project>; '
                         '/explain; /impact; /stats; /exit; or enter a question.'
                     )
+                    continue
+                if line == '/search' or line.startswith('/search '):
+                    discovery.clear()
+                    try:
+                        query, search_limit = _parse_session_search(line)
+                        discovery.replace(_session_search(
+                            runtime_session, loaded, query, search_limit,
+                        ))
+                    except ValueError as exc:
+                        typer.echo(f'error: {exc}', err=True)
+                    continue
+                if line == '/use' or line.startswith('/use '):
+                    try:
+                        raw_ordinal = line.removeprefix('/use').strip()
+                        if not raw_ordinal or not raw_ordinal.isdigit():
+                            raise ValueError('usage: /use <result-number>')
+                        selection = discovery.select(int(raw_ordinal))
+                        selected_subject, selected_project = _session_use(
+                            runtime_session, loaded, selection,
+                        )
+                    except ValueError as exc:
+                        typer.echo(f'error: {exc}', err=True)
+                    else:
+                        current_subject = selected_subject
+                        current_project = selected_project
+                        typer.echo(f'subject={current_subject}')
+                        typer.echo(f'project={current_project}')
                     continue
                 if line.startswith('/subject '):
                     current_subject = line.removeprefix('/subject ').strip() or None
@@ -2349,6 +2554,7 @@ def ai_session_command(
                 conversation_id = result.conversation_id
                 typer.echo(result.answer)
         finally:
+            discovery.clear()
             runtime_session.close()
             close = getattr(provider, 'close', None)
             if callable(close):
