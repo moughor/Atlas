@@ -47,6 +47,7 @@ from moughorai.semantic_snapshot import (
 )
 from moughorai.structured_explanation import (
     ExplanationRequest,
+    StructuredExplanation,
     StructuredExplanationService,
 )
 from moughorai.subject_resolution import (
@@ -658,6 +659,315 @@ def _semantic_project_mismatch_snapshot(pr159_fixture):
         analyzer_version='test-pr163/1',
     )
     return snapshot, payload, legacy_project
+
+
+def _stale_semantic_identity_snapshot(pr159_fixture):
+    payload = copy.deepcopy(pr159_fixture['payload'])
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    semantic_node = next(
+        item for item in payload['semantic_graph']['nodes']
+        if item.get('id') == changed.canonical_subject_id
+    )
+    semantic_node['qualified_name'] = 'demo.StaleOwner#changed()'
+    snapshot = AtlasSemanticSnapshot.create(
+        WorkspaceSemanticContext(payload),
+        workspace_fingerprint='pr164-stale-semantic-identity',
+        analyzer_version='test-pr164/1',
+    )
+    return snapshot, payload
+
+
+def _missing_semantic_subject_snapshot(pr159_fixture):
+    payload = copy.deepcopy(pr159_fixture['payload'])
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    payload['semantic_graph']['nodes'] = [
+        item for item in payload['semantic_graph']['nodes']
+        if item.get('id') != changed.canonical_subject_id
+    ]
+    payload['semantic_graph']['edges'] = [
+        item for item in payload['semantic_graph']['edges']
+        if changed.canonical_subject_id not in {
+            item.get('source'), item.get('target')
+        }
+    ]
+    snapshot = AtlasSemanticSnapshot.create(
+        WorkspaceSemanticContext(payload),
+        workspace_fingerprint='pr164-missing-semantic-subject',
+        analyzer_version='test-pr164/1',
+    )
+    return snapshot, payload
+
+
+def _stale_semantic_source_snapshot(pr159_fixture):
+    payload = copy.deepcopy(pr159_fixture['payload'])
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    semantic_symbol = next(
+        item for item in payload['symbols']
+        if item.get('id') == changed.canonical_subject_id
+    )
+    semantic_symbol['source'] = 'legacy/src/main/java/demo/StaleTarget.java'
+    snapshot = AtlasSemanticSnapshot.create(
+        WorkspaceSemanticContext(payload),
+        workspace_fingerprint='pr164-stale-semantic-source',
+        analyzer_version='test-pr164/1',
+    )
+    return snapshot, payload
+
+
+def test_stale_semantic_identity_cannot_override_exact_java_authority(
+    pr159_fixture,
+) -> None:
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    snapshot, payload = _stale_semantic_identity_snapshot(pr159_fixture)
+    snapshot_before = _bytes(snapshot.to_dict())
+
+    explanation = StructuredExplanationService(snapshot).explain(
+        ExplanationRequest(
+            changed.canonical_subject_id,
+            kind='method',
+            project='app',
+            language='java',
+        )
+    )
+
+    assert explanation.availability.value == 'partial'
+    assert explanation.subject is not None
+    assert explanation.subject.subject_id == changed.canonical_subject_id
+    assert explanation.subject.project == changed.project_id
+    assert explanation.subject.qualified_name == changed.identity.raw_signature
+    assert any(
+        item.title == 'Represented Java callable identity'
+        for item in explanation.facts
+    )
+    assert not any(
+        item.title == 'Canonical subject identity'
+        for item in explanation.facts
+    )
+    assert any(
+        'authoritative qualified identity' in item
+        and 'semantic enrichment was omitted' in item
+        for item in explanation.limitations
+    )
+    assert _bytes(payload['java_callable_index']) == _bytes(
+        pr159_fixture['payload']['java_callable_index']
+    )
+    assert _bytes(payload['java_code_graph']) == _bytes(
+        pr159_fixture['payload']['java_code_graph']
+    )
+    assert snapshot_before == _bytes(snapshot.to_dict())
+
+
+def test_stale_semantic_source_cannot_attach_semantic_enrichment(
+    pr159_fixture,
+) -> None:
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    snapshot, payload = _stale_semantic_source_snapshot(pr159_fixture)
+    snapshot_before = _bytes(snapshot.to_dict())
+
+    first = StructuredExplanationService(snapshot).explain(
+        ExplanationRequest(
+            changed.canonical_subject_id,
+            kind='method',
+            project='app',
+            language='java',
+        )
+    )
+    second = StructuredExplanationService(snapshot).explain(
+        ExplanationRequest(
+            changed.canonical_subject_id,
+            kind='method',
+            project='app',
+            language='java',
+        )
+    )
+
+    assert first.to_json() == second.to_json()
+    assert first.availability.value == 'partial'
+    assert first.subject is not None
+    assert first.subject.qualified_name == changed.identity.raw_signature
+    assert any(
+        item.title == 'Represented Java callable identity'
+        for item in first.facts
+    )
+    assert not any(
+        item.title == 'Canonical subject identity'
+        for item in first.facts
+    )
+    assert any(
+        'authoritative source identity' in item
+        and 'semantic enrichment was omitted' in item
+        for item in first.limitations
+    )
+    assert _bytes(payload['java_callable_index']) == _bytes(
+        pr159_fixture['payload']['java_callable_index']
+    )
+    assert snapshot_before == _bytes(snapshot.to_dict())
+
+
+def test_constructor_explain_does_not_coerce_deferred_subject_kind(
+    pr159_fixture,
+) -> None:
+    constructor = _entry(pr159_fixture, 'Built', '<init>')
+    direct = JavaCodeIntelligenceService.from_snapshot(
+        pr159_fixture['snapshot']
+    ).query(constructor.canonical_subject_id, project='app')
+    assert direct.report is not None
+    direct_before = direct.to_json()
+
+    explanation = StructuredExplanationService(
+        pr159_fixture['snapshot']
+    ).explain(ExplanationRequest(
+        constructor.canonical_subject_id,
+        project='app',
+        language='java',
+    ))
+
+    assert explanation.availability.value == 'unsupported'
+    assert explanation.subject is None
+    assert explanation.facts == ()
+    assert not explanation.evidence_index.records
+    assert any(
+        'constructor Explain and Ask subjects remain deferred' in item
+        for item in explanation.limitations
+    )
+    relationship = StructuredExplanationService(
+        pr159_fixture['snapshot']
+    ).explain(ExplanationRequest(
+        constructor.canonical_subject_id,
+        relationship_source=constructor.canonical_subject_id,
+        relationship_target=_entry(
+            pr159_fixture, 'Target', 'changed'
+        ).canonical_subject_id,
+        relationship_kind='calls',
+    ))
+    assert relationship.availability.value == 'unsupported'
+    assert relationship.subject is None
+    ask_context = EngineeringChatContextBuilder().build(
+        pr159_fixture['snapshot'],
+        question='If I modify this constructor, what can be affected?',
+        subject=constructor.canonical_subject_id,
+        project='app',
+        language='java',
+        capabilities=('code_impact',),
+        result_limit=8,
+        token_budget=5_500,
+    )
+    assert ask_context.subject_ids == ()
+    assert not any(
+        item.section_id == 'code_impact' and item.evidence_ids
+        for item in ask_context.sections
+    )
+    code_capability = next(
+        item for item in ask_context.capabilities
+        if item.name == 'code_impact'
+    )
+    assert code_capability.state.value in {'unavailable', 'unsupported'}
+    direct_after = JavaCodeIntelligenceService.from_snapshot(
+        pr159_fixture['snapshot']
+    ).query(constructor.canonical_subject_id, project='app')
+    assert direct_after.to_json() == direct_before
+
+
+def test_missing_semantic_subject_retains_java_test_evidence_and_ask(
+    pr159_fixture,
+) -> None:
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    snapshot, payload = _missing_semantic_subject_snapshot(pr159_fixture)
+    snapshot_before = _bytes(snapshot.to_dict())
+    service = StructuredExplanationService(snapshot)
+
+    first = service.explain(ExplanationRequest(
+        changed.canonical_subject_id,
+        kind='method',
+        project='app',
+        language='java',
+    ))
+    second = service.explain(ExplanationRequest(
+        changed.canonical_subject_id,
+        kind='method',
+        project='app',
+        language='java',
+    ))
+
+    assert first.to_json() == second.to_json()
+    assert first.availability.value == 'partial'
+    assert first.subject is not None
+    assert first.subject.project == changed.project_id
+    assert first.subject.qualified_name == changed.identity.raw_signature
+    assert not any(
+        item.title == 'Canonical subject identity' for item in first.facts
+    )
+    assert any(
+        item.title == 'Represented Java callable identity'
+        for item in first.facts
+    )
+    assert any('TEST' in item.title for item in first.facts)
+    assert any(
+        'matching semantic graph metadata is unavailable' in item
+        for item in first.limitations
+    )
+
+    context = EngineeringChatContextBuilder().build(
+        snapshot,
+        question='If I modify this method, what can be affected?',
+        subject=changed.canonical_subject_id,
+        kind='method',
+        project='app',
+        language='java',
+        capabilities=('code_impact',),
+        result_limit=8,
+        token_budget=5_500,
+    )
+    assert context.subject_ids == (changed.canonical_subject_id,)
+    assert any(
+        item.section_id == 'code_impact' and item.evidence_ids
+        for item in context.sections
+    )
+    assert _bytes(payload['java_callable_index']) == _bytes(
+        pr159_fixture['payload']['java_callable_index']
+    )
+    assert _bytes(payload['java_code_graph']) == _bytes(
+        pr159_fixture['payload']['java_code_graph']
+    )
+    assert snapshot_before == _bytes(snapshot.to_dict())
+
+
+def test_exact_overloads_remain_canonical_and_order_independent(
+    pr159_fixture,
+) -> None:
+    overloads = tuple(
+        item for item in pr159_fixture['index'].entries
+        if item.identity.owner_type.endswith('Over')
+        and item.identity.name == 'pick'
+    )
+    assert len(overloads) == 2
+    service = StructuredExplanationService(pr159_fixture['snapshot'])
+    forward = {
+        entry.canonical_subject_id: service.explain(ExplanationRequest(
+            entry.canonical_subject_id,
+            kind='method',
+            project='app',
+            language='java',
+        )).to_json()
+        for entry in overloads
+    }
+    reverse = {
+        entry.canonical_subject_id: service.explain(ExplanationRequest(
+            entry.canonical_subject_id,
+            kind='method',
+            project='app',
+            language='java',
+        )).to_json()
+        for entry in reversed(overloads)
+    }
+    assert forward == reverse
+    for entry in overloads:
+        explanation = StructuredExplanation.from_dict(
+            json.loads(forward[entry.canonical_subject_id])
+        )
+        assert explanation.subject is not None
+        assert explanation.subject.subject_id == entry.canonical_subject_id
+        assert explanation.subject.qualified_name == entry.identity.raw_signature
 
 
 def test_exact_java_project_authority_reconciles_legacy_semantic_identity(
