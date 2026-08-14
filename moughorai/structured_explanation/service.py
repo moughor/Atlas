@@ -18,6 +18,11 @@ from moughorai.knowledge_graph import (
     KnowledgeKind,
     KnowledgeRelation,
 )
+from moughorai.java_code_intelligence import (
+    CallableIndexEntry,
+    CallableKind,
+    callable_index_from_dict,
+)
 from moughorai.platform.safety import contains_absolute_path_text
 from moughorai.repository_report import RepositoryReport
 from moughorai.design_patterns.models import PatternKind
@@ -36,6 +41,7 @@ from moughorai.subject_resolution import (
     CanonicalSubjectResolver,
     ResolutionStatus,
     SubjectCandidate,
+    SubjectMatchBasis,
     SubjectQuery,
     SubjectResolution,
 )
@@ -155,19 +161,36 @@ class StructuredExplanationService:
                 capability_limitations,
             )
         else:
-            resolution = self.resolver.resolve(SubjectQuery(
+            subject_query = SubjectQuery(
                 request.subject,
                 requested_kind,
                 request.project,
                 request.language,
                 request.path_constraint,
-            ))
+            )
+            reconciliation = _resolve_exact_java_subject(
+                self.snapshot,
+                self.resolver,
+                subject_query,
+            )
+            if reconciliation is None:
+                resolution = self.resolver.resolve(subject_query)
+                semantic_subject = resolution.subject
+                semantic_metadata_partial = False
+            else:
+                resolution = reconciliation.resolution
+                semantic_subject = reconciliation.semantic_subject
+                semantic_metadata_partial = (
+                    reconciliation.semantic_metadata_partial
+                )
             result, omitted_facts, omitted_evidence = self._explain_resolution(
                 request,
                 resolution,
                 fingerprint,
                 capabilities,
                 capability_limitations,
+                semantic_subject=semantic_subject,
+                semantic_metadata_partial=semantic_metadata_partial,
             )
         return self._select(
             result,
@@ -183,6 +206,9 @@ class StructuredExplanationService:
         fingerprint: str,
         capabilities: tuple[ExplanationCapability, ...],
         capability_limitations: tuple[str, ...],
+        *,
+        semantic_subject: SubjectCandidate | None,
+        semantic_metadata_partial: bool,
     ) -> tuple[StructuredExplanation, int, int]:
         if resolution.status is not ResolutionStatus.RESOLVED:
             return self._finish(
@@ -209,13 +235,20 @@ class StructuredExplanationService:
                 ),
             ), 0, 0
         facts, evidence, limitations, omitted_facts, omitted_evidence = (
-            self._subject_facts(candidate)
+            self._subject_facts(
+                candidate,
+                semantic_subject=semantic_subject,
+            )
         )
         return self._finish(
             request,
             (
                 ExplanationAvailability.PARTIAL
-                if omitted_facts or omitted_evidence
+                if (
+                    omitted_facts
+                    or omitted_evidence
+                    or semantic_metadata_partial
+                )
                 else ExplanationAvailability.AVAILABLE
             ),
             fingerprint,
@@ -344,6 +377,8 @@ class StructuredExplanationService:
     def _subject_facts(
         self,
         subject: SubjectCandidate,
+        *,
+        semantic_subject: SubjectCandidate | None,
     ) -> tuple[
         tuple[ExplanationFact, ...],
         EvidenceIndex,
@@ -352,7 +387,8 @@ class StructuredExplanationService:
         int,
     ]:
         builder = _FactBuilder(self.snapshot.snapshot_id, self.PRODUCER_VERSION)
-        self._add_identity_fact(builder, subject)
+        if semantic_subject is not None:
+            self._add_identity_fact(builder, semantic_subject)
         limitations: list[str] = []
         omitted_relation_count = 0
         code_omitted, code_limitations = self._add_code_intelligence_facts(
@@ -361,10 +397,10 @@ class StructuredExplanationService:
         omitted_relation_count += code_omitted
         limitations.extend(code_limitations)
         graph = self.resolver.graph
-        if graph is not None:
+        if graph is not None and semantic_subject is not None:
             relations: list[tuple[str, KnowledgeEdge, SubjectCandidate]] = []
             bounded_relations, total_relation_count = graph.bounded_incident(
-                subject.graph_id,
+                semantic_subject.graph_id,
                 limit=self.MAXIMUM_RELATION_FACTS,
             )
             for direction, edge in bounded_relations:
@@ -381,7 +417,7 @@ class StructuredExplanationService:
             for index, (direction, edge, neighbor) in enumerate(relations):
                 self._add_relation_fact(
                     builder,
-                    subject,
+                    semantic_subject,
                     neighbor,
                     edge,
                     direction,
@@ -393,13 +429,14 @@ class StructuredExplanationService:
                     f"{omitted_relation_count} direct canonical relationship(s) were omitted by the deterministic bound."
                 )
 
-        self._add_repository_metadata(builder, subject)
         invalid = 0
-        invalid += self._add_pattern_facts(builder, subject)
-        invalid += self._add_reachability_facts(builder, subject)
-        invalid += self._add_risk_facts(builder, subject)
-        invalid += self._add_architecture_facts(builder, subject)
-        self._add_report_metadata(builder, subject)
+        if semantic_subject is not None:
+            self._add_repository_metadata(builder, semantic_subject)
+            invalid += self._add_pattern_facts(builder, semantic_subject)
+            invalid += self._add_reachability_facts(builder, semantic_subject)
+            invalid += self._add_risk_facts(builder, semantic_subject)
+            invalid += self._add_architecture_facts(builder, semantic_subject)
+            self._add_report_metadata(builder, semantic_subject)
         if invalid:
             limitations.append(
                 f"{invalid} upstream finding(s) were omitted because their evidence could not be verified."
@@ -1890,6 +1927,209 @@ def _explanation_subject(candidate: SubjectCandidate | None) -> ExplanationSubje
         candidate.project,
         candidate.language,
         candidate.match_basis.value,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ExactJavaSubjectReconciliation:
+    """Authoritative Java identity with separately sourced semantic metadata."""
+
+    resolution: SubjectResolution
+    java_callable_project: str | None
+    semantic_subject: SubjectCandidate | None
+    semantic_subject_project: str | None
+    semantic_metadata_partial: bool
+
+
+def _resolve_exact_java_subject(
+    snapshot: AtlasSemanticSnapshot,
+    resolver: CanonicalSubjectResolver,
+    query: SubjectQuery,
+) -> _ExactJavaSubjectReconciliation | None:
+    """Resolve represented method IDs against PR156 project ownership."""
+
+    if not query.identifier.startswith("method:"):
+        return None
+    raw_index = snapshot.semantic_context.get("java_callable_index")
+    if not isinstance(raw_index, Mapping):
+        return None
+    try:
+        callable_index = callable_index_from_dict(raw_index)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return _ExactJavaSubjectReconciliation(
+            _unresolved_exact_java_subject(
+                query,
+                resolver,
+                ResolutionStatus.UNAVAILABLE,
+                (
+                    "The PR156 Java callable index could not be validated for "
+                    "this exact subject.",
+                ),
+            ),
+            None,
+            None,
+            None,
+            True,
+        )
+    entry = next(
+        (
+            item
+            for item in callable_index.entries
+            if item.canonical_subject_id == query.identifier
+        ),
+        None,
+    )
+    if entry is None or entry.identity.kind is not CallableKind.METHOD:
+        return None
+
+    constraint_limitation = _exact_java_constraint_limitation(entry, query)
+    if constraint_limitation is not None:
+        return _ExactJavaSubjectReconciliation(
+            _unresolved_exact_java_subject(
+                query,
+                resolver,
+                ResolutionStatus.NOT_FOUND,
+                (constraint_limitation,),
+            ),
+            entry.project_id,
+            None,
+            None,
+            False,
+        )
+
+    constrained = resolver.resolve(query)
+    constrained_subject = _matching_semantic_java_subject(constrained, entry)
+    semantic_subject = (
+        constrained_subject
+        or _matching_semantic_java_subject(
+            resolver.resolve(
+                SubjectQuery(
+                    query.identifier,
+                    KnowledgeKind.METHOD,
+                    language="java",
+                )
+            ),
+            entry,
+        )
+    )
+    authoritative = _java_subject_candidate(entry, semantic_subject)
+    semantic_project = (
+        semantic_subject.project if semantic_subject is not None else None
+    )
+    if semantic_subject is None:
+        limitations = (
+            "PR156 resolved the exact Java callable, but matching semantic graph "
+            "metadata is unavailable; Java code-intelligence facts remain "
+            "authoritative.",
+        )
+        semantic_metadata_partial = True
+    elif semantic_project != entry.project_id:
+        limitations = (
+            "Exact Java subject project identities differ: PR156 callable project "
+            f"{entry.project_id!r} is authoritative for Java code intelligence; "
+            f"semantic subject metadata uses {semantic_project!r}.",
+        )
+        semantic_metadata_partial = True
+    else:
+        limitations = ()
+        semantic_metadata_partial = False
+    resolution = SubjectResolution(
+        query,
+        ResolutionStatus.RESOLVED,
+        authoritative,
+        (),
+        0,
+        0,
+        SubjectMatchBasis.CANONICAL_ID,
+        resolver.graph_digest,
+        limitations,
+    )
+    return _ExactJavaSubjectReconciliation(
+        resolution,
+        entry.project_id,
+        semantic_subject,
+        semantic_project,
+        semantic_metadata_partial,
+    )
+
+
+def _exact_java_constraint_limitation(
+    entry: CallableIndexEntry,
+    query: SubjectQuery,
+) -> str | None:
+    if query.kind is not None and query.kind is not KnowledgeKind.METHOD:
+        return (
+            "The exact PR156 Java callable exists, but its authoritative callable "
+            "kind does not match the supplied kind constraint."
+        )
+    if query.language is not None and query.language.casefold() != "java":
+        return (
+            "The exact PR156 Java callable exists, but its authoritative language "
+            "does not match the supplied language constraint."
+        )
+    if query.project is not None and query.project != entry.project_id:
+        return (
+            "The exact PR156 Java callable exists, but its authoritative Java "
+            "project does not match the supplied project constraint."
+        )
+    if query.path is not None and query.path != entry.source.path:
+        return (
+            "The exact PR156 Java callable exists, but its authoritative source "
+            "path does not match the supplied path constraint."
+        )
+    return None
+
+
+def _matching_semantic_java_subject(
+    resolution: SubjectResolution,
+    entry: CallableIndexEntry,
+) -> SubjectCandidate | None:
+    subject = resolution.subject
+    if (
+        resolution.status is ResolutionStatus.RESOLVED
+        and subject is not None
+        and subject.canonical_id == entry.canonical_subject_id
+        and subject.kind is KnowledgeKind.METHOD
+        and subject.language.casefold() == "java"
+    ):
+        return subject
+    return None
+
+
+def _java_subject_candidate(
+    entry: CallableIndexEntry,
+    semantic_subject: SubjectCandidate | None,
+) -> SubjectCandidate:
+    return SubjectCandidate(
+        entry.canonical_subject_id,
+        KnowledgeKind.METHOD,
+        entry.identity.name,
+        entry.identity.raw_signature,
+        entry.project_id,
+        "java",
+        entry.source.path,
+        (entry.project_id,),
+        SubjectMatchBasis.CANONICAL_ID,
+        semantic_subject.graph_id if semantic_subject is not None else "",
+    )
+
+
+def _unresolved_exact_java_subject(
+    query: SubjectQuery,
+    resolver: CanonicalSubjectResolver,
+    status: ResolutionStatus,
+    limitations: tuple[str, ...],
+) -> SubjectResolution:
+    return SubjectResolution(
+        query,
+        status,
+        None,
+        (),
+        0,
+        0,
+        SubjectMatchBasis.NONE,
+        resolver.graph_digest,
+        limitations,
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import copy
 import json
 from pathlib import Path
 
@@ -48,7 +49,11 @@ from moughorai.structured_explanation import (
     ExplanationRequest,
     StructuredExplanationService,
 )
-from moughorai.subject_resolution import SubjectQuery
+from moughorai.subject_resolution import (
+    CanonicalSubjectResolver,
+    ResolutionStatus,
+    SubjectQuery,
+)
 from moughorai.workspace import (
     Project,
     ProjectRun,
@@ -634,6 +639,247 @@ def _nested_evidence_ids(value: object) -> set[str]:
     elif isinstance(value, str) and value.startswith('evidence:'):
         result.add(value)
     return result
+
+
+def _semantic_project_mismatch_snapshot(pr159_fixture):
+    payload = copy.deepcopy(pr159_fixture['payload'])
+    legacy_project = 'legacy-semantic-app'
+    for node in payload['semantic_graph']['nodes']:
+        if node.get('project_id') == 'app':
+            node['project_id'] = legacy_project
+        if node.get('kind') == 'project':
+            if node.get('name') == 'app':
+                node['name'] = legacy_project
+            if node.get('qualified_name') == 'app':
+                node['qualified_name'] = legacy_project
+    snapshot = AtlasSemanticSnapshot.create(
+        WorkspaceSemanticContext(payload),
+        workspace_fingerprint='pr163-java-project-reconciliation',
+        analyzer_version='test-pr163/1',
+    )
+    return snapshot, payload, legacy_project
+
+
+def test_exact_java_project_authority_reconciles_legacy_semantic_identity(
+    pr159_fixture,
+) -> None:
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    snapshot, _payload, legacy_project = _semantic_project_mismatch_snapshot(
+        pr159_fixture
+    )
+    resolver = CanonicalSubjectResolver.from_snapshot(snapshot)
+
+    legacy_gate = resolver.resolve(SubjectQuery(
+        changed.canonical_subject_id,
+        KnowledgeKind.METHOD,
+        'app',
+        'java',
+    ))
+    assert legacy_gate.status is ResolutionStatus.NOT_FOUND
+    java_resolution = JavaCodeIntelligenceService.from_snapshot(snapshot).query(
+        changed.canonical_subject_id,
+        project='app',
+    )
+    assert java_resolution.resolution.status is CodeSubjectResolutionStatus.RESOLVED
+
+    service = StructuredExplanationService(
+        snapshot,
+        include_code_intelligence=False,
+    )
+    without_project = service.explain(ExplanationRequest(
+        changed.canonical_subject_id,
+        kind='method',
+        language='java',
+    ))
+    matching_java_project = service.explain(ExplanationRequest(
+        changed.canonical_subject_id,
+        kind='method',
+        project='app',
+        language='java',
+    ))
+    for explanation in (without_project, matching_java_project):
+        assert explanation.availability.value == 'partial'
+        assert explanation.subject is not None
+        assert explanation.subject.subject_id == changed.canonical_subject_id
+        assert explanation.subject.project == 'app'
+        assert explanation.subject.qualified_name == changed.identity.raw_signature
+        assert any(
+            'PR156 callable project' in item
+            and 'legacy-semantic-app' in item
+            for item in explanation.limitations
+        )
+
+    wrong_java_project = service.explain(ExplanationRequest(
+        changed.canonical_subject_id,
+        kind='method',
+        project=legacy_project,
+        language='java',
+    ))
+    assert wrong_java_project.availability.value == 'not_found'
+    assert wrong_java_project.subject is None
+    assert any(
+        'authoritative Java project' in item
+        for item in wrong_java_project.limitations
+    )
+
+    fuzzy = service.explain(ExplanationRequest(
+        'changed',
+        kind='method',
+        project='app',
+        language='java',
+    ))
+    assert fuzzy.availability.value == 'not_found'
+    assert fuzzy.subject is None
+
+
+def test_reconciled_explain_keeps_java_and_semantic_provenance_separate(
+    pr159_fixture,
+) -> None:
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    snapshot, payload, legacy_project = _semantic_project_mismatch_snapshot(
+        pr159_fixture
+    )
+    snapshot_before = _bytes(snapshot.to_dict())
+    original_snapshot_id = pr159_fixture['snapshot'].snapshot_id
+    original_report = JavaCodeIntelligenceService.from_snapshot(
+        pr159_fixture['snapshot']
+    ).query(changed.canonical_subject_id).report
+    assert original_report is not None
+    reconciled_before = JavaCodeIntelligenceService.from_snapshot(snapshot).query(
+        changed.canonical_subject_id,
+        project='app',
+    ).report
+    assert reconciled_before is not None
+
+    explanation = StructuredExplanationService(snapshot).explain(
+        ExplanationRequest(
+            changed.canonical_subject_id,
+            kind='method',
+            project='app',
+            language='java',
+        )
+    )
+    assert explanation.availability.value == 'partial'
+    assert explanation.subject is not None
+    assert explanation.subject.project == 'app'
+    java_facts = tuple(
+        item for item in explanation.facts
+        if 'Java' in item.title or 'TEST' in item.title
+    )
+    assert java_facts
+    assert all(item.evidence_ids for item in java_facts)
+    semantic_identity = next(
+        item for item in explanation.facts
+        if item.title == 'Canonical subject identity'
+    )
+    semantic_attributes = {
+        item.key: item.value for item in semantic_identity.attributes
+    }
+    assert semantic_attributes['project'] == legacy_project
+    assert any(
+        'semantic subject metadata uses' in item
+        for item in explanation.limitations
+    )
+
+    reconciled_after = JavaCodeIntelligenceService.from_snapshot(snapshot).query(
+        changed.canonical_subject_id,
+        project='app',
+    ).report
+    assert reconciled_after is not None
+    assert reconciled_after.to_dict() == reconciled_before.to_dict()
+    assert (
+        reconciled_after.traceability.callable_index_fingerprint
+        == original_report.traceability.callable_index_fingerprint
+    )
+    assert (
+        reconciled_after.traceability.code_graph_fingerprint
+        == original_report.traceability.code_graph_fingerprint
+    )
+    assert (
+        reconciled_after.traceability.test_evidence_fingerprint
+        == original_report.traceability.test_evidence_fingerprint
+    )
+    assert _bytes(payload['java_callable_index']) == _bytes(
+        pr159_fixture['payload']['java_callable_index']
+    )
+    assert _bytes(payload['java_code_graph']) == _bytes(
+        pr159_fixture['payload']['java_code_graph']
+    )
+    assert snapshot_before == _bytes(snapshot.to_dict())
+    assert pr159_fixture['snapshot'].snapshot_id == original_snapshot_id
+
+
+def test_reconciled_ask_retains_code_impact_and_grounded_fallback(
+    pr159_fixture,
+) -> None:
+    changed = _entry(pr159_fixture, 'Target', 'changed')
+    snapshot, _payload, legacy_project = _semantic_project_mismatch_snapshot(
+        pr159_fixture
+    )
+
+    def build(project: str):
+        return EngineeringChatContextBuilder().build(
+            snapshot,
+            question=(
+                'If I modify this method, what can be affected? Show direct and '
+                'transitive callers, what it calls, represented tests that reach '
+                'it, confidence, and anything Atlas cannot prove. Never reverse '
+                'call direction.'
+            ),
+            subject=changed.canonical_subject_id,
+            kind='method',
+            project=project,
+            language='java',
+            capabilities=('code_impact',),
+            result_limit=8,
+            token_budget=5_500,
+        )
+
+    first = build('app')
+    second = build('app')
+    assert first.to_json() == second.to_json()
+    assert first.subject_ids == (changed.canonical_subject_id,)
+    assert first.selection.estimated_tokens <= 5_500
+    code_section = next(
+        item for item in first.sections if item.section_id == 'code_impact'
+    )
+    assert code_section.evidence_ids
+    assert code_section.content['report']['subject']['project'] == 'app'
+    assert code_section.content['report']['direction_contract'] == {
+        'canonical_direction': 'caller_to_callee',
+        'canonical_relation': 'calls',
+        'impact_traversal_direction': 'reverse_upstream',
+    }
+
+    fixture = {**pr159_fixture, 'snapshot': snapshot}
+    failed, _ = _ask_with_context(
+        fixture,
+        first,
+        (LlmProviderError('provider unavailable'),),
+    )
+    repeated, _ = _ask_with_context(
+        fixture,
+        first,
+        (LlmProviderError('different provider failure'),),
+    )
+    assert failed.answer.encode('utf-8') == repeated.answer.encode('utf-8')
+    assert failed.grounding_summary is not None
+    assert failed.grounding_summary.provider_grounded is False
+    assert failed.grounding_summary.delivered_answer_grounded is True
+    assert failed.grounding_summary.request_complete is True
+    assert failed.grounding_summary.fallback_used is True
+
+    wrong_project = build(legacy_project)
+    assert wrong_project.subject_ids == ()
+    wrong_capability = next(
+        item for item in wrong_project.capabilities
+        if item.name == 'code_impact'
+    )
+    assert wrong_capability.state.value in {'not_found', 'unavailable'}
+    assert not any(
+        item.section_id == 'code_impact' and item.evidence_ids
+        for item in wrong_project.sections
+    )
 
 
 def test_default_ask_limit_is_budget_safe_for_high_fanout_code_impact(
