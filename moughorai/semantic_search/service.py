@@ -81,6 +81,26 @@ class SemanticSearchService:
         )
         return instance
 
+    @classmethod
+    def _from_runtime(
+        cls,
+        snapshot: AtlasSemanticSnapshot,
+        *,
+        resolver,
+        measurement: MeasurementSession | None = None,
+    ) -> SemanticSearchService:
+        session = measurement or MeasurementSession()
+        instance = cls.__new__(cls)
+        instance._symbols = None
+        instance._graph = None
+        instance._measurement = session
+        instance._index = SemanticSearchIndex._from_runtime(
+            snapshot,
+            resolver=resolver,
+            measurement=session,
+        )
+        return instance
+
     @property
     def capabilities(self):
         """Return immutable capability metadata without exposing the index."""

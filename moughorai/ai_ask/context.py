@@ -16,9 +16,10 @@ from moughorai.security_intelligence import (
     SecurityScope,
 )
 from moughorai.semantic_evidence import EvidenceIndex, EvidenceKind, EvidenceRecord
-from moughorai.semantic_search import SemanticSearchRequest, SemanticSearchService
+from moughorai.semantic_search import SemanticSearchRequest
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
-from moughorai.structured_explanation import ExplanationRequest, StructuredExplanationService
+from moughorai.repository_runtime import RepositoryRuntimeSession
+from moughorai.structured_explanation import ExplanationRequest
 from moughorai.subject_resolution import SubjectQuery
 
 from .models import (
@@ -159,8 +160,14 @@ def strip_chat_citations(answer: str) -> str:
 class EngineeringChatContextBuilder:
     """Compose one bounded PR139 context from existing snapshot-backed services."""
 
-    def __init__(self, *, estimator: TokenEstimator | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        estimator: TokenEstimator | None = None,
+        runtime_session: RepositoryRuntimeSession | None = None,
+    ) -> None:
         self.estimator = estimator or TokenEstimator()
+        self.runtime_session = runtime_session or RepositoryRuntimeSession()
 
     def build(
         self,
@@ -185,6 +192,7 @@ class EngineeringChatContextBuilder:
         if token_budget < 256:
             raise ValueError("chat context token budget must be at least 256")
         safe_question = sanitize_chat_text(question)
+        runtime = self.runtime_session.runtime_for(snapshot)
         intent = classify_chat_intent(safe_question)
         explicit_requested = requested_chat_capabilities('', capabilities)
         requested = requested_chat_capabilities(safe_question, capabilities)
@@ -201,7 +209,7 @@ class EngineeringChatContextBuilder:
 
         search_response = None
         try:
-            search_response = SemanticSearchService.from_snapshot(snapshot).search_semantic(
+            search_response = runtime.semantic_search.search_semantic(
                 SemanticSearchRequest(
                     safe_question,
                     project=project,
@@ -243,8 +251,7 @@ class EngineeringChatContextBuilder:
         resolved_subject = None
         try:
             if selected_subject is not None:
-                explanation = StructuredExplanationService(
-                    snapshot,
+                explanation = runtime.structured_explanation(
                     include_code_intelligence=False,
                 ).explain(
                     ExplanationRequest(
@@ -319,14 +326,14 @@ class EngineeringChatContextBuilder:
         for capability in requested:
             if capability == 'code_impact':
                 candidate, value = self._code_impact_section(
-                    snapshot, resolved_subject, result_limit,
+                    runtime, resolved_subject, result_limit,
                 )
                 candidates.append(candidate)
                 capability_map[capability] = value
                 continue
             if capability == "impact_prediction":
                 impact_candidates, value = self._impact_section(
-                    snapshot, resolved_subject, result_limit
+                    runtime, resolved_subject, result_limit
                 )
                 candidates.extend(impact_candidates)
             elif capability == "refactoring_advisor":
@@ -449,7 +456,7 @@ class EngineeringChatContextBuilder:
             tuple(response.limitations),
         )
 
-    def _code_impact_section(self, snapshot, subject, result_limit):
+    def _code_impact_section(self, runtime, subject, result_limit):
         if subject is None:
             return _unavailable_section(
                 'code_impact',
@@ -468,9 +475,7 @@ class EngineeringChatContextBuilder:
                 ChatCapabilityState.UNSUPPORTED,
             )
         try:
-            result = ImpactPredictionService.from_snapshot(
-                snapshot
-            ).predict_code_impact(
+            result = runtime.java_code_intelligence.query(
                 subject.subject_id,
                 project=subject.project,
                 configuration=CodeIntelligenceConfiguration(
@@ -493,7 +498,7 @@ class EngineeringChatContextBuilder:
                     _chat_state(result.resolution.status.value),
                 )
                 return candidate, capability
-            records = _code_impact_records(snapshot, report)
+            records = _code_impact_records(runtime.snapshot, report)
             evidence_ids = tuple(item.evidence_id for item in records)
             content = {
                 'producer': report.producer_version,
@@ -536,7 +541,7 @@ class EngineeringChatContextBuilder:
                 ChatCapabilityState.INCOMPATIBLE,
             )
 
-    def _impact_section(self, snapshot, subject, result_limit):
+    def _impact_section(self, runtime, subject, result_limit):
         if subject is None:
             candidate, capability = _unavailable_section(
                 "impact_prediction", "Impact prediction", "atlas-pr136/1",
@@ -544,7 +549,7 @@ class EngineeringChatContextBuilder:
             )
             return (candidate,), capability
         try:
-            analysis = ImpactPredictionService.from_snapshot(snapshot).analyze(
+            analysis = runtime.impact_prediction.analyze(
                 ImpactPredictionRequest(
                     SubjectQuery(
                         subject.subject_id,

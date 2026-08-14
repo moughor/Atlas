@@ -93,7 +93,8 @@ from .subject_resolution import SubjectQuery
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
 from .ai_review import ReviewEngine, ReviewRequest
-from .ai_ask import AskEngine, AskRequest
+from .ai_ask import AskEngine, AskRequest, EngineeringChatContextBuilder
+from .repository_runtime import RepositoryRuntimeSession
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
 from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
@@ -2171,6 +2172,189 @@ def _display(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return ",".join(_display(item) for item in value)
     return str(value)
+
+
+def _runtime_statistics_json(session: RepositoryRuntimeSession) -> str:
+    statistics = session.statistics
+    return json.dumps(
+        {
+            'runtime_build_count': statistics.runtime_build_count,
+            'reuse_count': statistics.reuse_count,
+            'component_build_counts': dict(statistics.component_build_counts),
+            'snapshot_id': (
+                statistics.current_identity.snapshot_id
+                if statistics.current_identity is not None else None
+            ),
+        },
+        ensure_ascii=False,
+        separators=(',', ':'),
+        sort_keys=True,
+    )
+
+
+def _session_explain(
+    engine: ExplainEngine,
+    snapshot,
+    subject: str | None,
+    project: str | None,
+    language: str | None,
+) -> None:
+    if subject is None:
+        typer.echo('error: set an exact subject with /subject first', err=True)
+        return
+    result = engine.explain(
+        snapshot,
+        ExplainRequest(
+            subject=subject,
+            kind='method',
+            project=project,
+            language=language,
+            narrative=False,
+        ),
+    )
+    typer.echo(result.markdown)
+
+
+def _session_impact(
+    session: RepositoryRuntimeSession,
+    snapshot,
+    subject: str | None,
+    project: str | None,
+    result_limit: int,
+) -> None:
+    if subject is None:
+        typer.echo('error: set an exact subject with /subject first', err=True)
+        return
+    result = session.runtime_for(snapshot).java_code_intelligence.query(
+        subject,
+        project=project,
+        configuration=CodeIntelligenceConfiguration(
+            max_depth=8,
+            max_nodes=4_096,
+            max_direct_relationships=result_limit,
+            max_paths_per_section=result_limit,
+            max_limitation_representatives=min(result_limit, 16),
+        ),
+    )
+    typer.echo(render_code_intelligence(result), nl=False)
+
+
+@ai_app.command('session')
+def ai_session_command(
+    root: Annotated[Path, typer.Argument(help='Workspace root.')] = Path('.'),
+    snapshot: Annotated[
+        Path | None,
+        typer.Option('--snapshot', help='Specific validated .ass snapshot.'),
+    ] = None,
+    subject: Annotated[
+        str | None,
+        typer.Option('--subject', help='Initial exact canonical subject.'),
+    ] = None,
+    project: Annotated[
+        str | None,
+        typer.Option('--project', help='Initial authoritative project constraint.'),
+    ] = None,
+    language: Annotated[
+        str | None,
+        typer.Option('--language', help='Subject language constraint.'),
+    ] = 'java',
+    capability: Annotated[
+        list[str] | None,
+        typer.Option('--capability', help='Capability requested on each Ask turn.'),
+    ] = None,
+    result_limit: Annotated[
+        int,
+        typer.Option('--limit', min=1, max=20),
+    ] = 8,
+    maximum_input_tokens: Annotated[
+        int,
+        typer.Option('--max-input-tokens', min=1024),
+    ] = 7000,
+) -> None:
+    '''Run repeated engineering requests over one validated runtime.'''
+
+    def operation() -> None:
+        loaded = _load_ai_snapshot(root, snapshot)
+        provider = (_ai_provider_factory or OllamaProvider)()
+        runtime_session = RepositoryRuntimeSession(workspace_root=root)
+        current_subject = subject
+        current_project = project
+        conversation_id = None
+        try:
+            context_builder = EngineeringChatContextBuilder(
+                runtime_session=runtime_session,
+            )
+            ask_engine = AskEngine(
+                LlmClient(provider),
+                memory=ConversationMemoryStore(root),
+                context_builder=context_builder,
+            )
+            explain_engine = ExplainEngine(runtime_session=runtime_session)
+            typer.echo(
+                'Atlas session ready. Use /help, /subject, /project, '
+                '/explain, /impact, /stats, or /exit.'
+            )
+            while True:
+                line = typer.prompt('atlas', prompt_suffix='> ').strip()
+                if not line:
+                    continue
+                if line in {'/exit', '/quit'}:
+                    typer.echo('Atlas session closed.')
+                    break
+                if line == '/help':
+                    typer.echo(
+                        '/subject <canonical-id>; /project <project>; '
+                        '/explain; /impact; /stats; /exit; or enter a question.'
+                    )
+                    continue
+                if line.startswith('/subject '):
+                    current_subject = line.removeprefix('/subject ').strip() or None
+                    typer.echo('subject=' + (current_subject or 'none'))
+                    continue
+                if line.startswith('/project '):
+                    current_project = line.removeprefix('/project ').strip() or None
+                    typer.echo('project=' + (current_project or 'none'))
+                    continue
+                if line == '/stats':
+                    typer.echo(_runtime_statistics_json(runtime_session))
+                    continue
+                if line == '/explain':
+                    _session_explain(
+                        explain_engine, loaded, current_subject,
+                        current_project, language,
+                    )
+                    continue
+                if line == '/impact':
+                    _session_impact(
+                        runtime_session, loaded, current_subject,
+                        current_project, result_limit,
+                    )
+                    continue
+                question = line.removeprefix('/ask ').strip()
+                result = ask_engine.ask(
+                    loaded,
+                    AskRequest(
+                        question,
+                        conversation_id,
+                        12,
+                        current_subject,
+                        None,
+                        current_project,
+                        language,
+                        tuple(capability or ()),
+                        maximum_input_tokens,
+                        result_limit,
+                    ),
+                )
+                conversation_id = result.conversation_id
+                typer.echo(result.answer)
+        finally:
+            runtime_session.close()
+            close = getattr(provider, 'close', None)
+            if callable(close):
+                close()
+
+    _run_command(operation)
 
 
 def main() -> None:

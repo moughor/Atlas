@@ -8,12 +8,12 @@ from moughorai.llm import LlmClient
 from moughorai.measurement import MeasurementPhase, MeasurementSession
 from moughorai.prompts import SemanticPromptBuilder
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
+from moughorai.repository_runtime import RepositoryRuntimeSession
 from moughorai.structured_explanation import (
     ExplanationAvailability,
     ExplanationRequest as StructuredExplanationRequest,
     StructuredExplanation,
     StructuredExplanationRenderer,
-    StructuredExplanationService,
 )
 
 from .repository_projection import RepositoryExplanationProjector
@@ -64,11 +64,15 @@ class ExplainEngine:
         prompt_builder: SemanticPromptBuilder | None = None,
         memory: ConversationMemoryStore | None = None,
         measurement: MeasurementSession | None = None,
+        runtime_session: RepositoryRuntimeSession | None = None,
     ) -> None:
         self.client = client
         self.prompts = prompt_builder or SemanticPromptBuilder()
         self.memory = memory
         self.measurement = measurement or MeasurementSession()
+        self.runtime_session = runtime_session or RepositoryRuntimeSession(
+            measurement=self.measurement,
+        )
 
     def explain(
         self,
@@ -82,6 +86,7 @@ class ExplainEngine:
             raise ValueError("explanation subject and question are required")
         repository_default = self._is_repository_default(selected)
         client = self.client
+        runtime = self.runtime_session.runtime_for(snapshot)
         if not repository_default and selected.narrative and client is None:
             raise ValueError("targeted explanations require an LLM client")
 
@@ -94,7 +99,7 @@ class ExplainEngine:
                 consumer="explain-engine",
                 sample_key=snapshot.snapshot_id,
             ) as scope:
-                structured = StructuredExplanationService(snapshot).explain(
+                structured = runtime.structured_explanation().explain(
                     self._structured_request(selected, subject),
                     token_budget=self.MAXIMUM_INPUT_TOKENS,
                 )
@@ -111,7 +116,7 @@ class ExplainEngine:
                     targeted_question,
                     subject,
                 )
-                structured = StructuredExplanationService(snapshot).explain(
+                structured = runtime.structured_explanation().explain(
                     self._structured_request(selected, subject),
                     token_budget=token_budget,
                 )

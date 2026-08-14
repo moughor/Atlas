@@ -221,6 +221,30 @@ class SemanticSearchIndex:
             scope.set_objects_retained(len(result.entries) + len(result.evidence))
             return result
 
+    @classmethod
+    def _from_runtime(
+        cls,
+        snapshot: AtlasSemanticSnapshot,
+        *,
+        resolver: CanonicalSubjectResolver,
+        measurement: MeasurementSession | None = None,
+    ) -> SemanticSearchIndex:
+        if not isinstance(snapshot, AtlasSemanticSnapshot):
+            raise TypeError('semantic search indexes require an AtlasSemanticSnapshot')
+        if not isinstance(resolver, CanonicalSubjectResolver):
+            raise TypeError('semantic search runtime resolver is invalid')
+        session = measurement or MeasurementSession()
+        with session.scope(
+            'semantic_search.index',
+            consumer='semantic-search',
+            sample_key=snapshot.snapshot_id,
+        ) as scope:
+            result = _IndexBuilder(snapshot, resolver=resolver).build()
+            scope.add_units(len(result.entries))
+            scope.add_objects_produced(len(result.entries))
+            scope.set_objects_retained(len(result.entries) + len(result.evidence))
+            return result
+
     def entry(self, graph_id: str) -> SemanticIndexEntry | None:
         return self._by_id.get(graph_id)
 
@@ -395,10 +419,15 @@ class SemanticSearchIndex:
 
 
 class _IndexBuilder:
-    def __init__(self, snapshot: AtlasSemanticSnapshot) -> None:
+    def __init__(
+        self,
+        snapshot: AtlasSemanticSnapshot,
+        *,
+        resolver: CanonicalSubjectResolver | None = None,
+    ) -> None:
         self.snapshot = snapshot
         self.context = snapshot.semantic_context
-        self.resolver = CanonicalSubjectResolver.from_snapshot(snapshot)
+        self.resolver = resolver or CanonicalSubjectResolver.from_snapshot(snapshot)
         self.graph = self.resolver.graph
         raw_graph = self.context.get("semantic_graph")
         self.source_graph_digest = (

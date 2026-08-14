@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import re
+from typing import TYPE_CHECKING
 
 from moughorai.code_intelligence import (
     CodeIntelligenceConfiguration,
@@ -21,6 +22,7 @@ from moughorai.knowledge_graph import (
 from moughorai.java_code_intelligence import (
     CallableIndexEntry,
     CallableKind,
+    JavaCallableIndex,
     callable_index_from_dict,
 )
 from moughorai.platform.safety import contains_absolute_path_text
@@ -60,6 +62,9 @@ from .models import (
 )
 from .selection import StructuredExplanationSelector
 
+if TYPE_CHECKING:
+    from moughorai.repository_runtime import RepositoryIntelligenceRuntime
+
 
 class StructuredExplanationService:
     """Compose PR134 explanations from persisted, source-free Atlas facts."""
@@ -71,6 +76,7 @@ class StructuredExplanationService:
         self,
         snapshot: AtlasSemanticSnapshot,
         *,
+        runtime: RepositoryIntelligenceRuntime | None = None,
         resolver: CanonicalSubjectResolver | None = None,
         selector: StructuredExplanationSelector | None = None,
         include_code_intelligence: bool = True,
@@ -81,8 +87,15 @@ class StructuredExplanationService:
             raise TypeError('include_code_intelligence must be a boolean')
         self.snapshot = snapshot
         self.include_code_intelligence = include_code_intelligence
+        if runtime is not None and resolver is not None:
+            raise ValueError('runtime and resolver injection are mutually exclusive')
+        if runtime is not None:
+            runtime.require_snapshot(snapshot)
+        self.runtime = runtime
         self.context = snapshot.semantic_context
-        if resolver is None:
+        if runtime is not None:
+            self.resolver = runtime.resolver
+        elif resolver is None:
             self.resolver = CanonicalSubjectResolver.from_snapshot(snapshot)
         else:
             expected = CanonicalSubjectResolver.from_snapshot(snapshot)
@@ -188,6 +201,16 @@ class StructuredExplanationService:
                 self.snapshot,
                 self.resolver,
                 subject_query,
+                callable_index=(
+                    self.runtime.java_code_intelligence.callable_index
+                    if self.runtime is not None else None
+                ),
+                callable_index_validated=(
+                    self.runtime is not None
+                    and isinstance(
+                        self.context.get('java_callable_index'), Mapping,
+                    )
+                ),
             )
             if reconciliation is None:
                 resolution = self.resolver.resolve(subject_query)
@@ -477,9 +500,12 @@ class StructuredExplanationService:
         ):
             return 0, ()
         try:
-            result = JavaCodeIntelligenceService.from_snapshot(
-                self.snapshot
-            ).query(
+            service = (
+                self.runtime.java_code_intelligence
+                if self.runtime is not None
+                else JavaCodeIntelligenceService.from_snapshot(self.snapshot)
+            )
+            result = service.query(
                 subject.canonical_id,
                 configuration=CodeIntelligenceConfiguration(
                     max_depth=6,
@@ -1961,17 +1987,23 @@ def _resolve_exact_java_subject(
     snapshot: AtlasSemanticSnapshot,
     resolver: CanonicalSubjectResolver,
     query: SubjectQuery,
+    *,
+    callable_index: JavaCallableIndex | None = None,
+    callable_index_validated: bool = False,
 ) -> _ExactJavaSubjectReconciliation | None:
     """Resolve represented method IDs against PR156 project ownership."""
 
     if not query.identifier.startswith("method:"):
         return None
-    raw_index = snapshot.semantic_context.get("java_callable_index")
-    if not isinstance(raw_index, Mapping):
-        return None
-    try:
-        callable_index = callable_index_from_dict(raw_index)
-    except (KeyError, TypeError, ValueError, OverflowError):
+    if not callable_index_validated:
+        raw_index = snapshot.semantic_context.get("java_callable_index")
+        if not isinstance(raw_index, Mapping):
+            return None
+        try:
+            callable_index = callable_index_from_dict(raw_index)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            callable_index = None
+    if callable_index is None:
         return _ExactJavaSubjectReconciliation(
             _unresolved_exact_java_subject(
                 query,
