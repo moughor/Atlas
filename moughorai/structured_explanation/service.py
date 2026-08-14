@@ -152,6 +152,22 @@ class StructuredExplanationService:
         else:
             requested_kind = None
 
+        if _contains_deferred_constructor_subject(request):
+            return self._select(
+                self._finish(
+                    request,
+                    ExplanationAvailability.UNSUPPORTED,
+                    fingerprint,
+                    capabilities,
+                    limitations=(
+                        'Exact constructor Explain and Ask subjects remain deferred; '
+                        'Atlas did not coerce the constructor to a method subject.',
+                        *capability_limitations,
+                    ),
+                ),
+                token_budget,
+            )
+
         if request.relationship:
             result, omitted_facts, omitted_evidence = self._explain_relationship(
                 request,
@@ -1997,27 +2013,36 @@ def _resolve_exact_java_subject(
             False,
         )
 
-    constrained = resolver.resolve(query)
-    constrained_subject = _matching_semantic_java_subject(constrained, entry)
+    semantic_resolution = resolver.resolve(SubjectQuery(query.identifier))
+    semantic_candidate = _exact_semantic_java_subject(
+        semantic_resolution,
+        entry,
+    )
+    semantic_identity_mismatches = _semantic_java_identity_mismatches(
+        semantic_candidate,
+        entry,
+    )
     semantic_subject = (
-        constrained_subject
-        or _matching_semantic_java_subject(
-            resolver.resolve(
-                SubjectQuery(
-                    query.identifier,
-                    KnowledgeKind.METHOD,
-                    language="java",
-                )
-            ),
-            entry,
-        )
+        semantic_candidate if not semantic_identity_mismatches else None
     )
     authoritative = _java_subject_candidate(entry, semantic_subject)
     semantic_project = (
         semantic_subject.project if semantic_subject is not None else None
     )
-    if semantic_subject is None:
+    if semantic_identity_mismatches:
+        fields = ' and '.join(
+            f'authoritative {item}' for item in semantic_identity_mismatches
+        )
         limitations = (
+            *semantic_resolution.limitations,
+            'Semantic graph metadata disagrees with the PR156 '
+            f'{fields}; semantic enrichment was omitted while Java '
+            'code-intelligence facts remain authoritative.',
+        )
+        semantic_metadata_partial = True
+    elif semantic_subject is None:
+        limitations = (
+            *semantic_resolution.limitations,
             "PR156 resolved the exact Java callable, but matching semantic graph "
             "metadata is unavailable; Java code-intelligence facts remain "
             "authoritative.",
@@ -2025,13 +2050,14 @@ def _resolve_exact_java_subject(
         semantic_metadata_partial = True
     elif semantic_project != entry.project_id:
         limitations = (
+            *semantic_resolution.limitations,
             "Exact Java subject project identities differ: PR156 callable project "
             f"{entry.project_id!r} is authoritative for Java code intelligence; "
             f"semantic subject metadata uses {semantic_project!r}.",
         )
         semantic_metadata_partial = True
     else:
-        limitations = ()
+        limitations = semantic_resolution.limitations
         semantic_metadata_partial = False
     resolution = SubjectResolution(
         query,
@@ -2080,7 +2106,7 @@ def _exact_java_constraint_limitation(
     return None
 
 
-def _matching_semantic_java_subject(
+def _exact_semantic_java_subject(
     resolution: SubjectResolution,
     entry: CallableIndexEntry,
 ) -> SubjectCandidate | None:
@@ -2089,11 +2115,29 @@ def _matching_semantic_java_subject(
         resolution.status is ResolutionStatus.RESOLVED
         and subject is not None
         and subject.canonical_id == entry.canonical_subject_id
-        and subject.kind is KnowledgeKind.METHOD
-        and subject.language.casefold() == "java"
     ):
         return subject
     return None
+
+
+def _semantic_java_identity_mismatches(
+    subject: SubjectCandidate | None,
+    entry: CallableIndexEntry,
+) -> tuple[str, ...]:
+    if subject is None:
+        return ()
+    mismatches = []
+    if subject.kind is not KnowledgeKind.METHOD:
+        mismatches.append('callable kind')
+    if subject.language.casefold() != 'java':
+        mismatches.append('language')
+    if subject.name != entry.identity.name:
+        mismatches.append('simple name')
+    if subject.qualified_name != entry.identity.raw_signature:
+        mismatches.append('qualified identity')
+    if subject.path is not None and subject.path != entry.source.path:
+        mismatches.append('source identity')
+    return tuple(sorted(mismatches))
 
 
 def _java_subject_candidate(
@@ -2130,6 +2174,19 @@ def _unresolved_exact_java_subject(
         SubjectMatchBasis.NONE,
         resolver.graph_digest,
         limitations,
+    )
+
+
+def _contains_deferred_constructor_subject(
+    request: ExplanationRequest,
+) -> bool:
+    return any(
+        item is not None and item.startswith('constructor:')
+        for item in (
+            request.subject,
+            request.relationship_source,
+            request.relationship_target,
+        )
     )
 
 
