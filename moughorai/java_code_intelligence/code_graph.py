@@ -31,6 +31,13 @@ JAVA_CODE_GRAPH_SCHEMA_VERSION = 1
 JAVA_CODE_GRAPH_ENCODING = 'canonical-row-json-v1'
 MAXIMUM_CODE_GRAPH_DIAGNOSTICS = 4_096
 
+_COMPACT_PROJECTION_FIELDS = (
+    'encoding', 'lineage', 'path_scope', 'callable_index_fingerprint',
+    'subjects', 'files', 'lexical', 'reasons', 'diagnostic_codes',
+    'diagnostic_messages', 'diagnostic_projects', 'call_sites', 'edges',
+    'diagnostics', 'coverage',
+)
+
 _INVOCATION_KINDS = (
     InvocationKind.METHOD_INVOCATION,
     InvocationKind.CONSTRUCTOR_INVOCATION,
@@ -483,15 +490,28 @@ def code_graph_from_dict(
     for path in files:
         _validate_relative_path(path)
 
-    sites = tuple(
-        _call_site_row(
-            _row(item, 'call-site row'), subjects, files, lexical, reasons,
-            entries,
+    raw_site_rows = _array(root['call_sites'], 'call-site rows')
+    subject_ref = _references(subjects)
+    file_ref = _references(files)
+    lexical_ref = _references(lexical)
+    reason_ref = _references(reasons)
+    site_values: list[CallSiteEvidence] = []
+    for item in raw_site_rows:
+        row = _row(item, 'call-site row')
+        site = _call_site_row(
+            row, subjects, files, lexical, reasons, entries,
         )
-        for item in _array(root['call_sites'], 'call-site rows')
-    )
+        if tuple(_site_row(
+            site, subject_ref, file_ref, lexical_ref, reason_ref,
+        )) != row:
+            raise ValueError('persisted call-site rows are not canonical')
+        site_values.append(site)
+    sites = tuple(site_values)
+    del site_values
     if len({item.evidence_id for item in sites}) != len(sites):
         raise ValueError('duplicate call-site evidence IDs are forbidden')
+    _validate_strict_order(sites, _site_sort_key, 'call-site rows')
+
     edges = tuple(
         _edge_row(_row(item, 'edge row'), sites, subjects)
         for item in _array(root['edges'], 'edge rows')
@@ -505,44 +525,121 @@ def code_graph_from_dict(
         for item in _array(root['diagnostics'], 'diagnostic rows')
     )
     coverage = _coverage(root['coverage'])
-    rebuilt, projection = _create_code_graph_with_projection(
-        lineage=_string(root['lineage'], 'lineage'),
-        path_scope=PathScope(_string(root['path_scope'], 'path scope')),
+    _validate_persisted_graph(
+        root=root,
         callable_index=callable_index,
-        call_sites=sites,
+        sites=sites,
+        edges=edges,
         diagnostics=diagnostics,
-        callable_bodies_examined=coverage.callable_bodies_examined,
-        callable_bodies_unavailable=coverage.callable_bodies_unavailable,
-        extraction_failures=coverage.extraction_failures,
-        omitted_diagnostic_count=coverage.omitted_diagnostic_count,
+        coverage=coverage,
+        subjects=subjects,
+        files=files,
+        lexical=lexical,
+        reasons=reasons,
+        diagnostic_codes=diagnostic_codes,
+        diagnostic_messages=diagnostic_messages,
+        diagnostic_projects=diagnostic_projects,
     )
-    if _code_graph_envelope(rebuilt, projection) != dict(root):
-        raise ValueError(
-            'Java code graph digest, ordering, tables, or coverage is inconsistent'
-        )
-    if (
-        edges != rebuilt.edges
-        or len(edges) != len(set(edges))
-    ):
-        raise ValueError('persisted code-graph edges are inconsistent')
-    return rebuilt
+    return _reconstructed_code_graph(
+        root=root,
+        sites=sites,
+        edges=edges,
+        diagnostics=diagnostics,
+        coverage=coverage,
+    )
 
 
-def _compact_projection(
+def _validate_persisted_graph(
     *,
-    lineage: str,
-    path_scope: PathScope,
-    callable_index_fingerprint: str,
-    call_sites: Sequence[CallSiteEvidence],
-    edges: Sequence[CodeGraphEdge],
-    diagnostics: Sequence[CodeGraphDiagnostic],
+    root: Mapping[str, object],
+    callable_index: JavaCallableIndex,
+    sites: tuple[CallSiteEvidence, ...],
+    edges: tuple[CodeGraphEdge, ...],
+    diagnostics: tuple[CodeGraphDiagnostic, ...],
     coverage: CodeGraphCoverage,
-) -> dict[str, object]:
+    subjects: tuple[str, ...],
+    files: tuple[str, ...],
+    lexical: tuple[str, ...],
+    reasons: tuple[str, ...],
+    diagnostic_codes: tuple[str, ...],
+    diagnostic_messages: tuple[str, ...],
+    diagnostic_projects: tuple[str, ...],
+) -> None:
+    '''Validate every model-wide invariant once at the persisted boundary.'''
+
+    _validate_callable_binding(sites, diagnostics, callable_index)
+    _validate_strict_order(diagnostics, _diagnostic_sort_key, 'diagnostics')
+    _validate_site_accounting(sites, coverage)
+    expected_edges = _edges(sites)
+    if edges != expected_edges:
+        raise ValueError('persisted code-graph edges are inconsistent')
+
+    states = Counter(item.state for item in sites)
+    expected_coverage = CodeGraphCoverage(
+        coverage.callable_bodies_examined,
+        coverage.callable_bodies_unavailable,
+        coverage.extraction_failures,
+        len(sites),
+        states[CallResolutionState.RESOLVED],
+        states[CallResolutionState.POLYMORPHIC],
+        states[CallResolutionState.AMBIGUOUS],
+        states[CallResolutionState.UNRESOLVED],
+        states[CallResolutionState.EXTERNAL],
+        states[CallResolutionState.UNSUPPORTED],
+        sum(
+            item.request.invocation_kind
+            is InvocationKind.CONSTRUCTOR_INVOCATION
+            for item in sites
+        ),
+        sum(
+            item.request.invocation_kind is InvocationKind.METHOD_REFERENCE
+            for item in sites
+        ),
+        len(diagnostics),
+        coverage.omitted_diagnostic_count,
+    )
+    if coverage != expected_coverage:
+        raise ValueError('code-graph coverage or accounting is inconsistent')
+
+    expected_tables = _projection_tables(sites, diagnostics)
+    actual_tables = (
+        subjects, files, lexical, reasons, diagnostic_codes,
+        diagnostic_messages, diagnostic_projects,
+    )
+    if actual_tables != expected_tables:
+        raise ValueError('code-graph compact tables are inconsistent')
+
+    projection = {name: root[name] for name in _COMPACT_PROJECTION_FIELDS}
+    digest = _digest(projection)
+    if (
+        root['digest'] != digest
+        or root['input_fingerprint'] != f'java-code-graph:{digest}'
+    ):
+        raise ValueError('Java code graph digest or fingerprint is inconsistent')
+
+
+def _validate_strict_order(
+    values: Sequence[object],
+    key,
+    label: str,
+) -> None:
+    previous = None
+    for value in values:
+        current = key(value)
+        if previous is not None and current <= previous:
+            raise ValueError(f'{label} must be unique and deterministically sorted')
+        previous = current
+
+
+def _projection_tables(
+    sites: Sequence[CallSiteEvidence],
+    diagnostics: Sequence[CodeGraphDiagnostic],
+) -> tuple[tuple[str, ...], ...]:
     subject_values: set[str] = set()
     file_values: set[str] = set()
     lexical_values: set[str] = set()
     reason_values: set[str] = set()
-    for site in call_sites:
+    for site in sites:
         request = site.request
         subject_values.add(request.caller_subject_id)
         subject_values.update(item for item in (
@@ -563,14 +660,70 @@ def _compact_projection(
             subject_values.add(diagnostic.caller_subject_id)
         if diagnostic.source_path is not None:
             file_values.add(diagnostic.source_path)
+    return (
+        tuple(sorted(subject_values)),
+        tuple(sorted(file_values)),
+        tuple(sorted(lexical_values)),
+        tuple(sorted(reason_values)),
+        tuple(sorted({item.code for item in diagnostics})),
+        tuple(sorted({item.message for item in diagnostics})),
+        tuple(sorted({item.project_id for item in diagnostics})),
+    )
 
-    subjects = tuple(sorted(subject_values))
-    files = tuple(sorted(file_values))
-    lexical = tuple(sorted(lexical_values))
-    reasons = tuple(sorted(reason_values))
-    diagnostic_codes = tuple(sorted({item.code for item in diagnostics}))
-    diagnostic_messages = tuple(sorted({item.message for item in diagnostics}))
-    diagnostic_projects = tuple(sorted({item.project_id for item in diagnostics}))
+
+def _reconstructed_code_graph(
+    *,
+    root: Mapping[str, object],
+    sites: tuple[CallSiteEvidence, ...],
+    edges: tuple[CodeGraphEdge, ...],
+    diagnostics: tuple[CodeGraphDiagnostic, ...],
+    coverage: CodeGraphCoverage,
+) -> JavaCodeGraph:
+    '''Materialize only components proven by _validate_persisted_graph.'''
+
+    graph = object.__new__(JavaCodeGraph)
+    values = {
+        'lineage': _string(root['lineage'], 'lineage'),
+        'path_scope': PathScope(_string(root['path_scope'], 'path scope')),
+        'callable_index_fingerprint': _string(
+            root['callable_index_fingerprint'], 'callable-index fingerprint',
+        ),
+        'call_sites': sites,
+        'edges': edges,
+        'diagnostics': diagnostics,
+        'coverage': coverage,
+        'digest': _string(root['digest'], 'code-graph digest'),
+        'input_fingerprint': _string(
+            root['input_fingerprint'], 'code-graph fingerprint',
+        ),
+        'producer_version': JAVA_CODE_GRAPH_PRODUCER,
+        'schema_version': JAVA_CODE_GRAPH_SCHEMA_VERSION,
+        'format': JAVA_CODE_GRAPH_FORMAT,
+    }
+    for name, value in values.items():
+        object.__setattr__(graph, name, value)
+    return graph
+
+
+def _compact_projection(
+    *,
+    lineage: str,
+    path_scope: PathScope,
+    callable_index_fingerprint: str,
+    call_sites: Sequence[CallSiteEvidence],
+    edges: Sequence[CodeGraphEdge],
+    diagnostics: Sequence[CodeGraphDiagnostic],
+    coverage: CodeGraphCoverage,
+) -> dict[str, object]:
+    (
+        subjects,
+        files,
+        lexical,
+        reasons,
+        diagnostic_codes,
+        diagnostic_messages,
+        diagnostic_projects,
+    ) = _projection_tables(call_sites, diagnostics)
     subject_ref = _references(subjects)
     file_ref = _references(files)
     lexical_ref = _references(lexical)

@@ -11,6 +11,9 @@ from moughorai.java_code_intelligence.call_sites import (
     CallSiteEvidence,
     InvocationKind,
 )
+from moughorai.java_code_intelligence._validation import (
+    reconstruction_validation_scope,
+)
 from moughorai.java_code_intelligence.code_graph import (
     CodeGraphEdge,
     CodeGraphEdgeKind,
@@ -224,6 +227,19 @@ class JavaCodeIntelligenceService:
     ) -> JavaCodeIntelligenceService:
         if not isinstance(semantic_context, Mapping):
             raise TypeError("code intelligence semantic context must be a mapping")
+        with reconstruction_validation_scope():
+            return cls._from_validated_context(
+                snapshot_id=snapshot_id,
+                semantic_context=semantic_context,
+            )
+
+    @classmethod
+    def _from_validated_context(
+        cls,
+        *,
+        snapshot_id: str,
+        semantic_context: Mapping[str, object],
+    ) -> JavaCodeIntelligenceService:
         limitations: list[str] = []
         raw_index = semantic_context.get("java_callable_index")
         raw_graph = semantic_context.get("java_code_graph")

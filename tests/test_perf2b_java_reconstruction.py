@@ -5,11 +5,14 @@ import json
 
 import pytest
 
+from moughorai.code_intelligence import JavaCodeIntelligenceService
+from moughorai.code_intelligence import service as code_service_module
 from moughorai.ai_context.persistence import (
     decode_analysis_result_bytes,
     encode_analysis_result_bytes,
 )
 from moughorai.java_code_intelligence import code_graph as graph_module
+from moughorai.java_code_intelligence import _validation as validation_module
 from moughorai.java_code_intelligence._validation import (
     reconstruction_validation_scope,
     validated_text,
@@ -177,6 +180,46 @@ def test_failed_validation_is_never_memoized() -> None:
     assert value.strip_calls == 2
 
 
+def test_decode_memo_bound_is_independent_per_validation_width(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        validation_module,
+        '_MAXIMUM_VALIDATED_TEXT_VALUES_PER_WIDTH',
+        1,
+    )
+    short = _CountingText('short-value')
+    long = _CountingText('long-value')
+    overflow = _CountingText('overflow')
+
+    with reconstruction_validation_scope():
+        for _ in range(2):
+            assert validated_text(short, 'short', 64) == short
+            assert validated_text(long, 'long', 256) == long
+            assert validated_text(overflow, 'overflow', 64) == overflow
+
+    assert short.strip_calls == 1
+    assert long.strip_calls == 1
+    assert overflow.strip_calls == 2
+
+
+@pytest.mark.parametrize('value, valid', (
+    ('before\x00after', False),
+    ('before\x1fafter', False),
+    ('before after', True),
+    ('before\x7fafter', True),
+))
+def test_control_character_validation_contract_is_exact(
+    value: str,
+    valid: bool,
+) -> None:
+    if valid:
+        assert validated_text(value, 'text', 64) == value
+    else:
+        with pytest.raises(ValueError, match='control characters'):
+            validated_text(value, 'text', 64)
+
+
 def test_plain_text_reuse_never_skips_contextual_invariants() -> None:
     span = _span()
     identity = _identity('demo.App', 'run')
@@ -288,7 +331,7 @@ def test_strict_graph_decode_reuses_projection_without_weakening_comparison(
 
     restored = code_graph_from_dict(encoded, callable_index)
     assert restored == graph
-    assert calls == {'projection': 1, 'digest': 1}
+    assert calls == {'projection': 0, 'digest': 1}
 
     corrupt_digest = deepcopy(encoded)
     corrupt_digest['digest'] = '0' * 64
@@ -297,13 +340,105 @@ def test_strict_graph_decode_reuses_projection_without_weakening_comparison(
 
     duplicate_edge = deepcopy(encoded)
     duplicate_edge['edges'].append(duplicate_edge['edges'][0])
-    with pytest.raises(ValueError, match='digest|ordering|coverage'):
+    with pytest.raises(ValueError, match='digest|ordering|coverage|edges'):
         code_graph_from_dict(duplicate_edge, callable_index)
 
     invalid_order = deepcopy(encoded)
     invalid_order['subjects'].reverse()
     with pytest.raises(ValueError, match='deterministically sorted'):
         code_graph_from_dict(invalid_order, callable_index)
+
+
+def test_persisted_graph_fast_path_does_not_repeat_model_wide_validation(
+    monkeypatch,
+) -> None:
+    callable_index, graph = _artifacts()
+    encoded = code_graph_to_dict(graph)
+
+    def unexpected_post_init(_self) -> None:
+        raise AssertionError('persisted graph repeated JavaCodeGraph validation')
+
+    monkeypatch.setattr(
+        graph_module.JavaCodeGraph,
+        '__post_init__',
+        unexpected_post_init,
+    )
+    restored = code_graph_from_dict(encoded, callable_index)
+
+    assert restored == graph
+    assert code_graph_to_dict(restored) == encoded
+
+
+@pytest.mark.parametrize('corruption', (
+    'normalized_owner_references',
+    'unused_lexical_value',
+    'unused_diagnostic_value',
+    'constructor_coverage',
+    'noncanonical_json',
+))
+def test_persisted_projection_reuse_remains_exact_and_fail_closed(
+    corruption: str,
+) -> None:
+    callable_index, graph = _artifacts()
+    encoded = deepcopy(code_graph_to_dict(graph))
+    row = json.loads(encoded['call_sites'][0])
+    if corruption == 'normalized_owner_references':
+        row[10].append(row[10][0])
+        encoded['call_sites'][0] = json.dumps(
+            row, ensure_ascii=False, separators=(',', ':'),
+        )
+    elif corruption == 'unused_lexical_value':
+        encoded['lexical'].append('zzzzUnused')
+    elif corruption == 'unused_diagnostic_value':
+        encoded['diagnostic_codes'].append('ZZZ_UNUSED')
+    elif corruption == 'constructor_coverage':
+        encoded['coverage']['constructor_calls'] += 1
+    else:
+        encoded['call_sites'][0] = encoded['call_sites'][0] + ' '
+
+    with pytest.raises((TypeError, ValueError)):
+        code_graph_from_dict(encoded, callable_index)
+
+
+def test_runtime_reconstruction_scope_is_shared_per_load_and_never_leaks(
+    monkeypatch,
+) -> None:
+    callable_index, graph = _artifacts()
+    context = {
+        'java_callable_index': callable_index_to_dict(callable_index),
+        'java_code_graph': code_graph_to_dict(graph),
+    }
+    observed: list[object] = []
+    original_index = code_service_module.callable_index_from_dict
+    original_graph = code_service_module.code_graph_from_dict
+
+    def observed_index(value):
+        observed.append(validation_module._DECODE_VALIDATION_MEMO.get())
+        return original_index(value)
+
+    def observed_graph(value, authority):
+        observed.append(validation_module._DECODE_VALIDATION_MEMO.get())
+        return original_graph(value, authority)
+
+    monkeypatch.setattr(
+        code_service_module, 'callable_index_from_dict', observed_index,
+    )
+    monkeypatch.setattr(
+        code_service_module, 'code_graph_from_dict', observed_graph,
+    )
+
+    for _ in range(2):
+        JavaCodeIntelligenceService.from_context(
+            snapshot_id='snapshot:test',
+            semantic_context=context,
+        )
+        assert validation_module._DECODE_VALIDATION_MEMO.get() is None
+
+    assert observed[0] is not None
+    assert observed[0] is observed[1]
+    assert observed[2] is not None
+    assert observed[2] is observed[3]
+    assert observed[0] is not observed[2]
 
 
 def test_full_transport_remains_byte_identical_after_strict_reconstruction() -> None:
