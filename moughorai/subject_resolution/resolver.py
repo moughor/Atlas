@@ -89,6 +89,20 @@ class CanonicalSubjectResolver:
         node = self._by_id.get(node_id)
         return self._candidate(node, match_basis) if node is not None else None
 
+    def _source_free_candidate_for_graph_id(
+        self,
+        node_id: str,
+        *,
+        match_basis: SubjectMatchBasis = SubjectMatchBasis.CANONICAL_ID,
+    ) -> SubjectCandidate | None:
+        """Project one internal identity for an index that never retains paths."""
+
+        node = self._by_id.get(node_id)
+        return (
+            self._candidate(node, match_basis, include_source_path=False)
+            if node is not None else None
+        )
+
     @classmethod
     def from_snapshot(
         cls,
@@ -569,6 +583,8 @@ class CanonicalSubjectResolver:
         self,
         node: KnowledgeNode,
         basis: SubjectMatchBasis,
+        *,
+        include_source_path: bool = True,
     ) -> SubjectCandidate:
         qualified = self._public_text(
             node.qualified_name or node.name,
@@ -586,7 +602,7 @@ class CanonicalSubjectResolver:
         language = node.language or "unknown"
         if contains_absolute_path_text(language):
             language = "unknown"
-        paths = self._paths.get(node.id, ())
+        paths = self._paths.get(node.id, ()) if include_source_path else ()
         return SubjectCandidate(
             self._public_id(node),
             node.kind,

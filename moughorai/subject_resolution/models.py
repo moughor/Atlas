@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 import json
@@ -8,7 +10,24 @@ from pathlib import PurePosixPath
 import re
 
 from moughorai.knowledge_graph import KnowledgeKind
-from moughorai.platform.safety import contains_absolute_path
+from moughorai.platform.safety import contains_absolute_path, contains_absolute_path_text
+
+
+_candidate_safe_text: ContextVar[set[str] | None] = ContextVar(
+    "subject_candidate_safe_text",
+    default=None,
+)
+
+
+@contextmanager
+def _subject_candidate_validation_scope():
+    """Bound successful exact-text reuse to one candidate projection build."""
+
+    token = _candidate_safe_text.set(set())
+    try:
+        yield
+    finally:
+        _candidate_safe_text.reset(token)
 
 
 class ResolutionStatus(str, Enum):
@@ -110,7 +129,7 @@ class SubjectCandidate:
         object.__setattr__(self, "project_scopes", scopes)
         if self.path is not None:
             object.__setattr__(self, "path", _relative_path(self.path))
-        if contains_absolute_path(self.to_dict()):
+        if _candidate_contains_absolute_path(self):
             raise ValueError("subject candidates must not contain absolute paths")
 
     @property
@@ -502,6 +521,30 @@ def _relative_path(value: str) -> str:
     ):
         raise ValueError("subject path constraints must be workspace-relative")
     return path.as_posix()
+
+
+def _candidate_contains_absolute_path(candidate: SubjectCandidate) -> bool:
+    cached = _candidate_safe_text.get()
+    values = (
+        candidate.canonical_id,
+        candidate.kind.value,
+        candidate.name,
+        candidate.qualified_name,
+        candidate.project,
+        candidate.language,
+        candidate.path,
+        *candidate.project_scopes,
+        candidate.match_basis.value,
+    )
+    if cached is None:
+        return contains_absolute_path(values)
+    for value in values:
+        if value is None or value in cached:
+            continue
+        if contains_absolute_path_text(value):
+            return True
+        cached.add(value)
+    return False
 
 
 def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:

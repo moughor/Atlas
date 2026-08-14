@@ -31,6 +31,7 @@ from moughorai.semantic_evidence import (
 )
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
 from moughorai.subject_resolution import CanonicalSubjectResolver, SubjectCandidate
+from moughorai.subject_resolution.models import _subject_candidate_validation_scope
 
 from .interpreter import CONCEPT_REGISTRY_VERSION
 from .models import SearchCapability, SearchCapabilityState
@@ -122,6 +123,57 @@ class _ScopeFilter:
         return True
 
 
+class _BuildLocalNormalization:
+    """Reuse exact validated values only while constructing one search index."""
+
+    __slots__ = ("_languages", "_normalized", "_project_scopes")
+
+    def __init__(self) -> None:
+        self._normalized: dict[str, dict[str, str]] = defaultdict(dict)
+        self._project_scopes: dict[
+            tuple[type[object], object], str | None
+        ] = {}
+        self._languages: dict[tuple[type[object], object], str] = {}
+
+    def normalize(self, domain: str, value: str) -> str:
+        values = self._normalized[domain]
+        existing = values.get(value)
+        if existing is not None:
+            return existing
+        normalized = _normalize(value)
+        values[value] = normalized
+        return normalized
+
+    def project_scope(
+        self,
+        value: object,
+        trusted: frozenset[str],
+    ) -> str | None:
+        if not isinstance(value, (str, type(None))):
+            return _safe_project_scope(value, trusted)
+        key = (type(value), value)
+        if key in self._project_scopes:
+            return self._project_scopes[key]
+        validated = _safe_project_scope(value, trusted)
+        self._project_scopes[key] = validated
+        return validated
+
+    def language(
+        self,
+        value: object,
+        trusted: frozenset[str],
+    ) -> str:
+        if not isinstance(value, (str, type(None))):
+            return _safe_language(value, trusted)
+        key = (type(value), value)
+        existing = self._languages.get(key)
+        if existing is not None:
+            return existing
+        validated = _safe_language(value, trusted)
+        self._languages[key] = validated
+        return validated
+
+
 class SemanticSearchIndex:
     """Immutable, source-free and rebuildable PR135 snapshot index."""
 
@@ -138,7 +190,9 @@ class SemanticSearchIndex:
         evidence: EvidenceIndex,
         capabilities: Iterable[SearchCapability],
         limitations: Iterable[str] = (),
+        _normalization: _BuildLocalNormalization | None = None,
     ) -> None:
+        normalization = _normalization or _BuildLocalNormalization()
         ordered = tuple(sorted(entries, key=lambda item: (
             item.subject.kind.value,
             item.subject.qualified_name.casefold(),
@@ -161,7 +215,9 @@ class SemanticSearchIndex:
                 item.subject.name,
                 item.subject.qualified_name,
             }:
-                identities[_normalize(identity)].append(item.graph_id)
+                identities[
+                    normalization.normalize("identity", identity)
+                ].append(item.graph_id)
             for token in item.tokens:
                 tokens[token].append(item.graph_id)
             for concept in item.concepts:
@@ -171,10 +227,16 @@ class SemanticSearchIndex:
                 *(item.subject.project_scopes or ()),
                 *((item.subject.project,) if item.subject.project else ()),
             }:
-                projects[_normalize(project)].append(item.graph_id)
+                projects[
+                    normalization.normalize("project", project)
+                ].append(item.graph_id)
             for module in item.module_scopes:
-                modules[_normalize(module)].append(item.graph_id)
-            languages[_normalize(item.subject.language)].append(item.graph_id)
+                modules[
+                    normalization.normalize("module", module)
+                ].append(item.graph_id)
+            languages[
+                normalization.normalize("language", item.subject.language)
+            ].append(item.graph_id)
         self.snapshot_id = snapshot_id
         self.graph_digest = graph_digest
         self.index_id = index_id
@@ -429,42 +491,20 @@ class _IndexBuilder:
         self.context = snapshot.semantic_context
         self.resolver = resolver or CanonicalSubjectResolver.from_snapshot(snapshot)
         self.graph = self.resolver.graph
-        raw_graph = self.context.get("semantic_graph")
         self.source_graph_digest = (
-            _source_graph_digest(raw_graph)
+            self.resolver.graph_digest
             if self.graph is not None else "unavailable"
         )
         self.trusted_project_scopes = _trusted_project_scope_ids(
             self.graph, self.context,
         )
         self.trusted_languages = _trusted_language_ids(self.context)
+        self.normalization = _BuildLocalNormalization()
         self.public_to_graph: dict[str, list[str]] = defaultdict(list)
         self.candidates: dict[str, SubjectCandidate] = {}
         if self.graph is not None:
-            for node in self.graph.nodes:
-                candidate = self.resolver.candidate_for_graph_id(node.id)
-                if candidate is not None:
-                    candidate = SubjectCandidate(
-                        candidate.canonical_id,
-                        candidate.kind,
-                        candidate.name,
-                        candidate.qualified_name,
-                        _safe_project_scope(
-                            candidate.project, self.trusted_project_scopes,
-                        ),
-                        _safe_language(candidate.language, self.trusted_languages),
-                        None,
-                        tuple(filter(None, (
-                            _safe_project_scope(
-                                item, self.trusted_project_scopes,
-                            )
-                            for item in candidate.project_scopes
-                        ))),
-                        candidate.match_basis,
-                        candidate.graph_id,
-                    )
-                    self.candidates[node.id] = candidate
-                    self.public_to_graph[candidate.canonical_id].append(node.id)
+            with _subject_candidate_validation_scope():
+                self._project_candidates()
         self.evidence = EvidenceIndex()
         self.provider_evidence_cache: dict[
             tuple[EvidenceIndex, str], EvidenceRecord | None
@@ -483,6 +523,45 @@ class _IndexBuilder:
         self.source_classifications: dict[str, set[str]] = defaultdict(set)
         self.risk: dict[str, dict[str, str]] = defaultdict(dict)
         self.module_memberships = _module_memberships(self.graph)
+
+    def _project_candidates(self) -> None:
+        if self.graph is None:
+            return
+        for node in self.graph.nodes:
+            candidate = self.resolver._source_free_candidate_for_graph_id(node.id)
+            if candidate is None:
+                continue
+            project = self.normalization.project_scope(
+                candidate.project, self.trusted_project_scopes,
+            )
+            language = self.normalization.language(
+                candidate.language, self.trusted_languages,
+            )
+            project_scopes = tuple(filter(None, (
+                self.normalization.project_scope(
+                    item, self.trusted_project_scopes,
+                )
+                for item in candidate.project_scopes
+            )))
+            if (
+                project != candidate.project
+                or language != candidate.language
+                or project_scopes != candidate.project_scopes
+            ):
+                candidate = SubjectCandidate(
+                    candidate.canonical_id,
+                    candidate.kind,
+                    candidate.name,
+                    candidate.qualified_name,
+                    project,
+                    language,
+                    None,
+                    project_scopes,
+                    candidate.match_basis,
+                    candidate.graph_id,
+                )
+            self.candidates[node.id] = candidate
+            self.public_to_graph[candidate.canonical_id].append(node.id)
 
     def build(self) -> SemanticSearchIndex:
         graph_digest = self.source_graph_digest
@@ -654,6 +733,7 @@ class _IndexBuilder:
             evidence=self.evidence,
             capabilities=self.capabilities,
             limitations=self.limitations,
+            _normalization=self.normalization,
         )
 
     def _index_symbol_facts(self, symbols: Mapping[str, Mapping[str, object]]) -> None:
@@ -698,14 +778,17 @@ class _IndexBuilder:
             concepts, trusted_concepts, accepted_annotations, unresolved_known = _annotation_concepts(
                 canonical_annotations
             )
-            source_classes = {
-                _normalize(safe.get(name, ""))
+            normalized_source_classes = {
+                name: self.normalization.normalize(
+                    "source_classification", safe.get(name, ""),
+                )
                 for name in ("source_set", "source_scope", "source_classification")
             }
+            source_classes = set(normalized_source_classes.values())
             classification_sources = {
                 f"symbols.metadata.{name}"
                 for name in ("source_set", "source_scope", "source_classification")
-                if _normalize(safe.get(name, "")) in {
+                if normalized_source_classes[name] in {
                     *_KNOWN_SOURCE_CLASSIFICATIONS,
                     *_TEST_SOURCE_SCOPES,
                     *_GENERATED_SOURCE_SCOPES,
@@ -761,7 +844,7 @@ class _IndexBuilder:
                     self.snapshot.snapshot_id,
                     source_refs=("symbols.metadata", *sorted(classification_sources)),
                     scope=_safe_scope(candidate.project if candidate else None),
-                    language=_safe_language(
+                    language=self.normalization.language(
                         candidate.language if candidate else "unknown",
                         self.trusted_languages,
                     ),
@@ -1470,122 +1553,6 @@ def _module_memberships(
         graph_id: tuple(sorted(values))
         for graph_id, values in memberships.items()
     }
-
-
-def _source_graph_digest(value: object) -> str:
-    """Hash the canonical persisted PR129 payload without restoring it twice."""
-
-    if not isinstance(value, Mapping) or value.get("schema_version") != 1:
-        return "unavailable"
-    raw_nodes = value.get("nodes")
-    raw_edges = value.get("edges")
-    if (
-        not isinstance(raw_nodes, Sequence)
-        or isinstance(raw_nodes, (str, bytes, bytearray))
-        or not isinstance(raw_edges, Sequence)
-        or isinstance(raw_edges, (str, bytes, bytearray))
-        or any(not isinstance(item, Mapping) for item in raw_nodes)
-        or any(not isinstance(item, Mapping) for item in raw_edges)
-    ):
-        return "unavailable"
-    node_payloads = []
-    node_ids: set[str] = set()
-    for node in raw_nodes:
-        identifier = str(node.get("id", ""))
-        if not identifier or identifier in node_ids:
-            return "unavailable"
-        node_ids.add(identifier)
-        try:
-            kind = KnowledgeKind(str(node.get("kind", "symbol")))
-        except ValueError:
-            return "unavailable"
-        qualified = (
-            str(node.get("qualified_name"))
-            if node.get("qualified_name") is not None else None
-        )
-        name = str(node.get("name") or qualified or identifier)
-        qualified_name = qualified or name
-        raw_symbol = node.get("symbol_id")
-        symbol_id = str(raw_symbol) if raw_symbol is not None else (
-            identifier
-            if kind in {
-                KnowledgeKind.SYMBOL, KnowledgeKind.PACKAGE, KnowledgeKind.TYPE,
-                KnowledgeKind.METHOD, KnowledgeKind.FIELD,
-            }
-            else None
-        )
-        raw_metadata = node.get("metadata")
-        metadata = {
-            str(key): str(item)
-            for key, item in raw_metadata.items()
-        } if isinstance(raw_metadata, Mapping) else {}
-        payload: dict[str, object] = {
-            "id": identifier,
-            "kind": kind.value,
-            "qualified_name": qualified_name,
-            "project_id": (
-                str(node.get("project_id"))
-                if node.get("project_id") is not None else None
-            ),
-            "language": str(node.get("language") or "unknown"),
-        }
-        if name != qualified_name:
-            payload["name"] = name
-        if symbol_id is not None and symbol_id != identifier:
-            payload["symbol_id"] = symbol_id
-        if metadata:
-            payload["metadata"] = metadata
-        node_payloads.append(payload)
-
-    edge_payloads: set[tuple[str, str, str, tuple[str, ...]]] = set()
-    for edge in raw_edges:
-        raw_evidence = edge.get("evidence", ())
-        if (
-            not isinstance(raw_evidence, Sequence)
-            or isinstance(raw_evidence, (str, bytes, bytearray))
-        ):
-            return "unavailable"
-        evidence = tuple(map(str, raw_evidence))
-        try:
-            relation = KnowledgeRelation(
-                str(edge.get("kind", "related_to"))
-            ).value
-        except ValueError:
-            return "unavailable"
-        edge_payloads.add((
-            str(edge.get("source", "")),
-            str(edge.get("target", "")),
-            relation,
-            evidence,
-        ))
-
-    digest = hashlib.sha256()
-
-    def update(item: object) -> None:
-        digest.update(json.dumps(
-            item,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8"))
-
-    digest.update(b'{"edges":[')
-    for position, (source, target, relation, evidence) in enumerate(sorted(edge_payloads)):
-        if position:
-            digest.update(b",")
-        update({
-            "source": source,
-            "target": target,
-            "kind": relation,
-            "evidence": list(evidence),
-        })
-    digest.update(b'],"nodes":[')
-    for position, node in enumerate(sorted(node_payloads, key=lambda item: str(item["id"]))):
-        if position:
-            digest.update(b",")
-        update(node)
-    digest.update(b'],"schema_version":1}')
-    return digest.hexdigest()
 
 
 def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:
