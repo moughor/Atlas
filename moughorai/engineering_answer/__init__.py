@@ -12,10 +12,16 @@ from .models import (
     EngineeringInspectItem,
     EngineeringTraversalSummary,
 )
-from .renderer import render_engineering_answer
+from .renderer import (
+    EngineeringAnswerNameResolver,
+    EngineeringAnswerView,
+    render_engineering_answer,
+)
 from .service import EngineeringAnswerConfiguration, EngineeringAnswerService
 
 __all__ = [
+    'EngineeringAnswerNameResolver',
+    'EngineeringAnswerView',
     "ENGINEERING_ANSWER_PRODUCER",
     "ENGINEERING_ANSWER_SCHEMA_VERSION",
     "EngineeringAnswer",

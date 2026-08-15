@@ -52,7 +52,9 @@ from .code_intelligence import (
 )
 from .engineering_answer import (
     EngineeringAnswerConfiguration,
+    EngineeringAnswerNameResolver,
     EngineeringAnswerService,
+    EngineeringAnswerView,
     render_engineering_answer,
 )
 from .semantic_search import (
@@ -1145,12 +1147,28 @@ def engineering_answer_command(
         int,
         typer.Option('--limit', min=1, max=32, help='Maximum representatives per synthesized section.'),
     ] = 8,
+    detail: Annotated[
+        bool,
+        typer.Option('--detail', help='Show bounded representatives and source evidence.'),
+    ] = False,
+    full: Annotated[
+        bool,
+        typer.Option('--full', help='Show the complete PR167 evidence-rich rendering.'),
+    ] = False,
     json_output: Annotated[
         bool,
         typer.Option('--json', help='Print separately versioned PR167 JSON.'),
     ] = False,
 ) -> None:
     '''Synthesize a concise engineering answer from existing Java evidence.'''
+
+    if detail and full:
+        raise typer.BadParameter('--detail and --full are mutually exclusive')
+    selected_view = (
+        EngineeringAnswerView.FULL
+        if full else EngineeringAnswerView.DETAIL
+        if detail else EngineeringAnswerView.SUMMARY
+    )
 
     def operation() -> None:
         loaded = _load_ai_snapshot(root, snapshot)
@@ -1173,9 +1191,14 @@ def engineering_answer_command(
                     max_inspect_items=min(16, max(4, limit * 2)),
                 ),
             )
-            output = (
-                result.to_json() + '\n'
-                if json_output else render_engineering_answer(result)
+            output = result.to_json() + '\n' if json_output else (
+                render_engineering_answer(
+                    result,
+                    view=selected_view,
+                    name_resolver=_engineering_answer_name_resolver(
+                        runtime.java_code_intelligence,
+                    ),
+                )
             )
             typer.echo(output, nl=False)
         finally:
@@ -2493,12 +2516,39 @@ def _session_impact(
     typer.echo(render_code_intelligence(result), nl=False)
 
 
+def _engineering_answer_name_resolver(
+    service: JavaCodeIntelligenceService,
+) -> EngineeringAnswerNameResolver:
+    index = service.callable_index
+    entries = index.entries if index is not None else ()
+
+    def resolve(canonical_id: str) -> str | None:
+        lower = 0
+        upper = len(entries)
+        while lower < upper:
+            middle = (lower + upper) // 2
+            candidate = entries[middle]
+            if candidate.canonical_subject_id < canonical_id:
+                lower = middle + 1
+            else:
+                upper = middle
+        if (
+            lower < len(entries)
+            and entries[lower].canonical_subject_id == canonical_id
+        ):
+            return entries[lower].identity.normalized_key
+        return None
+
+    return resolve
+
+
 def _session_answer(
     session: RepositoryRuntimeSession,
     snapshot,
     subject: str | None,
     project: str | None,
     result_limit: int,
+    view: EngineeringAnswerView,
 ) -> None:
     if subject is None:
         typer.echo('error: set an exact subject with /subject first', err=True)
@@ -2519,7 +2569,16 @@ def _session_answer(
             max_inspect_items=min(16, max(4, result_limit * 2)),
         ),
     )
-    typer.echo(render_engineering_answer(result), nl=False)
+    typer.echo(
+        render_engineering_answer(
+            result,
+            view=view,
+            name_resolver=_engineering_answer_name_resolver(
+                runtime.java_code_intelligence,
+            ),
+        ),
+        nl=False,
+    )
 
 
 @ai_app.command('session')
@@ -2576,7 +2635,7 @@ def ai_session_command(
             explain_engine = ExplainEngine(runtime_session=runtime_session)
             typer.echo(
                 'Atlas session ready. Use /help, /search, /subject, /project, '
-                '/answer, /explain, /impact, /stats, or /exit.'
+                '/answer [detail|full], /explain, /impact, /stats, or /exit.'
             )
             while True:
                 line = typer.prompt('atlas', prompt_suffix='> ').strip()
@@ -2591,7 +2650,8 @@ def ai_session_command(
                         '/search <text> [limit] find canonical subjects; '
                         '/use <n> select a Java method from the latest search; '
                         '/subject <canonical-id>; /project <project>; '
-                        '/answer; /explain; /impact; /stats; /exit; or enter a question.'
+                        '/answer [summary|detail|full]; /explain; /impact; '
+                        '/stats; /exit; or enter a question.'
                     )
                     continue
                 if line == '/search' or line.startswith('/search '):
@@ -2644,11 +2704,20 @@ def ai_session_command(
                         current_project, result_limit,
                     )
                     continue
-                if line == '/answer':
-                    _session_answer(
-                        runtime_session, loaded, current_subject,
-                        current_project, result_limit,
-                    )
+                if line == '/answer' or line.startswith('/answer '):
+                    raw_view = line.removeprefix('/answer').strip() or 'summary'
+                    try:
+                        answer_view = EngineeringAnswerView(raw_view.casefold())
+                    except ValueError:
+                        typer.echo(
+                            'error: usage: /answer [summary|detail|full]',
+                            err=True,
+                        )
+                    else:
+                        _session_answer(
+                            runtime_session, loaded, current_subject,
+                            current_project, result_limit, answer_view,
+                        )
                     continue
                 question = line.removeprefix('/ask ').strip()
                 result = ask_engine.ask(
