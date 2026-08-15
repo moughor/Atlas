@@ -10,6 +10,9 @@ import hashlib
 import json
 
 from .call_sites import (
+    _HINT,
+    _call_evidence_id,
+    _java_structured_text,
     CallResolutionState,
     CallSiteEvidence,
     CallSiteRequest,
@@ -23,6 +26,7 @@ from .models import (
     SourcePosition,
     SourceRange,
 )
+from ._validation import validated_text
 
 
 JAVA_CODE_GRAPH_FORMAT = 'moughorai.java-code-graph.v1'
@@ -30,6 +34,11 @@ JAVA_CODE_GRAPH_PRODUCER = 'atlas-pr157/1'
 JAVA_CODE_GRAPH_SCHEMA_VERSION = 1
 JAVA_CODE_GRAPH_ENCODING = 'canonical-row-json-v1'
 MAXIMUM_CODE_GRAPH_DIAGNOSTICS = 4_096
+_CANONICAL_ROW_JSON_ENCODER = json.JSONEncoder(
+    ensure_ascii=False,
+    separators=(',', ':'),
+    allow_nan=False,
+)
 
 _COMPACT_PROJECTION_FIELDS = (
     'encoding', 'lineage', 'path_scope', 'callable_index_fingerprint',
@@ -62,6 +71,77 @@ _RESOLUTION_STATES = (
     CallResolutionState.EXTERNAL,
     CallResolutionState.UNSUPPORTED,
 )
+
+_PERSISTED_DECODER_TOKEN = object()
+
+
+class _LexicalTableValidation:
+    '''Validate each compact lexical entry once for every role it serves.'''
+
+    __slots__ = ('values', 'arguments', 'members', 'structured')
+
+    def __init__(self, values: tuple[str, ...]) -> None:
+        self.values = values
+        self.arguments: set[int] = set()
+        self.members: set[int] = set()
+        self.structured: set[int] = set()
+
+    def member(self, index: int) -> str:
+        value = self.values[index]
+        if index not in self.members:
+            if validated_text(value, 'invoked member', 256) != value:
+                raise ValueError('invoked member is not canonical')
+            self.members.add(index)
+        return value
+
+    def structured_name(self, index: int) -> str:
+        value = self.values[index]
+        if index not in self.structured:
+            _java_structured_text(
+                value, 'call receiver or owner type hint', cached=True,
+            )
+            self.structured.add(index)
+        return value
+
+    def argument(self, index: int) -> str:
+        value = self.values[index]
+        if index not in self.arguments:
+            if (
+                validated_text(value, 'argument hint', 1_024) != value
+                or _HINT.fullmatch(value) is None
+            ):
+                raise ValueError('argument hint is not structured')
+            self.arguments.add(index)
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedCallSiteRow:
+    '''Primitive compact-row values proven before model construction.'''
+
+    proof: object
+    caller_subject_id: str
+    caller_normalized_key: str
+    project_id: str
+    source_path: str
+    source_range: SourceRange
+    invocation_kind: InvocationKind
+    receiver_kind: ReceiverKind
+    member_name: str
+    receiver: str | None
+    owner_type_hints: tuple[str, ...]
+    argument_hints: tuple[str, ...]
+    request_limitations: tuple[str, ...]
+    state: CallResolutionState
+    target_subject_id: str | None
+    declared_target_id: str | None
+    candidate_target_ids: tuple[str, ...]
+    limitations: tuple[str, ...]
+    evidence_id: str
+
+    def __post_init__(self) -> None:
+        if self.proof is not _PERSISTED_DECODER_TOKEN:
+            raise TypeError('validated call-site row requires decoder proof')
 
 
 class CodeGraphEdgeKind(str, Enum):
@@ -489,17 +569,22 @@ def code_graph_from_dict(
         raise ValueError('subject table references an unknown callable')
     for path in files:
         _validate_relative_path(path)
+    for reason in reasons:
+        if validated_text(reason, 'call-site limitation', 512) != reason:
+            raise ValueError('reason table contains non-canonical text')
 
     raw_site_rows = _array(root['call_sites'], 'call-site rows')
     subject_ref = _references(subjects)
     file_ref = _references(files)
     lexical_ref = _references(lexical)
     reason_ref = _references(reasons)
+    lexical_validation = _LexicalTableValidation(lexical)
     site_values: list[CallSiteEvidence] = []
     for item in raw_site_rows:
         row = _row(item, 'call-site row')
         site = _call_site_row(
             row, subjects, files, lexical, reasons, entries,
+            lexical_validation,
         )
         if tuple(_site_row(
             site, subject_ref, file_ref, lexical_ref, reason_ref,
@@ -839,60 +924,178 @@ def _call_site_row(
     lexical: tuple[str, ...],
     reasons: tuple[str, ...],
     entries: Mapping[str, CallableIndexEntry],
+    lexical_validation: _LexicalTableValidation,
 ) -> CallSiteEvidence:
+    validated = _validated_call_site_row(
+        row, subjects, files, lexical, reasons, entries,
+        lexical_validation,
+    )
+    return _reconstructed_call_site(validated)
+
+
+def _validated_call_site_row(
+    row: tuple[object, ...],
+    subjects: tuple[str, ...],
+    files: tuple[str, ...],
+    lexical: tuple[str, ...],
+    reasons: tuple[str, ...],
+    entries: Mapping[str, CallableIndexEntry],
+    lexical_validation: _LexicalTableValidation,
+) -> _ValidatedCallSiteRow:
     if len(row) != 19:
         raise ValueError('call-site row has invalid arity')
     caller = subjects[_ref(row[0], subjects, 'caller reference')]
     entry = entries[caller]
-    request = CallSiteRequest(
+    source_range = SourceRange(
+        SourcePosition(
+            _positive(row[2], 'call-site start line'),
+            _positive(row[3], 'call-site start column'),
+        ),
+        SourcePosition(
+            _positive(row[4], 'call-site end line'),
+            _positive(row[5], 'call-site end column'),
+        ),
+    )
+    member_index = _ref(row[8], lexical, 'member reference')
+    receiver_index = _nullable_ref(
+        row[9], lexical, 'receiver reference',
+    )
+    receiver = (
+        lexical_validation.structured_name(receiver_index)
+        if receiver_index is not None else None
+    )
+    request_limitations = _reference_values(
+        row[12], reasons, 'request limitation references', canonical=True,
+    )
+    limitations = _reference_values(
+        row[17], reasons, 'resolution limitation references', canonical=True,
+    )
+    if any(item not in limitations for item in request_limitations):
+        raise ValueError(
+            'resolution limitations must include request limitations'
+        )
+    state = _enum_ref(row[13], _RESOLUTION_STATES, 'resolution state')
+    target_subject_id = _nullable_table_value(
+        row[14], subjects, 'target reference',
+    )
+    declared_target_id = _nullable_table_value(
+        row[15], subjects, 'declared-target reference',
+    )
+    candidate_target_ids = _reference_values(
+        row[16], subjects, 'candidate references', canonical=True,
+    )
+    if state is CallResolutionState.RESOLVED:
+        if (
+            target_subject_id is None
+            or declared_target_id is not None
+            or candidate_target_ids
+        ):
+            raise ValueError('resolved call target coverage is inconsistent')
+    elif target_subject_id is not None:
+        raise ValueError('uncertain call cannot contain a resolved target')
+    if state is CallResolutionState.POLYMORPHIC and (
+        declared_target_id is None and not candidate_target_ids
+    ):
+        raise ValueError('polymorphic call has no represented targets')
+    if state in {
+        CallResolutionState.UNRESOLVED,
+        CallResolutionState.EXTERNAL,
+        CallResolutionState.UNSUPPORTED,
+    } and (declared_target_id is not None or candidate_target_ids):
+        raise ValueError('unresolved call cannot contain target candidates')
+    return _ValidatedCallSiteRow(
+        _PERSISTED_DECODER_TOKEN,
         caller,
         entry.identity.normalized_key,
         entry.project_id,
         files[_ref(row[1], files, 'file reference')],
-        SourceRange(
-            SourcePosition(
-                _positive(row[2], 'call-site start line'),
-                _positive(row[3], 'call-site start column'),
-            ),
-            SourcePosition(
-                _positive(row[4], 'call-site end line'),
-                _positive(row[5], 'call-site end column'),
-            ),
-        ),
+        source_range,
         _enum_ref(row[6], _INVOCATION_KINDS, 'invocation kind'),
         _enum_ref(row[7], _RECEIVER_KINDS, 'receiver kind'),
-        lexical[_ref(row[8], lexical, 'member reference')],
-        _nullable_table_value(row[9], lexical, 'receiver reference'),
-        tuple(lexical[index] for index in _refs(
-            row[10], lexical, 'owner references',
-        )),
-        tuple(lexical[index] for index in _refs(
-            row[11], lexical, 'argument references',
-        )),
-        tuple(reasons[index] for index in _refs(
-            row[12], reasons, 'request limitation references',
-        )),
-        _cache_transport_validation=True,
+        lexical_validation.member(member_index),
+        receiver,
+        _reference_values(
+            row[10], lexical, 'owner references', canonical=True,
+            validator=lexical_validation.structured_name,
+        ),
+        _reference_values(
+            row[11], lexical, 'argument references', canonical=False,
+            validator=lexical_validation.argument,
+        ),
+        request_limitations,
+        state,
+        target_subject_id,
+        declared_target_id,
+        candidate_target_ids,
+        limitations,
+        _string(row[18], 'call evidence ID'),
     )
-    rebuilt = CallSiteEvidence.create(
+
+
+def _reconstructed_call_site(
+    validated: _ValidatedCallSiteRow,
+) -> CallSiteEvidence:
+    '''Materialize only values carrying the strict decoder proof token.'''
+
+    if (
+        not isinstance(validated, _ValidatedCallSiteRow)
+        or validated.proof is not _PERSISTED_DECODER_TOKEN
+    ):
+        raise TypeError('persisted call-site construction requires decoder proof')
+    request = object.__new__(CallSiteRequest)
+    assign = object.__setattr__
+    assign(request, 'caller_subject_id', validated.caller_subject_id)
+    assign(request, 'caller_normalized_key', validated.caller_normalized_key)
+    assign(request, 'project_id', validated.project_id)
+    assign(request, 'source_path', validated.source_path)
+    assign(request, 'source_range', validated.source_range)
+    assign(request, 'invocation_kind', validated.invocation_kind)
+    assign(request, 'receiver_kind', validated.receiver_kind)
+    assign(request, 'member_name', validated.member_name)
+    assign(request, 'receiver', validated.receiver)
+    assign(request, 'owner_type_hints', validated.owner_type_hints)
+    assign(request, 'argument_hints', validated.argument_hints)
+    assign(request, 'limitations', validated.request_limitations)
+    expected_evidence_id = _call_evidence_id(
         request,
-        _enum_ref(row[13], _RESOLUTION_STATES, 'resolution state'),
-        target_subject_id=_nullable_table_value(
-            row[14], subjects, 'target reference',
-        ),
-        declared_target_id=_nullable_table_value(
-            row[15], subjects, 'declared-target reference',
-        ),
-        candidate_target_ids=tuple(subjects[index] for index in _refs(
-            row[16], subjects, 'candidate references',
-        )),
-        limitations=tuple(reasons[index] for index in _refs(
-            row[17], reasons, 'resolution limitation references',
-        )),
+        validated.state,
+        validated.target_subject_id,
+        validated.declared_target_id,
+        validated.candidate_target_ids,
+        validated.limitations,
     )
-    if rebuilt.evidence_id != _string(row[18], 'call evidence ID'):
+    if expected_evidence_id != validated.evidence_id:
         raise ValueError('call evidence ID is inconsistent')
-    return rebuilt
+    evidence = object.__new__(CallSiteEvidence)
+    assign(evidence, 'request', request)
+    assign(evidence, 'state', validated.state)
+    assign(evidence, 'evidence_id', validated.evidence_id)
+    assign(evidence, 'target_subject_id', validated.target_subject_id)
+    assign(evidence, 'declared_target_id', validated.declared_target_id)
+    assign(evidence, 'candidate_target_ids', validated.candidate_target_ids)
+    assign(evidence, 'limitations', validated.limitations)
+    return evidence
+
+
+def _reference_values(
+    value: object,
+    table: Sequence[str],
+    label: str,
+    *,
+    canonical: bool,
+    validator=None,
+) -> tuple[str, ...]:
+    result: list[str] = []
+    previous = -1
+    for item in _array(value, label):
+        index = _ref(item, table, label)
+        if canonical and index <= previous:
+            raise ValueError(f'{label} must be unique and deterministically sorted')
+        previous = index
+        result.append(
+            validator(index) if validator is not None else table[index]
+        )
+    return tuple(result)
 
 
 def _edge_row(
@@ -1122,9 +1325,7 @@ def _digest(value: Mapping[str, object]) -> str:
 
 
 def _canonical_row(value: Sequence[object]) -> str:
-    return json.dumps(
-        value, ensure_ascii=False, separators=(',', ':'), allow_nan=False,
-    )
+    return _CANONICAL_ROW_JSON_ENCODER.encode(value)
 
 
 def _row(value: object, label: str) -> tuple[object, ...]:
