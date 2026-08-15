@@ -14,6 +14,7 @@ from moughorai.code_intelligence import (
     CodePathConfidence,
     JavaCodeIntelligenceService,
 )
+from moughorai.engineering_answer import EngineeringAnswerService
 from moughorai.knowledge_graph import (
     KnowledgeEdge,
     KnowledgeKind,
@@ -522,8 +523,14 @@ class StructuredExplanationService:
             )
         if result.report is None:
             return 0, tuple(sorted(set(result.limitations)))
+        engineering_answer = EngineeringAnswerService(
+            service,
+            measurement=(
+                self.runtime.measurement if self.runtime is not None else None
+            ),
+        ).synthesize(result.report, max_inspect_items=4)
         return self._add_code_intelligence_sections(
-            builder, subject, result.report,
+            builder, subject, result.report, engineering_answer,
         )
 
     def _add_code_intelligence_sections(
@@ -531,6 +538,7 @@ class StructuredExplanationService:
         builder: _FactBuilder,
         subject: SubjectCandidate,
         report,
+        engineering_answer,
     ) -> tuple[int, tuple[str, ...]]:
         trace = report.traceability
         builder.add(
@@ -542,7 +550,7 @@ class StructuredExplanationService:
                 f'PR156 identifies this exact {report.subject.kind.value} as '
                 f'{report.subject.display_name}.'
             ),
-            priority=11,
+            priority=1,
             attributes=(
                 ExplanationAttribute('callable_kind', report.subject.kind.value),
                 ExplanationAttribute(
@@ -559,6 +567,9 @@ class StructuredExplanationService:
             ),
             producer_ids=('moughorai.java-callable-index.v1', 'atlas-pr159/1'),
             limitations=report.subject.limitations,
+        )
+        self._add_engineering_answer_summary_facts(
+            builder, subject, report, engineering_answer,
         )
         relationship_sections = (
             ('relationship', 'Direct high-confidence Java caller', report.direct_callers_high_confidence),
@@ -600,6 +611,150 @@ class StructuredExplanationService:
                 priority += 1
         return self._add_code_path_and_limitation_facts(
             builder, subject, report, priority, omitted, omitted_candidates,
+        )
+
+
+    def _add_engineering_answer_summary_facts(
+        self, builder: _FactBuilder, subject: SubjectCandidate, report, answer,
+    ) -> None:
+        callers = answer.direct_callers_high_confidence
+        caller_sites = answer.direct_caller_conservative_sites
+        self._add_engineering_summary_fact(
+            builder, subject, report,
+            logical_key='direct-callers', title='Java direct caller summary',
+            statement=(
+                f'PR167 summarizes {callers.total_count} high-confidence direct '
+                f'caller relationship(s), {caller_sites.total_count} conservative '
+                f'caller source site(s), and '
+                f'{answer.direct_caller_method_references.total_count} caller method reference(s).'
+            ),
+            priority=2,
+            attributes=(
+                ExplanationAttribute('high_confidence_total', callers.total_count),
+                ExplanationAttribute('high_confidence_included', callers.included_count),
+                ExplanationAttribute('high_confidence_omitted', callers.omitted_count),
+                ExplanationAttribute('conservative_site_total', caller_sites.total_count),
+                ExplanationAttribute('candidate_projection_total', caller_sites.candidate_projection_count),
+                ExplanationAttribute('method_reference_total', answer.direct_caller_method_references.total_count),
+            ),
+            limitations=('Conservative call sites do not prove a runtime target.',),
+        )
+        self._add_engineering_summary_fact(
+            builder, subject, report,
+            logical_key='upstream-impact', title='Java upstream impact summary',
+            statement=' '.join(answer.change_risk_summary), priority=3,
+            attributes=(
+                ExplanationAttribute('direct_total', answer.upstream_direct.total_count),
+                ExplanationAttribute('transitive_total', answer.upstream_transitive.total_count),
+                ExplanationAttribute('visited_node_count', answer.traversal.visited_node_count),
+                ExplanationAttribute('visited_edge_count', answer.traversal.visited_edge_count),
+                ExplanationAttribute('truncated', answer.traversal.truncated),
+            ),
+            limitations=('Represented upstream impact is not a complete runtime blast radius.',),
+        )
+        callees = answer.direct_callees_high_confidence
+        callee_sites = answer.direct_callee_conservative_sites
+        self._add_engineering_summary_fact(
+            builder, subject, report,
+            logical_key='direct-callees', title='Java direct callee summary',
+            statement=(
+                f'PR167 summarizes {callees.total_count} high-confidence direct '
+                f'callee relationship(s), {callee_sites.total_count} conservative '
+                f'call-site group(s), and '
+                f'{answer.direct_callee_method_references.total_count} method reference(s).'
+            ),
+            priority=4,
+            attributes=(
+                ExplanationAttribute('high_confidence_total', callees.total_count),
+                ExplanationAttribute('high_confidence_included', callees.included_count),
+                ExplanationAttribute('high_confidence_omitted', callees.omitted_count),
+                ExplanationAttribute('conservative_site_total', callee_sites.total_count),
+                ExplanationAttribute('candidate_projection_total', callee_sites.candidate_projection_count),
+                ExplanationAttribute('method_reference_total', answer.direct_callee_method_references.total_count),
+            ),
+            limitations=('Conservative candidate targets are not definite dependencies.',),
+        )
+        self._add_engineering_test_and_uncertainty_summaries(
+            builder, subject, report, answer,
+        )
+
+    def _add_engineering_test_and_uncertainty_summaries(
+        self, builder: _FactBuilder, subject: SubjectCandidate, report, answer,
+    ) -> None:
+        self._add_engineering_summary_fact(
+            builder, subject, report,
+            logical_key='represented-tests', title='Represented TEST summary',
+            statement=(
+                f'PR167 summarizes {answer.direct_test_callers.total_count} direct '
+                f'represented TEST caller(s), '
+                f'{answer.high_confidence_test_paths.total_count} high-confidence '
+                f'represented TEST path(s), and '
+                f'{answer.possible_test_paths.total_count} possible represented TEST path(s).'
+            ),
+            priority=5,
+            attributes=(
+                ExplanationAttribute('direct_test_caller_total', answer.direct_test_callers.total_count),
+                ExplanationAttribute('high_confidence_path_total', answer.high_confidence_test_paths.total_count),
+                ExplanationAttribute('possible_path_total', answer.possible_test_paths.total_count),
+                ExplanationAttribute('runtime_test_coverage_proven', False),
+            ),
+            limitations=(
+                'Represented TEST reachability is not runtime test coverage.',
+                'Absence of a represented TEST path cannot establish that code is untested.',
+            ),
+        )
+        counts = tuple(
+            (item.section_id, item.total_count) for item in answer.uncertainty
+        )
+        nonzero = ', '.join(
+            f'{name}={count}' for name, count in counts if count
+        ) or 'no counted uncertainty records'
+        self._add_engineering_summary_fact(
+            builder, subject, report,
+            logical_key='uncertainty', title='Java uncertainty summary',
+            statement=f'PR167 reports the bounded uncertainty counts: {nonzero}.',
+            priority=6,
+            attributes=tuple(
+                ExplanationAttribute(name, count) for name, count in counts
+            ),
+            limitations=(
+                'Uncertainty counts describe represented evidence limits and do not create missing targets.',
+            ),
+        )
+
+    def _add_engineering_summary_fact(
+        self,
+        builder: _FactBuilder,
+        subject: SubjectCandidate,
+        report,
+        *,
+        logical_key: str,
+        title: str,
+        statement: str,
+        priority: int,
+        attributes: tuple[ExplanationAttribute, ...],
+        limitations: tuple[str, ...] = (),
+    ) -> None:
+        trace = report.traceability
+        builder.add(
+            logical_key=f'engineering-answer:{logical_key}:{subject.canonical_id}',
+            kind=ExplanationFactKind.METADATA,
+            subject_id=subject.canonical_id,
+            title=title,
+            statement=statement,
+            priority=priority,
+            attributes=attributes,
+            evidence_kind=EvidenceKind.ANALYSIS_RESULT,
+            source_refs=(
+                report.input_fingerprint,
+                trace.callable_index_fingerprint,
+                trace.code_graph_fingerprint,
+                trace.test_evidence_fingerprint,
+            ),
+            producer_ids=('atlas-pr159/1', 'atlas-pr167/1'),
+            limitations=limitations,
+            reliability=0.95,
+            specificity=1.0,
         )
 
     def _add_code_call_group_fact(

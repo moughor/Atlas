@@ -1013,7 +1013,134 @@ def _eligible_for_deterministic_code_impact_fallback(
     }
     if not set(section.evidence_ids).issubset(available):
         return False
-    return isinstance(section.content.get('report'), Mapping)
+    return (
+        isinstance(section.content.get('engineering_answer'), Mapping)
+        or isinstance(section.content.get('report'), Mapping)
+    )
+
+
+def _engineering_answer_count(
+    counts: Mapping[str, object], name: str, field: str = 'total',
+) -> int:
+    section = counts.get(name)
+    value = section.get(field, 0) if isinstance(section, Mapping) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _append_engineering_inspection(lines: list[str], value: object) -> None:
+    lines.extend(('', 'What to inspect first:'))
+    if not isinstance(value, Sequence) or isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return
+    for item in value:
+        if isinstance(item, Mapping):
+            lines.append(
+                '- {}; reference={}; source={}.'.format(
+                    item.get('reason', 'represented evidence'),
+                    item.get('canonical_reference', 'unavailable'),
+                    item.get('source_ref', 'unavailable'),
+                )
+            )
+
+
+def _append_engineering_limitations(lines: list[str], value: object) -> None:
+    lines.extend(('', 'What Atlas cannot prove:'))
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        lines.extend(f'- {item}' for item in value)
+    lines.extend((
+        '- Possible target projections are conservative and are not resolved dependencies.',
+        '- Runtime invocation, runtime test execution, and behavioral coverage are not proven.',
+    ))
+
+
+def _append_engineering_traversal_and_tests(
+    lines: list[str], answer: Mapping[str, object], count,
+) -> None:
+    traversal = answer.get('traversal')
+    if isinstance(traversal, Mapping):
+        lines.append(
+            'Traversal metrics: visited nodes={}, visited edges={}, truncated={}.'.format(
+                traversal.get('visited_node_count', 0),
+                traversal.get('visited_edge_count', 0),
+                str(traversal.get('truncated') is True).lower(),
+            )
+        )
+    lines.extend((
+        '', 'Represented TEST reachability:',
+        '- Direct represented TEST callers: {}.'.format(
+            count('direct_test_callers')
+        ),
+        '- High-confidence represented TEST paths: {}.'.format(
+            count('high_confidence_test_paths')
+        ),
+        '- Possible represented TEST paths: {}.'.format(
+            count('possible_test_paths')
+        ),
+        '- This is represented TEST reachability, not runtime test coverage.',
+        '- Absence of a represented TEST path does not prove this subject is untested.',
+        '', 'Uncertainty:',
+    ))
+    uncertainty = answer.get('uncertainty_counts')
+    if isinstance(uncertainty, Mapping):
+        lines.extend(
+            f'- {key}: total={value}.'
+            for key, value in sorted(uncertainty.items())
+        )
+
+
+def _deterministic_engineering_answer_fallback(
+    evidence_ids: Sequence[str], answer: Mapping[str, object],
+) -> str | None:
+    subject = answer.get('subject')
+    counts = answer.get('counts')
+    if not isinstance(subject, Mapping) or not isinstance(counts, Mapping):
+        return None
+    def count(name: str, field: str = 'total') -> int:
+        return _engineering_answer_count(counts, name, field)
+    caller_sites = count('direct_caller_conservative_sites')
+    caller_candidates = count(
+        'direct_caller_conservative_sites', 'candidate_projections',
+    )
+    callee_sites = count('direct_callee_conservative_sites')
+    callee_candidates = count(
+        'direct_callee_conservative_sites', 'candidate_projections',
+    )
+    lines = [
+        'Atlas deterministic Java code-impact answer', '',
+        'Provider grounding failed, so the provider interpretation was discarded.', '',
+        'Subject: {}'.format(subject.get('qualified_name', 'unavailable')),
+        'Canonical ID: {}'.format(subject.get('canonical_id', 'unavailable')),
+        'Direction contract: canonical CALLER -> CALLEE; impact traversal is reverse upstream from the changed callee.', '',
+    ]
+    summary = answer.get('change_risk_summary', ())
+    if isinstance(summary, Sequence) and not isinstance(
+        summary, (str, bytes, bytearray)
+    ):
+        lines.extend(str(item) for item in summary)
+    lines.extend((
+        '',
+        'Direct represented callers: {} high-confidence relationship(s), {} conservative source call site(s), {} candidate projection(s).'.format(
+            count('direct_callers_high_confidence'), caller_sites, caller_candidates,
+        ),
+        'Direct represented callees: {} high-confidence relationship(s), {} conservative source call site(s), {} candidate projection(s).'.format(
+            count('direct_callees_high_confidence'), callee_sites, callee_candidates,
+        ),
+        'Upstream impact: {} direct and {} transitive represented consumer(s).'.format(
+            count('upstream_direct'), count('upstream_transitive'),
+        ),
+        'Method references: {} caller-side and {} callee-side; method references do not establish execution impact.'.format(
+            count('direct_caller_method_references'),
+            count('direct_callee_method_references'),
+        ),
+    ))
+    _append_engineering_traversal_and_tests(lines, answer, count)
+    _append_engineering_inspection(lines, answer.get('inspect_first'))
+    _append_engineering_limitations(lines, answer.get('limitations'))
+    lines.extend(('', 'Grounding evidence: ' + ' '.join(evidence_ids)))
+    return '\n'.join(lines)
 
 
 def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
@@ -1023,6 +1150,12 @@ def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
     ), None)
     if section is None or not section.evidence_ids:
         return None
+    engineering_answer = section.content.get('engineering_answer')
+    if isinstance(engineering_answer, Mapping):
+        return _deterministic_engineering_answer_fallback(
+            section.evidence_ids,
+            engineering_answer,
+        )
     report = section.content.get('report')
     if not isinstance(report, Mapping):
         return None
