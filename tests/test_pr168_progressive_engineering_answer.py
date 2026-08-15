@@ -289,7 +289,6 @@ def test_interactive_views_reuse_selected_subject_and_one_runtime(
     assert stats['component_build_counts'] == {
         'canonical_subject_resolver': 1,
         'java_code_intelligence': 1,
-        'semantic_search': 1,
     }
     assert stats['reuse_count'] >= 4
 

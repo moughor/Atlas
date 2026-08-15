@@ -122,7 +122,6 @@ def test_session_search_is_deterministic_bounded_reused_and_selectable(
     assert statistics['component_build_counts'] == {
         'canonical_subject_resolver': 1,
         'java_code_intelligence': 1,
-        'semantic_search': 1,
     }
     assert 'Atlas session closed.' in result.output
 
@@ -156,7 +155,6 @@ def test_search_projects_pr156_identity_across_semantic_project_mismatch(
     assert dict(session.statistics.component_build_counts) == {
         'canonical_subject_resolver': 1,
         'java_code_intelligence': 1,
-        'semantic_search': 1,
     }
     capsys.readouterr()
 
