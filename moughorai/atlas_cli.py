@@ -62,6 +62,8 @@ from .semantic_search import (
     SemanticSearchService,
     render_semantic_search,
 )
+from .semantic_search.interpreter import interpret_query
+from .semantic_search.models import SearchIntent
 from .impact_analysis import (
     ImpactChangeKind,
     ImpactPredictionRequest,
@@ -97,7 +99,7 @@ from .technical_debt import (
     TechnicalDebtService,
     render_technical_debt,
 )
-from .subject_resolution import SubjectQuery
+from .subject_resolution import ResolutionStatus, SubjectQuery
 from .ai_explain import ExplainEngine, ExplainRequest
 from .ai_memory import ConversationMemoryStore
 from .ai_review import ReviewEngine, ReviewRequest
@@ -2372,9 +2374,20 @@ def _parse_session_search(line: str) -> tuple[str, int]:
 
 
 def _authoritative_session_search_result(runtime, hit) -> _SessionSearchResult:
-    if hit.canonical_subject_id.startswith(('method:', 'constructor:')):
-        java = runtime.java_code_intelligence.query(
+    projected = (
+        hit
+        if isinstance(hit, _SessionSearchResult)
+        else _SessionSearchResult(
             hit.canonical_subject_id,
+            hit.project,
+            hit.qualified_name,
+            hit.kind.value,
+            hit.language,
+        )
+    )
+    if projected.canonical_subject_id.startswith(('method:', 'constructor:')):
+        java = runtime.java_code_intelligence.query(
+            projected.canonical_subject_id,
             configuration=_SESSION_SEARCH_CONFIGURATION,
         )
         subject = java.resolution.subject
@@ -2395,32 +2408,54 @@ def _authoritative_session_search_result(runtime, hit) -> _SessionSearchResult:
                 'java',
                 subject.kind.value == 'method',
             )
-    return _SessionSearchResult(
-        hit.canonical_subject_id,
-        hit.project,
-        hit.qualified_name,
-        hit.kind.value,
-        hit.language,
-    )
+    return projected
 
 
-def _session_search(
-    session: RepositoryRuntimeSession,
-    snapshot,
+def _exact_session_search(
+    runtime,
     query: str,
-    limit: int,
-) -> tuple[_SessionSearchResult, ...]:
-    runtime = session.runtime_for(snapshot)
-    response = runtime.semantic_search.search_semantic(
-        SemanticSearchRequest(query, limit=limit),
-    )
-    results = tuple(
-        _authoritative_session_search_result(runtime, hit)
-        for hit in response.hits
-    )
+) -> tuple[_SessionSearchResult, ...] | None:
+    '''Resolve the exact-identity branch without projecting the full search index.'''
+
+    request = SemanticSearchRequest(query, limit=1)
+    interpretation = interpret_query(request)
+    if (
+        interpretation.intents != (SearchIntent.EXACT_IDENTITY,)
+        or interpretation.concepts
+        or interpretation.subject_terms
+        or interpretation.relation is not None
+        or interpretation.filters
+        or interpretation.ambiguous
+    ):
+        return None
+    resolution = runtime.resolver.resolve(SubjectQuery(query))
+    if (
+        resolution.status is not ResolutionStatus.RESOLVED
+        or resolution.subject is None
+    ):
+        return None
+    subject = resolution.subject
+    return (_authoritative_session_search_result(
+        runtime,
+        _SessionSearchResult(
+            subject.canonical_id,
+            subject.project,
+            subject.qualified_name,
+            subject.kind.value,
+            subject.language,
+        ),
+    ),)
+
+
+def _emit_session_search_results(
+    results: tuple[_SessionSearchResult, ...],
+    *,
+    total_candidate_count: int,
+    omitted_count: int,
+) -> None:
     if not results:
         typer.echo('No canonical subjects found.')
-        return results
+        return
     for ordinal, result in enumerate(results, start=1):
         project = result.project or 'unknown'
         typer.echo(
@@ -2431,13 +2466,40 @@ def _session_search(
             f'  kind: {result.kind}\n'
             f'  language: {result.language}'
         )
-    typer.echo(
-        f'showing {len(results)} of {response.total_candidate_count} results'
-    )
-    if response.omitted_count:
+    typer.echo(f'showing {len(results)} of {total_candidate_count} results')
+    if omitted_count:
         typer.echo(
             'request more with /search <text> <limit> (maximum 20)'
         )
+
+
+def _session_search(
+    session: RepositoryRuntimeSession,
+    snapshot,
+    query: str,
+    limit: int,
+) -> tuple[_SessionSearchResult, ...]:
+    runtime = session.runtime_for(snapshot)
+    exact = _exact_session_search(runtime, query)
+    if exact is not None:
+        _emit_session_search_results(
+            exact,
+            total_candidate_count=1,
+            omitted_count=0,
+        )
+        return exact
+    response = runtime.semantic_search.search_semantic(
+        SemanticSearchRequest(query, limit=limit),
+    )
+    results = tuple(
+        _authoritative_session_search_result(runtime, hit)
+        for hit in response.hits
+    )
+    _emit_session_search_results(
+        results,
+        total_candidate_count=response.total_candidate_count,
+        omitted_count=response.omitted_count,
+    )
     return results
 
 

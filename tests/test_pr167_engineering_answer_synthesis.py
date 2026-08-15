@@ -421,5 +421,4 @@ def test_cli_human_reference_and_interactive_discovery_reach_answer(
     assert stats['component_build_counts'] == {
         'canonical_subject_resolver': 1,
         'java_code_intelligence': 1,
-        'semantic_search': 1,
     }
