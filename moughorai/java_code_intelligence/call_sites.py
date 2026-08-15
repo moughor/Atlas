@@ -26,6 +26,11 @@ from ._validation import validated_text
 
 
 _HINT = re.compile(r'(?:literal|identifier|new|type|primitive|unknown)(?::[^\s]+)?\Z')
+_CALL_EVIDENCE_JSON_ENCODER = json.JSONEncoder(
+    ensure_ascii=False,
+    separators=(',', ':'),
+    sort_keys=True,
+)
 
 
 def _is_java_structured_name(value: str) -> bool:
@@ -293,19 +298,15 @@ class CallSiteEvidence:
     ) -> CallSiteEvidence:
         candidates = tuple(sorted(set(candidate_target_ids)))
         limits = tuple(sorted(set((*request.limitations, *limitations))))
-        payload = {
-            'request': call_request_to_dict(request),
-            'state': state.value,
-            'target_subject_id': target_subject_id,
-            'declared_target_id': declared_target_id,
-            'candidate_target_ids': list(candidates),
-            'limitations': list(limits),
-        }
-        digest = hashlib.sha256(json.dumps(
-            payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True,
-        ).encode('utf-8')).hexdigest()
         return cls(
-            request, state, f'evidence:{digest}', target_subject_id,
+            request, state, _call_evidence_id(
+                request,
+                state,
+                target_subject_id,
+                declared_target_id,
+                candidates,
+                limits,
+            ), target_subject_id,
             declared_target_id, candidates, limits,
         )
 
@@ -329,6 +330,30 @@ def call_request_to_dict(value: CallSiteRequest) -> dict[str, object]:
         'argument_hints': list(value.argument_hints),
         'limitations': list(value.limitations),
     }
+
+
+def _call_evidence_id(
+    request: CallSiteRequest,
+    state: CallResolutionState,
+    target_subject_id: str | None,
+    declared_target_id: str | None,
+    candidate_target_ids: tuple[str, ...],
+    limitations: tuple[str, ...],
+) -> str:
+    '''Return the canonical evidence identity for already-normalized fields.'''
+
+    payload = {
+        'request': call_request_to_dict(request),
+        'state': state.value,
+        'target_subject_id': target_subject_id,
+        'declared_target_id': declared_target_id,
+        'candidate_target_ids': list(candidate_target_ids),
+        'limitations': list(limitations),
+    }
+    digest = hashlib.sha256(
+        _CALL_EVIDENCE_JSON_ENCODER.encode(payload).encode('utf-8')
+    ).hexdigest()
+    return f'evidence:{digest}'
 
 
 def call_evidence_to_dict(value: CallSiteEvidence) -> dict[str, object]:
