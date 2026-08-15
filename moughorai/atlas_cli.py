@@ -50,6 +50,11 @@ from .code_intelligence import (
     JavaCodeIntelligenceService,
     render_code_intelligence,
 )
+from .engineering_answer import (
+    EngineeringAnswerConfiguration,
+    EngineeringAnswerService,
+    render_engineering_answer,
+)
 from .semantic_search import (
     SemanticSearchRequest,
     SemanticSearchService,
@@ -1100,6 +1105,81 @@ def java_code_impact_command(
             if json_output else render_code_intelligence(result)
         )
         typer.echo(output, nl=False)
+
+    _run_command(operation)
+
+
+@app.command('answer')
+def engineering_answer_command(
+    subject: Annotated[
+        str,
+        typer.Argument(
+            help='Exact canonical or human-readable Java method/constructor reference.'
+        ),
+    ],
+    root: Annotated[
+        Path,
+        typer.Argument(help='Workspace root containing the semantic snapshot.'),
+    ] = Path('.'),
+    snapshot: Annotated[
+        Path | None,
+        typer.Option('--snapshot', help='Read a specific .ass snapshot instead of latest.ass.'),
+    ] = None,
+    kind: Annotated[
+        str | None,
+        typer.Option('--kind', help='Constrain to method or constructor.'),
+    ] = None,
+    project: Annotated[
+        str | None,
+        typer.Option('--project', help='Constrain the authoritative project.'),
+    ] = None,
+    depth: Annotated[
+        int,
+        typer.Option('--depth', min=1, max=64, help='Maximum existing reverse-upstream traversal depth.'),
+    ] = 8,
+    max_nodes: Annotated[
+        int,
+        typer.Option('--max-nodes', min=1, max=100000, help='Maximum callable nodes visited by PR159.'),
+    ] = 4096,
+    limit: Annotated[
+        int,
+        typer.Option('--limit', min=1, max=32, help='Maximum representatives per synthesized section.'),
+    ] = 8,
+    json_output: Annotated[
+        bool,
+        typer.Option('--json', help='Print separately versioned PR167 JSON.'),
+    ] = False,
+) -> None:
+    '''Synthesize a concise engineering answer from existing Java evidence.'''
+
+    def operation() -> None:
+        loaded = _load_ai_snapshot(root, snapshot)
+        runtime_session = RepositoryRuntimeSession(workspace_root=root)
+        try:
+            runtime = runtime_session.runtime_for(loaded)
+            result = EngineeringAnswerService(
+                runtime.java_code_intelligence,
+                measurement=runtime.measurement,
+            ).query(
+                subject,
+                kind=kind,
+                project=project,
+                configuration=EngineeringAnswerConfiguration(
+                    max_depth=depth,
+                    max_nodes=max_nodes,
+                    max_representatives_per_section=limit,
+                    max_limitation_representatives=min(limit, 4),
+                    max_candidates_per_call_site=min(limit, 5),
+                    max_inspect_items=min(16, max(4, limit * 2)),
+                ),
+            )
+            output = (
+                result.to_json() + '\n'
+                if json_output else render_engineering_answer(result)
+            )
+            typer.echo(output, nl=False)
+        finally:
+            runtime_session.close()
 
     _run_command(operation)
 
@@ -2413,6 +2493,35 @@ def _session_impact(
     typer.echo(render_code_intelligence(result), nl=False)
 
 
+def _session_answer(
+    session: RepositoryRuntimeSession,
+    snapshot,
+    subject: str | None,
+    project: str | None,
+    result_limit: int,
+) -> None:
+    if subject is None:
+        typer.echo('error: set an exact subject with /subject first', err=True)
+        return
+    runtime = session.runtime_for(snapshot)
+    result = EngineeringAnswerService(
+        runtime.java_code_intelligence,
+        measurement=runtime.measurement,
+    ).query(
+        subject,
+        project=project,
+        configuration=EngineeringAnswerConfiguration(
+            max_depth=8,
+            max_nodes=4_096,
+            max_representatives_per_section=result_limit,
+            max_limitation_representatives=min(result_limit, 4),
+            max_candidates_per_call_site=min(result_limit, 5),
+            max_inspect_items=min(16, max(4, result_limit * 2)),
+        ),
+    )
+    typer.echo(render_engineering_answer(result), nl=False)
+
+
 @ai_app.command('session')
 def ai_session_command(
     root: Annotated[Path, typer.Argument(help='Workspace root.')] = Path('.'),
@@ -2467,7 +2576,7 @@ def ai_session_command(
             explain_engine = ExplainEngine(runtime_session=runtime_session)
             typer.echo(
                 'Atlas session ready. Use /help, /search, /subject, /project, '
-                '/explain, /impact, /stats, or /exit.'
+                '/answer, /explain, /impact, /stats, or /exit.'
             )
             while True:
                 line = typer.prompt('atlas', prompt_suffix='> ').strip()
@@ -2482,7 +2591,7 @@ def ai_session_command(
                         '/search <text> [limit] find canonical subjects; '
                         '/use <n> select a Java method from the latest search; '
                         '/subject <canonical-id>; /project <project>; '
-                        '/explain; /impact; /stats; /exit; or enter a question.'
+                        '/answer; /explain; /impact; /stats; /exit; or enter a question.'
                     )
                     continue
                 if line == '/search' or line.startswith('/search '):
@@ -2531,6 +2640,12 @@ def ai_session_command(
                     continue
                 if line == '/impact':
                     _session_impact(
+                        runtime_session, loaded, current_subject,
+                        current_project, result_limit,
+                    )
+                    continue
+                if line == '/answer':
+                    _session_answer(
                         runtime_session, loaded, current_subject,
                         current_project, result_limit,
                     )

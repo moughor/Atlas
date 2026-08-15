@@ -6,6 +6,7 @@ import re
 
 from moughorai.ai_memory import ConversationMessage
 from moughorai.code_intelligence import CodeIntelligenceConfiguration
+from moughorai.engineering_answer import EngineeringAnswerService
 from moughorai.impact_analysis import ImpactPredictionRequest, ImpactPredictionService
 from moughorai.knowledge_graph import KnowledgeKind
 from moughorai.prompts import TokenEstimator
@@ -498,11 +499,18 @@ class EngineeringChatContextBuilder:
                     _chat_state(result.resolution.status.value),
                 )
                 return candidate, capability
-            records = _code_impact_records(runtime.snapshot, report)
-            evidence_ids = tuple(item.evidence_id for item in records)
+            engineering_answer = EngineeringAnswerService(
+                runtime.java_code_intelligence,
+                measurement=runtime.measurement,
+            ).synthesize(report, max_inspect_items=4)
+            available_records = _code_impact_records(runtime.snapshot, report)
+            summary_evidence_id = available_records[0].evidence_id
+            compact_answer = _compact_engineering_answer(engineering_answer)
+            compact_answer['evidence_ids'] = [summary_evidence_id]
             content = {
                 'producer': report.producer_version,
                 'input_fingerprint': report.input_fingerprint,
+                'engineering_answer': compact_answer,
                 'report': _compact_code_impact_report(
                     report.to_dict(),
                     conservative_callers=(
@@ -513,6 +521,12 @@ class EngineeringChatContextBuilder:
                     ),
                 ),
             }
+            referenced_evidence = set(_referenced_evidence_ids(content))
+            records = tuple(
+                item for item in available_records
+                if item.evidence_id in referenced_evidence
+            )
+            evidence_ids = tuple(item.evidence_id for item in records)
             section = ChatContextSection(
                 'code_impact',
                 'code_impact',
@@ -915,6 +929,25 @@ def _bounded_evidence_ids(value: object) -> tuple[str, ...]:
     return tuple(sorted(found)[:MAXIMUM_SECTION_EVIDENCE])
 
 
+def _referenced_evidence_ids(value: object) -> tuple[str, ...]:
+    found: set[str] = set()
+
+    def visit(item: object) -> None:
+        if isinstance(item, Mapping):
+            for nested in item.values():
+                visit(nested)
+        elif isinstance(item, Sequence) and not isinstance(
+            item, (str, bytes, bytearray)
+        ):
+            for nested in item:
+                visit(nested)
+        elif isinstance(item, str) and _EVIDENCE_CITATION.fullmatch(item):
+            found.add(item)
+
+    visit(value)
+    return tuple(sorted(found)[:MAXIMUM_SECTION_EVIDENCE])
+
+
 def _filter_evidence(value: object, allowed: set[str]) -> object:
     if isinstance(value, Mapping):
         return {
@@ -1073,12 +1106,9 @@ def _compact_code_relationship(value: object) -> object:
         'canonical_source',
         'canonical_target',
         'relation',
-        'subject_relative_role',
         'edge_kind',
         'producer_evidence_id',
         'confidence',
-        'execution_eligible',
-        'runtime_invocation_proven',
     ), additions={'source_ref': source_ref})
 
 
@@ -1187,21 +1217,88 @@ def _compact_code_path_section(
                 and not isinstance(raw_steps, (str, bytes, bytearray))
                 else []
             )
-            items.append(_selected_mapping(item, (
+            fields = (
                 'consumer_subject_id',
-                'subject_id',
                 'depth',
                 'confidence',
                 'traversal_direction',
                 'canonical_direction',
-                'canonical_relation',
-                'root_evidence_id',
-                'producer_evidence_ids',
-                'runtime_execution_proven',
-            ), additions={'steps': steps} if include_steps else None))
+            )
+            if include_steps:
+                fields = (*fields, 'producer_evidence_ids')
+            items.append(_selected_mapping(
+                item,
+                fields,
+                additions={'steps': steps} if include_steps else None,
+            ))
     return _selected_mapping(value, (
         'total_count', 'included_count', 'omitted_count',
     ), additions={'items': items})
+
+
+def _compact_engineering_answer(answer) -> dict[str, object]:
+    def counts(section) -> dict[str, int]:
+        return {
+            'total': section.total_count,
+            'candidate_projections': section.candidate_projection_count,
+        }
+
+    return {
+        'schema_version': answer.schema_version,
+        'producer_version': answer.producer_version,
+        'subject': {
+            'canonical_id': answer.subject.canonical_id,
+            'qualified_name': answer.subject.qualified_name,
+            'kind': answer.subject.kind,
+            'project': answer.subject.project,
+        },
+        'counts': {
+            'direct_callers_high_confidence': counts(
+                answer.direct_callers_high_confidence
+            ),
+            'direct_caller_conservative_sites': counts(
+                answer.direct_caller_conservative_sites
+            ),
+            'direct_caller_method_references': counts(
+                answer.direct_caller_method_references
+            ),
+            'upstream_direct': counts(answer.upstream_direct),
+            'upstream_transitive': counts(answer.upstream_transitive),
+            'direct_callees_high_confidence': counts(
+                answer.direct_callees_high_confidence
+            ),
+            'direct_callee_conservative_sites': counts(
+                answer.direct_callee_conservative_sites
+            ),
+            'direct_callee_method_references': counts(
+                answer.direct_callee_method_references
+            ),
+            'direct_test_callers': counts(answer.direct_test_callers),
+            'high_confidence_test_paths': counts(
+                answer.high_confidence_test_paths
+            ),
+            'possible_test_paths': counts(answer.possible_test_paths),
+        },
+        'traversal': {
+            'visited_node_count': answer.traversal.visited_node_count,
+            'visited_edge_count': answer.traversal.visited_edge_count,
+            'truncated': answer.traversal.truncated,
+        },
+        'uncertainty_counts': {
+            item.section_id: item.total_count for item in answer.uncertainty
+        },
+        'change_risk_summary': list(answer.change_risk_summary),
+        'inspect_first': [
+            {
+                'priority': item.priority,
+                'reason': item.reason,
+                'canonical_reference': item.canonical_reference,
+                'source_ref': item.source_ref,
+            }
+            for item in answer.inspect_first[:1]
+        ],
+        'limitations': list(answer.limitations[:2]),
+    }
 
 
 def _compact_code_impact_report(
@@ -1215,10 +1312,7 @@ def _compact_code_impact_report(
         'canonical_id',
         'project',
         'kind',
-        'owner_type',
-        'name',
         'display_name',
-        'source_classification',
     ))
     if isinstance(compact_subject, dict) and isinstance(subject, Mapping):
         source = subject.get('source')
@@ -1232,7 +1326,9 @@ def _compact_code_impact_report(
             'direct': _compact_code_path_section(
                 upstream.get('direct'), include_steps=False,
             ),
-            'transitive': _compact_code_path_section(upstream.get('transitive')),
+            'transitive': _compact_code_path_section(
+                upstream.get('transitive'), include_steps=False,
+            ),
             'traversal': _selected_mapping(upstream.get('traversal'), (
                 'traversal_direction',
                 'canonical_direction',
@@ -1271,19 +1367,6 @@ def _compact_code_impact_report(
             compact_limitations.append(_selected_mapping(item, (
                 'category', 'total_count', 'included_count', 'omitted_count',
             )))
-    raw_capabilities = value.get('capability_availability', ())
-    capabilities = (
-        [
-            _selected_mapping(item, (
-                'name', 'availability',
-            ))
-            for item in raw_capabilities
-            if isinstance(item, Mapping)
-        ]
-        if isinstance(raw_capabilities, Sequence)
-        and not isinstance(raw_capabilities, (str, bytes, bytearray))
-        else []
-    )
     return {
         'subject': compact_subject,
         'direction_contract': value.get('direction_contract'),
@@ -1298,9 +1381,7 @@ def _compact_code_impact_report(
         'upstream_change_impact': compact_upstream,
         'represented_test_intelligence': compact_tests,
         'limitations': compact_limitations,
-        'general_limitations': list(value.get('general_limitations', ()))[:12],
-        'capability_availability': capabilities,
-        'traceability': value.get('traceability'),
+        'general_limitations': list(value.get('general_limitations', ()))[:1],
     }
 
 
