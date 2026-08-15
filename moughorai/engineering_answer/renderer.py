@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from enum import Enum
 import re
 
@@ -34,11 +35,41 @@ _UNCERTAINTY_LABELS = {
     'callable_bodies_unavailable': 'callable bodies unavailable',
     'omitted_callable_diagnostics': 'omitted callable diagnostics',
     'unindexed_callables': 'unindexed callables',
+    'omitted_code_graph_diagnostics': 'omitted code graph diagnostics',
     'traversal_truncation': 'traversal truncation',
 }
+_UNCERTAINTY_SINGULAR_LABELS = {
+    'unindexed_callables': 'unindexed callable',
+}
+_CALL_EVIDENCE_UNCERTAINTY = frozenset({
+    'unresolved_sites',
+    'external_sites',
+    'unsupported_sites',
+    'ambiguous_candidates',
+    'possible_dispatch_candidates',
+    'method_references',
+    'traversal_truncation',
+})
+_WORKSPACE_ARTIFACT_LIMITATIONS = frozenset({
+    'call_extraction_failures',
+    'callable_bodies_unavailable',
+    'omitted_callable_diagnostics',
+    'omitted_code_graph_diagnostics',
+    'unindexed_callables',
+})
+_HIGH_CONFIDENCE_UPSTREAM = 'high_confidence_represented_path'
 _QUALIFIED_TYPE = re.compile(
     r'(?<![A-Za-z0-9_$])(?:[a-z_][A-Za-z0-9_$]*\.)+([A-Z][A-Za-z0-9_$]*)'
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _SummaryInspectCandidate:
+    category: str
+    reason: str
+    canonical_reference: str
+    source_ref: str
+    evidence_ids: tuple[str, ...]
 
 
 def render_engineering_answer(
@@ -156,32 +187,45 @@ def _render_summary(
             answer.possible_test_paths.total_count,
             'possible represented TEST path',
         ),
-        '',
-        'UNCERTAINTY',
     ))
-    nonzero_uncertainty = tuple(
-        section for section in answer.uncertainty if section.total_count
+    call_uncertainty = tuple(
+        section for section in answer.uncertainty
+        if section.section_id in _CALL_EVIDENCE_UNCERTAINTY
     )
-    if nonzero_uncertainty:
-        lines.extend(
-            _total_line(
-                section.total_count,
-                _UNCERTAINTY_LABELS.get(
-                    section.section_id,
-                    section.section_id.replace('_', ' '),
-                ),
-                _UNCERTAINTY_LABELS.get(
-                    section.section_id,
-                    section.section_id.replace('_', ' '),
-                ),
-            )
-            for section in nonzero_uncertainty
+    workspace_limitations = tuple(
+        section for section in answer.uncertainty
+        if section.section_id in _WORKSPACE_ARTIFACT_LIMITATIONS
+    )
+    other_limitations = tuple(
+        section for section in answer.uncertainty
+        if section.section_id not in (
+            _CALL_EVIDENCE_UNCERTAINTY | _WORKSPACE_ARTIFACT_LIMITATIONS
         )
-    else:
-        lines.append('0 represented uncertainty signals')
+    )
+    _append_uncertainty_scope(
+        lines,
+        'UNCERTAINTY IN REPRESENTED CALL EVIDENCE',
+        call_uncertainty,
+        empty='0 represented call-evidence uncertainty signals',
+    )
+    _append_uncertainty_scope(
+        lines,
+        'WORKSPACE ARTIFACT LIMITATIONS',
+        workspace_limitations,
+        empty='0 represented workspace artifact limitations',
+        scope_note='Counts describe the loaded workspace artifact, not only this subject.',
+    )
+    if other_limitations:
+        _append_uncertainty_scope(
+            lines,
+            'OTHER REPRESENTED LIMITATIONS',
+            other_limitations,
+            empty='0 other represented limitations',
+            scope_note='These categories have no narrower scope classification in this presentation.',
+        )
 
     lines.extend(('', 'INSPECT FIRST'))
-    selected_inspect = _unique_inspect(answer.inspect_first, maximum=5)
+    selected_inspect = _select_summary_inspect(answer, maximum=5)
     if selected_inspect:
         for ordinal, item in enumerate(selected_inspect, start=1):
             reference = _resolved_name(
@@ -320,18 +364,159 @@ def _detail_item_line(
     return '- ' + '; '.join(parts)
 
 
-def _unique_inspect(values: Sequence, *, maximum: int) -> tuple:
-    retained = []
-    seen: set[tuple[str, str]] = set()
-    for item in values:
-        key = (item.canonical_reference, item.source_ref)
-        if key in seen:
+def _append_uncertainty_scope(
+    lines: list[str],
+    title: str,
+    sections: Sequence[EngineeringAnswerSection],
+    *,
+    empty: str,
+    scope_note: str | None = None,
+) -> None:
+    lines.extend(('', title))
+    if scope_note is not None:
+        lines.append(scope_note)
+    nonzero = tuple(section for section in sections if section.total_count)
+    if not nonzero:
+        lines.append(empty)
+        return
+    lines.extend(
+        _total_line(
+            section.total_count,
+            _UNCERTAINTY_SINGULAR_LABELS.get(
+                section.section_id,
+                _UNCERTAINTY_LABELS.get(
+                    section.section_id,
+                    section.section_id.replace('_', ' '),
+                ),
+            ),
+            _UNCERTAINTY_LABELS.get(
+                section.section_id,
+                section.section_id.replace('_', ' '),
+            ),
+        )
+        for section in nonzero
+    )
+
+
+def _select_summary_inspect(
+    answer: EngineeringAnswer,
+    *,
+    maximum: int,
+) -> tuple[_SummaryInspectCandidate, ...]:
+    if maximum < 1:
+        return ()
+    groups = _summary_inspect_groups(answer)
+    selected: list[_SummaryInspectCandidate] = []
+
+    # Pass 1: cover each non-empty category in the frozen semantic order.
+    for group in groups:
+        candidate = next(
+            (
+                item for item in group
+                if not _duplicates_selected(item, selected)
+            ),
+            None,
+        )
+        if candidate is None:
             continue
-        seen.add(key)
-        retained.append(item)
-        if len(retained) == maximum:
-            break
-    return tuple(retained)
+        selected.append(candidate)
+        if len(selected) == maximum:
+            return tuple(selected)
+
+    # Pass 2: fill remaining slots from the same semantic category order.
+    for group in groups:
+        for candidate in group:
+            if candidate in selected or _duplicates_selected(candidate, selected):
+                continue
+            selected.append(candidate)
+            if len(selected) == maximum:
+                return tuple(selected)
+    return tuple(selected)
+
+
+def _summary_inspect_groups(
+    answer: EngineeringAnswer,
+) -> tuple[tuple[_SummaryInspectCandidate, ...], ...]:
+    upstream = tuple(
+        item
+        for item in (*answer.upstream_direct.items, *answer.upstream_transitive.items)
+        if item.confidence == _HIGH_CONFIDENCE_UPSTREAM
+    )
+    uncertainty = tuple(
+        (section.section_id, item)
+        for section in answer.uncertainty
+        if section.section_id in {'unresolved_sites', 'unsupported_sites'}
+        for item in section.items
+    )
+    return (
+        _inspect_group(
+            'high_confidence_callers',
+            'Direct high-confidence represented caller',
+            answer.direct_callers_high_confidence.items,
+        ),
+        _inspect_group(
+            'direct_represented_test_callers',
+            'Direct represented TEST caller',
+            answer.direct_test_callers.items,
+        ),
+        _inspect_group(
+            'high_confidence_upstream_paths',
+            'High-confidence represented upstream path',
+            upstream,
+        ),
+        _inspect_group(
+            'conservative_caller_sites',
+            'Conservative represented caller site; candidate targets remain unproven',
+            answer.direct_caller_conservative_sites.items,
+        ),
+        _inspect_group(
+            'conservative_dependency_sites',
+            'Conservative represented dependency call site; candidate targets remain unproven',
+            answer.direct_callee_conservative_sites.items,
+        ),
+        tuple(
+            _SummaryInspectCandidate(
+                'uncertainty_hotspots',
+                f'{section_id} hotspot limits call certainty',
+                item.canonical_reference,
+                item.source_ref,
+                item.evidence_ids,
+            )
+            for section_id, item in uncertainty
+        ),
+    )
+
+
+def _inspect_group(
+    category: str,
+    reason: str,
+    items: Sequence[EngineeringAnswerItem],
+) -> tuple[_SummaryInspectCandidate, ...]:
+    return tuple(
+        _SummaryInspectCandidate(
+            category,
+            reason,
+            item.canonical_reference,
+            item.source_ref,
+            item.evidence_ids,
+        )
+        for item in items
+    )
+
+
+def _duplicates_selected(
+    candidate: _SummaryInspectCandidate,
+    selected: Sequence[_SummaryInspectCandidate],
+) -> bool:
+    evidence = frozenset(candidate.evidence_ids)
+    return any(
+        candidate.canonical_reference == retained.canonical_reference
+        and (
+            candidate.source_ref == retained.source_ref
+            or bool(evidence.intersection(retained.evidence_ids))
+        )
+        for retained in selected
+    )
 
 
 def _resolved_name(
