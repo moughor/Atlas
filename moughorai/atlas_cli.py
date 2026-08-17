@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import stat
 import tempfile
 from threading import RLock
 import tracemalloc
@@ -116,7 +117,7 @@ from .ai_context import (
     encode_analysis_result,
 )
 from .ai_context.process_execution import ProcessProjectAnalyzer
-from .llm import LlmClient, OllamaProvider
+from .llm import LlmClient, LlmProviderError, OllamaProvider
 from .workspace import (
     Project,
     Workspace,
@@ -2300,6 +2301,8 @@ def _runtime_statistics_json(session: RepositoryRuntimeSession) -> str:
 
 _SESSION_SEARCH_DEFAULT_LIMIT = 10
 _SESSION_SEARCH_MAXIMUM_LIMIT = 20
+_SESSION_REQUEST_MAXIMUM_CHARACTERS = 3_000
+_SESSION_REQUEST_MAXIMUM_BYTES = _SESSION_REQUEST_MAXIMUM_CHARACTERS * 4
 _SESSION_SEARCH_CONFIGURATION = CodeIntelligenceConfiguration(
     max_depth=1,
     max_nodes=1,
@@ -2309,6 +2312,125 @@ _SESSION_SEARCH_CONFIGURATION = CodeIntelligenceConfiguration(
     max_resolution_candidates=1,
     max_candidates_per_call_site=1,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionFileInput:
+    path: Path
+    text: str
+    byte_count: int
+
+
+class _SessionStoryBuffer:
+    '''Bounded multiline text retained until explicit submission or cancellation.'''
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._character_count = 0
+        self._overflowed = False
+
+    @property
+    def character_count(self) -> int:
+        return self._character_count
+
+    @property
+    def overflowed(self) -> bool:
+        return self._overflowed
+
+    def append(self, line: str) -> None:
+        if not isinstance(line, str):
+            raise TypeError('story input line must be text')
+        if self._overflowed:
+            return
+        added = len(line) + (1 if self._lines else 0)
+        if self._character_count + added > _SESSION_REQUEST_MAXIMUM_CHARACTERS:
+            self._lines.clear()
+            self._overflowed = True
+            return
+        self._lines.append(line)
+        self._character_count += added
+
+    def finish(self) -> str:
+        if self._overflowed:
+            raise ValueError(
+                'story exceeds the accepted maximum of '
+                f'{_SESSION_REQUEST_MAXIMUM_CHARACTERS} characters; '
+                'nothing was submitted'
+            )
+        return _validate_session_request_text(
+            '\n'.join(self._lines),
+            label='story',
+        )
+
+
+def _validate_session_request_text(text: str, *, label: str) -> str:
+    if not isinstance(text, str):
+        raise TypeError('session request input must be text')
+    if len(text) > _SESSION_REQUEST_MAXIMUM_CHARACTERS:
+        raise ValueError(
+            f'{label} contains {len(text)} characters; accepted maximum is '
+            f'{_SESSION_REQUEST_MAXIMUM_CHARACTERS} characters'
+        )
+    if not text.strip():
+        raise ValueError(f'{label} is blank; nothing was submitted')
+    if any(
+        (ord(character) < 32 and character not in {'\t', '\n', '\r'})
+        or ord(character) == 127
+        for character in text
+    ):
+        raise ValueError(f'{label} is not UTF-8 plain text')
+    return text
+
+
+def _parse_session_file_path(line: str, command: str) -> Path:
+    payload = line.removeprefix(command).strip()
+    if not payload:
+        raise ValueError(f'usage: {command} <path>')
+    if (
+        len(payload) >= 2
+        and payload[0] == payload[-1]
+        and payload[0] in {chr(39), chr(34)}
+    ):
+        payload = payload[1:-1]
+    if not payload:
+        raise ValueError(f'usage: {command} <path>')
+    return Path(payload)
+
+
+def _read_session_request_file(path: Path) -> _SessionFileInput:
+    try:
+        metadata = path.stat()
+    except FileNotFoundError as exc:
+        raise ValueError(f'input file does not exist: {path}') from exc
+    except OSError as exc:
+        raise ValueError(f'input file is not readable: {path}') from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f'input path is not a regular file: {path}')
+    if metadata.st_size > _SESSION_REQUEST_MAXIMUM_BYTES:
+        raise ValueError(
+            f'input file contains {metadata.st_size} bytes; accepted maximum is '
+            f'{_SESSION_REQUEST_MAXIMUM_BYTES} bytes and '
+            f'{_SESSION_REQUEST_MAXIMUM_CHARACTERS} characters'
+        )
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f'input file is not readable: {path}') from exc
+    if len(payload) > _SESSION_REQUEST_MAXIMUM_BYTES:
+        raise ValueError(
+            f'input file contains {len(payload)} bytes; accepted maximum is '
+            f'{_SESSION_REQUEST_MAXIMUM_BYTES} bytes and '
+            f'{_SESSION_REQUEST_MAXIMUM_CHARACTERS} characters'
+        )
+    try:
+        text = payload.decode('utf-8-sig')
+    except UnicodeDecodeError as exc:
+        raise ValueError('input file is not valid UTF-8 plain text') from exc
+    return _SessionFileInput(
+        path,
+        _validate_session_request_text(text, label='input file'),
+        len(payload),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2643,6 +2765,41 @@ def _session_answer(
     )
 
 
+def _session_ask(
+    engine: AskEngine,
+    snapshot,
+    question: str,
+    conversation_id: int | None,
+    subject: str | None,
+    project: str | None,
+    language: str | None,
+    capability: list[str] | None,
+    maximum_input_tokens: int,
+    result_limit: int,
+) -> int | None:
+    try:
+        result = engine.ask(
+            snapshot,
+            AskRequest(
+                question,
+                conversation_id,
+                12,
+                subject,
+                None,
+                project,
+                language,
+                tuple(capability or ()),
+                maximum_input_tokens,
+                result_limit,
+            ),
+        )
+    except (LlmProviderError, ValueError) as exc:
+        typer.echo(f'error: {exc}', err=True)
+        return conversation_id
+    typer.echo(result.answer)
+    return result.conversation_id
+
+
 @ai_app.command('session')
 def ai_session_command(
     root: Annotated[Path, typer.Argument(help='Workspace root.')] = Path('.'),
@@ -2685,6 +2842,7 @@ def ai_session_command(
         current_subject = subject
         current_project = project
         conversation_id = None
+        story_buffer: _SessionStoryBuffer | None = None
         try:
             context_builder = EngineeringChatContextBuilder(
                 runtime_session=runtime_session,
@@ -2697,10 +2855,47 @@ def ai_session_command(
             explain_engine = ExplainEngine(runtime_session=runtime_session)
             typer.echo(
                 'Atlas session ready. Use /help, /search, /subject, /project, '
-                '/answer [detail|full], /explain, /impact, /stats, or /exit.'
+                '/ask-file, /story, /answer [detail|full], /explain, /impact, '
+                '/stats, or /exit.'
             )
             while True:
-                line = typer.prompt('atlas', prompt_suffix='> ').strip()
+                if story_buffer is not None:
+                    raw_line = typer.prompt(
+                        'story',
+                        default='',
+                        show_default=False,
+                        prompt_suffix='> ',
+                    )
+                else:
+                    raw_line = typer.prompt('atlas', prompt_suffix='> ')
+                line = raw_line.strip()
+                if story_buffer is not None:
+                    if line == '/cancel':
+                        story_buffer = None
+                        typer.echo('story canceled; no request submitted.')
+                        continue
+                    if line == '/end':
+                        completed_story = story_buffer
+                        story_buffer = None
+                        try:
+                            question = completed_story.finish()
+                        except ValueError as exc:
+                            typer.echo(f'error: {exc}', err=True)
+                            continue
+                        typer.echo(
+                            f'story loaded: {len(question)} characters'
+                        )
+                        typer.echo(
+                            'processing story against current subject...'
+                        )
+                        _session_ask(
+                            ask_engine, loaded, question, None,
+                            current_subject, current_project, language,
+                            capability, maximum_input_tokens, result_limit,
+                        )
+                        continue
+                    story_buffer.append(raw_line)
+                    continue
                 if not line:
                     continue
                 if line in {'/exit', '/quit'}:
@@ -2712,8 +2907,67 @@ def ai_session_command(
                         '/search <text> [limit] find canonical subjects; '
                         '/use <n> select a Java method from the latest search; '
                         '/subject <canonical-id>; /project <project>; '
+                        '/ask-file <path> ask using a text file as one request; '
+                        '/story enter multiline story mode; finish with /end; '
+                        '/story-file <path> load a story from a text file; '
+                        '/cancel cancel multiline story entry; '
                         '/answer [summary|detail|full]; /explain; /impact; '
                         '/stats; /exit; or enter a question.'
+                    )
+                    continue
+                if line == '/story':
+                    story_buffer = _SessionStoryBuffer()
+                    typer.echo(
+                        'story mode: enter text; finish with /end or discard '
+                        'with /cancel.'
+                    )
+                    continue
+                if line in {'/end', '/cancel'}:
+                    typer.echo(
+                        f'error: {line} is available only in story mode',
+                        err=True,
+                    )
+                    continue
+                if line == '/ask-file' or line.startswith('/ask-file '):
+                    try:
+                        file_input = _read_session_request_file(
+                            _parse_session_file_path(line, '/ask-file')
+                        )
+                    except ValueError as exc:
+                        typer.echo(f'error: {exc}', err=True)
+                        continue
+                    typer.echo(
+                        f'request loaded: {len(file_input.text)} characters '
+                        f'({file_input.byte_count} bytes)'
+                    )
+                    typer.echo(
+                        'processing request against current subject...'
+                    )
+                    _session_ask(
+                        ask_engine, loaded, file_input.text, None,
+                        current_subject, current_project, language,
+                        capability, maximum_input_tokens, result_limit,
+                    )
+                    continue
+                if line == '/story-file' or line.startswith('/story-file '):
+                    try:
+                        file_input = _read_session_request_file(
+                            _parse_session_file_path(line, '/story-file')
+                        )
+                    except ValueError as exc:
+                        typer.echo(f'error: {exc}', err=True)
+                        continue
+                    typer.echo(
+                        f'story loaded: {len(file_input.text)} characters '
+                        f'({file_input.byte_count} bytes)'
+                    )
+                    typer.echo(
+                        'processing story against current subject...'
+                    )
+                    _session_ask(
+                        ask_engine, loaded, file_input.text, None,
+                        current_subject, current_project, language,
+                        capability, maximum_input_tokens, result_limit,
                     )
                     continue
                 if line == '/search' or line.startswith('/search '):
@@ -2782,23 +3036,11 @@ def ai_session_command(
                         )
                     continue
                 question = line.removeprefix('/ask ').strip()
-                result = ask_engine.ask(
-                    loaded,
-                    AskRequest(
-                        question,
-                        conversation_id,
-                        12,
-                        current_subject,
-                        None,
-                        current_project,
-                        language,
-                        tuple(capability or ()),
-                        maximum_input_tokens,
-                        result_limit,
-                    ),
+                conversation_id = _session_ask(
+                    ask_engine, loaded, question, conversation_id,
+                    current_subject, current_project, language,
+                    capability, maximum_input_tokens, result_limit,
                 )
-                conversation_id = result.conversation_id
-                typer.echo(result.answer)
         finally:
             discovery.clear()
             runtime_session.close()
