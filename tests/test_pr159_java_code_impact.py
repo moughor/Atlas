@@ -1410,7 +1410,10 @@ def test_ask_context_is_bounded_and_provider_failure_preserves_code_evidence(
         context,
         (provider_answer,),
     )
-    assert grounded.answer == provider_answer
+    assert grounded.answer != provider_answer
+    assert 'Atlas deterministic Java code-impact answer' in grounded.answer
+    assert 'Grounded code-impact answer' not in grounded.answer
+    assert 'Provider grounding failed' not in grounded.answer
     assert grounded.grounded is True
     assert grounded.grounding_summary is not None
     assert grounded.grounding_summary.provider_grounded is True

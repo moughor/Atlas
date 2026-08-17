@@ -188,6 +188,11 @@ def _render_summary(
             'possible represented TEST path',
         ),
     ))
+    _append_summary_test_roots(
+        lines,
+        answer,
+        name_resolver=name_resolver,
+    )
     call_uncertainty = tuple(
         section for section in answer.uncertainty
         if section.section_id in _CALL_EVIDENCE_UNCERTAINTY
@@ -251,6 +256,58 @@ def _render_summary(
             'Use detail for bounded representatives or full for complete PR167 evidence traceability.',
         ))
     return '\n'.join(lines).rstrip() + '\n'
+
+
+def _append_summary_test_roots(
+    lines: list[str],
+    answer: EngineeringAnswer,
+    *,
+    name_resolver: EngineeringAnswerNameResolver | None,
+) -> None:
+    roots = tuple((
+        *answer.high_confidence_test_paths.items,
+        *answer.possible_test_paths.items,
+    ))
+    root_ids = {item.canonical_reference for item in roots}
+    lines.extend(('', 'REPRESENTED TEST ROOTS TO INSPECT'))
+    if roots:
+        lines.append('; '.join(
+            f'{ordinal}. {_resolved_name(item.canonical_reference, name_resolver)} '
+            f'[{item.confidence}; depth={item.depth}]'
+            for ordinal, item in enumerate(roots, start=1)
+        ))
+    else:
+        lines.append('No represented TEST-root path was found.')
+    omitted = (
+        answer.high_confidence_test_paths.omitted_count
+        + answer.possible_test_paths.omitted_count
+    )
+    if omitted:
+        lines.append(
+            f'{_number(omitted)} additional represented TEST root(s) were '
+            'omitted by the existing section bound.'
+        )
+
+    helper_candidates = tuple(
+        item for item in answer.direct_test_callers.items
+        if item.canonical_reference not in root_ids
+    )
+    test_projection_complete = not omitted
+    lines.extend(('', 'TEST-SCOPED HELPER CONTEXT'))
+    if helper_candidates and test_projection_complete:
+        lines.extend(
+            f'- {_resolved_name(item.canonical_reference, name_resolver)} — '
+            'TEST-scoped helper context only; not a represented TEST root.'
+            for item in helper_candidates
+        )
+    elif helper_candidates:
+        lines.extend(
+            f'- {_resolved_name(item.canonical_reference, name_resolver)} — '
+            'direct TEST-scoped caller; the bounded TEST-root projection is incomplete.'
+            for item in helper_candidates
+        )
+    else:
+        lines.append('No separate TEST-scoped helper is represented.')
 
 
 def _render_detail(

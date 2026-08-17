@@ -677,6 +677,31 @@ class AskEngine:
             provider_grounded = provider_result.grounded
             fallback_used = False
             if (
+                provider_grounded
+                and _eligible_for_deterministic_code_impact_fallback(context)
+            ):
+                code_answer = _deterministic_code_impact_fallback(
+                    context,
+                    grounding_failed=False,
+                )
+                impact_answer = _deterministic_impact_fallback(context)
+                deterministic_parts = tuple(
+                    item for item in (code_answer, impact_answer) if item
+                )
+                if deterministic_parts:
+                    answer = '\n\n'.join(deterministic_parts)
+                    citations = validate_citations(
+                        answer,
+                        (
+                            item.evidence_id
+                            for item in context.evidence_index.records
+                        ),
+                    )
+                    limitations.add(
+                        'The grounded provider interpretation was omitted; '
+                        'deterministic code-impact facts are authoritative.'
+                    )
+            if (
                 not provider_grounded
                 and _eligible_for_deterministic_code_impact_fallback(context)
             ):
@@ -1081,8 +1106,9 @@ def _append_engineering_traversal_and_tests(
         ),
         '- This is represented TEST reachability, not runtime test coverage.',
         '- Absence of a represented TEST path does not prove this subject is untested.',
-        '', 'Uncertainty:',
     ))
+    _append_engineering_test_identities(lines, answer)
+    lines.extend(('', 'Uncertainty:'))
     uncertainty = answer.get('uncertainty_counts')
     if isinstance(uncertainty, Mapping):
         lines.extend(
@@ -1091,8 +1117,53 @@ def _append_engineering_traversal_and_tests(
         )
 
 
+def _append_engineering_test_identities(
+    lines: list[str], answer: Mapping[str, object],
+) -> None:
+    roots = answer.get('represented_test_roots')
+    lines.extend(('', 'Represented TEST roots to inspect:'))
+    if isinstance(roots, Sequence) and not isinstance(
+        roots, (str, bytes, bytearray)
+    ) and roots:
+        for ordinal, item in enumerate(roots, start=1):
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(
+                '{}. {}; confidence={}; depth={}; project={}; canonical ID={}.'.format(
+                    ordinal,
+                    item.get('name', item.get('qualified_name', 'unavailable')),
+                    item.get('confidence', 'represented'),
+                    item.get('depth', 'unavailable'),
+                    item.get('project', 'unavailable'),
+                    item.get('canonical_id', 'unavailable'),
+                )
+            )
+    else:
+        lines.append('- None included by represented TEST-root authority.')
+
+    helpers = answer.get('test_scoped_helpers')
+    lines.extend(('', 'TEST-scoped helper context:'))
+    if isinstance(helpers, Sequence) and not isinstance(
+        helpers, (str, bytes, bytearray)
+    ) and helpers:
+        for item in helpers:
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(
+                '- {}; TEST-scoped helper context only; not a represented '
+                'TEST root; canonical ID={}.'.format(
+                    item.get('name', item.get('qualified_name', 'unavailable')),
+                    item.get('canonical_id', 'unavailable'),
+                )
+            )
+    else:
+        lines.append('- No separate TEST-scoped helper is represented.')
+
+
 def _deterministic_engineering_answer_fallback(
     evidence_ids: Sequence[str], answer: Mapping[str, object],
+    *,
+    grounding_failed: bool = True,
 ) -> str | None:
     subject = answer.get('subject')
     counts = answer.get('counts')
@@ -1110,11 +1181,17 @@ def _deterministic_engineering_answer_fallback(
     )
     lines = [
         'Atlas deterministic Java code-impact answer', '',
-        'Provider grounding failed, so the provider interpretation was discarded.', '',
+    ]
+    if grounding_failed:
+        lines.extend((
+            'Provider grounding failed, so the provider interpretation was discarded.',
+            '',
+        ))
+    lines.extend((
         'Subject: {}'.format(subject.get('qualified_name', 'unavailable')),
         'Canonical ID: {}'.format(subject.get('canonical_id', 'unavailable')),
         'Direction contract: canonical CALLER -> CALLEE; impact traversal is reverse upstream from the changed callee.', '',
-    ]
+    ))
     summary = answer.get('change_risk_summary', ())
     if isinstance(summary, Sequence) and not isinstance(
         summary, (str, bytes, bytearray)
@@ -1143,7 +1220,11 @@ def _deterministic_engineering_answer_fallback(
     return '\n'.join(lines)
 
 
-def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
+def _deterministic_code_impact_fallback(
+    context: ChatContext,
+    *,
+    grounding_failed: bool = True,
+) -> str | None:
     section = next((
         item for item in context.sections
         if item.section_id == 'code_impact'
@@ -1155,6 +1236,7 @@ def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
         return _deterministic_engineering_answer_fallback(
             section.evidence_ids,
             engineering_answer,
+            grounding_failed=grounding_failed,
         )
     report = section.content.get('report')
     if not isinstance(report, Mapping):
@@ -1178,8 +1260,13 @@ def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
     lines = [
         'Atlas deterministic Java code-impact answer',
         '',
-        'Provider grounding failed, so the provider interpretation was discarded.',
-        '',
+    ]
+    if grounding_failed:
+        lines.extend((
+            'Provider grounding failed, so the provider interpretation was discarded.',
+            '',
+        ))
+    lines.extend((
         f'Subject: {display_name}',
         f'Canonical ID: {canonical_id}',
         'Direction contract: canonical CALLER -> CALLEE; impact traversal is reverse upstream from the changed callee.',
@@ -1193,7 +1280,7 @@ def _deterministic_code_impact_fallback(context: ChatContext) -> str | None:
         f'{callee_counts[1]} conservative source call site(s), '
         f'{callee_counts[2]} candidate projection(s).',
         f'Upstream impact: {direct_count} direct and {transitive_count} transitive.',
-    ]
+    ))
     _append_code_relationships(lines, 'caller', callers)
     _append_code_relationships(lines, 'callee', callees)
     _append_code_paths(lines, 'direct upstream', direct_upstream)

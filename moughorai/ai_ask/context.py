@@ -503,9 +503,56 @@ class EngineeringChatContextBuilder:
                 runtime.java_code_intelligence,
                 measurement=runtime.measurement,
             ).synthesize(report, max_inspect_items=4)
-            available_records = _code_impact_records(runtime.snapshot, report)
-            summary_evidence_id = available_records[0].evidence_id
-            compact_answer = _compact_engineering_answer(engineering_answer)
+            test_projection = engineering_answer
+            projection_report = report
+            if result_limit > 2:
+                projected = runtime.java_code_intelligence.query(
+                    subject.subject_id,
+                    project=subject.project,
+                    configuration=CodeIntelligenceConfiguration(
+                        max_depth=6,
+                        max_nodes=1_024,
+                        max_direct_relationships=max(1, min(8, result_limit)),
+                        max_paths_per_section=max(1, min(5, result_limit)),
+                        max_limitation_representatives=1,
+                        max_candidates_per_call_site=1,
+                    ),
+                )
+                if projected.report is not None:
+                    projection_report = projected.report
+                    test_projection = EngineeringAnswerService(
+                        runtime.java_code_intelligence,
+                        measurement=runtime.measurement,
+                    ).synthesize(projected.report, max_inspect_items=4)
+            base_records = _code_impact_records(runtime.snapshot, report)
+            projected_records = (
+                *base_records,
+                *_code_impact_records(runtime.snapshot, projection_report),
+            )
+            records_by_id = {
+                item.evidence_id: item for item in projected_records
+            }
+            available_records = tuple(
+                records_by_id[key] for key in sorted(records_by_id)
+            )
+            summary_evidence_id = base_records[0].evidence_id
+            root_evidence_ids = {
+                path.consumer_subject_id: path.root_evidence_id
+                for path in (
+                    *projection_report.high_confidence_test_paths.items,
+                    *projection_report.possible_test_paths.items,
+                )
+                if path.root_evidence_id is not None
+            }
+            compact_answer = _compact_engineering_answer(
+                engineering_answer,
+                test_projection=test_projection,
+                root_evidence_ids=root_evidence_ids,
+                identities=_engineering_answer_identities(
+                    runtime.java_code_intelligence,
+                    test_projection,
+                ),
+            )
             compact_answer['evidence_ids'] = [summary_evidence_id]
             content = {
                 'producer': report.producer_version,
@@ -1236,11 +1283,80 @@ def _compact_code_path_section(
     ), additions={'items': items})
 
 
-def _compact_engineering_answer(answer) -> dict[str, object]:
+def _engineering_answer_identities(service, answer) -> dict[str, dict[str, str]]:
+    references = {
+        item.canonical_reference
+        for section in (
+            answer.direct_test_callers,
+            answer.high_confidence_test_paths,
+            answer.possible_test_paths,
+        )
+        for item in section.items
+    }
+    entries = service.callable_index.entries if service.callable_index else ()
+    identities: dict[str, dict[str, str]] = {}
+    for reference in sorted(references):
+        lower = 0
+        upper = len(entries)
+        while lower < upper:
+            middle = (lower + upper) // 2
+            candidate = entries[middle]
+            if candidate.canonical_subject_id < reference:
+                lower = middle + 1
+            else:
+                upper = middle
+        if (
+            lower < len(entries)
+            and entries[lower].canonical_subject_id == reference
+        ):
+            entry = entries[lower]
+            identities[reference] = {
+                'name': entry.identity.name,
+                'project': entry.project_id,
+            }
+    return identities
+
+
+def _compact_engineering_answer(
+    answer,
+    *,
+    test_projection=None,
+    root_evidence_ids: Mapping[str, str] | None = None,
+    identities: Mapping[str, Mapping[str, str]] | None = None,
+) -> dict[str, object]:
     def counts(section) -> dict[str, int]:
         return {
             'total': section.total_count,
             'candidate_projections': section.candidate_projection_count,
+        }
+
+    identity_by_id = identities or {}
+    root_evidence_by_id = root_evidence_ids or {}
+    projected_tests = test_projection or answer
+    represented_roots = tuple((
+        *projected_tests.high_confidence_test_paths.items,
+        *projected_tests.possible_test_paths.items,
+    ))
+    root_ids = {item.canonical_reference for item in represented_roots}
+    test_projection_complete = not (
+        projected_tests.high_confidence_test_paths.omitted_count
+        or projected_tests.possible_test_paths.omitted_count
+    )
+
+    def test_item(item, *, represented_test_root: bool) -> dict[str, object]:
+        identity = identity_by_id.get(item.canonical_reference, {})
+        evidence_ids = item.evidence_ids
+        if represented_test_root and not test_projection_complete:
+            root_evidence = root_evidence_by_id.get(item.canonical_reference)
+            evidence_ids = (root_evidence,) if root_evidence is not None else ()
+        return {
+            'canonical_id': item.canonical_reference,
+            'name': identity.get('name', item.canonical_reference),
+            'project': identity.get('project'),
+            'confidence': item.confidence,
+            'depth': item.depth,
+            'evidence_ids': list(evidence_ids),
+            'represented_test_root': represented_test_root,
         }
 
     return {
@@ -1296,6 +1412,18 @@ def _compact_engineering_answer(answer) -> dict[str, object]:
                 'source_ref': item.source_ref,
             }
             for item in answer.inspect_first[:1]
+        ],
+        'represented_test_roots': [
+            test_item(item, represented_test_root=True)
+            for item in represented_roots
+        ],
+        'test_scoped_helpers': [
+            test_item(item, represented_test_root=False)
+            for item in projected_tests.direct_test_callers.items
+            if (
+                test_projection_complete
+                and item.canonical_reference not in root_ids
+            )
         ],
         'limitations': list(answer.limitations[:2]),
     }
