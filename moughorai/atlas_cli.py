@@ -115,6 +115,18 @@ from .story_planning import (
     render_story_plan,
     story_fingerprint,
 )
+from .engineering_agent import (
+    EngineeringAgentError,
+    EngineeringAgentRuntime,
+    EngineeringApplyError,
+    EngineeringPatchProposal,
+    EngineeringProviderFailure,
+    EngineeringProviderTelemetry,
+    render_apply_result,
+    render_engineering_diff,
+    render_implementation_proposal,
+    render_verification_plan,
+)
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
 from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
@@ -126,7 +138,7 @@ from .ai_context import (
     encode_analysis_result,
 )
 from .ai_context.process_execution import ProcessProjectAnalyzer
-from .llm import LlmClient, LlmProviderError, OllamaProvider
+from .llm import LlmClient, LlmProviderError, OllamaProvider, RetryPolicy
 from .workspace import (
     Project,
     Workspace,
@@ -2290,18 +2302,24 @@ def _display(value: Any) -> str:
     return str(value)
 
 
-def _runtime_statistics_json(session: RepositoryRuntimeSession) -> str:
+def _runtime_statistics_json(
+    session: RepositoryRuntimeSession,
+    engineering_provider: EngineeringProviderTelemetry | None = None,
+) -> str:
     statistics = session.statistics
+    payload = {
+        'runtime_build_count': statistics.runtime_build_count,
+        'reuse_count': statistics.reuse_count,
+        'component_build_counts': dict(statistics.component_build_counts),
+        'snapshot_id': (
+            statistics.current_identity.snapshot_id
+            if statistics.current_identity is not None else None
+        ),
+    }
+    if engineering_provider is not None:
+        payload['engineering_provider'] = engineering_provider.to_dict()
     return json.dumps(
-        {
-            'runtime_build_count': statistics.runtime_build_count,
-            'reuse_count': statistics.reuse_count,
-            'component_build_counts': dict(statistics.component_build_counts),
-            'snapshot_id': (
-                statistics.current_identity.snapshot_id
-                if statistics.current_identity is not None else None
-            ),
-        },
+        payload,
         ensure_ascii=False,
         separators=(',', ':'),
         sort_keys=True,
@@ -2845,13 +2863,13 @@ def _session_plan(
     subject: str | None,
     project: str | None,
     view: StoryPlanView,
-) -> None:
+) -> StoryPlan | None:
     if state.text is None:
         typer.echo(
             'error: no story loaded; use /story or /story-file first',
             err=True,
         )
-        return
+        return None
     request = StoryPlanningRequest(
         state.text,
         snapshot.snapshot_id,
@@ -2863,6 +2881,23 @@ def _session_plan(
         plan = planner.plan(snapshot, request)
         state.retain(plan)
     typer.echo(render_story_plan(plan, view=view), nl=False)
+    return plan
+
+
+def _current_session_story_plan(
+    snapshot,
+    state: _SessionStoryState,
+    subject: str | None,
+    project: str | None,
+) -> StoryPlan | None:
+    if state.text is None:
+        return None
+    return state.plan(StoryPlanningRequest(
+        state.text,
+        snapshot.snapshot_id,
+        subject,
+        project,
+    ))
 
 
 @ai_app.command('session')
@@ -2909,6 +2944,7 @@ def ai_session_command(
         conversation_id = None
         story_buffer: _SessionStoryBuffer | None = None
         story_state = _SessionStoryState()
+        engineering_proposal: EngineeringPatchProposal | None = None
         try:
             context_builder = EngineeringChatContextBuilder(
                 runtime_session=runtime_session,
@@ -2924,10 +2960,19 @@ def ai_session_command(
                 workspace_root=root,
                 llm_client=LlmClient(provider),
             )
+            engineering_agent = EngineeringAgentRuntime(
+                runtime_session,
+                workspace_root=root,
+                llm_client=LlmClient(
+                    provider,
+                    RetryPolicy(maximum_attempts=1, timeout_seconds=120.0),
+                ),
+            )
             typer.echo(
                 'Atlas session ready. Use /help, /search, /subject, /project, '
-                '/ask-file, /story, /plan [detail], /answer [detail|full], '
-                '/explain, /impact, /stats, or /exit.'
+                '/ask-file, /story, /plan [detail], /implement, /apply, '
+                '/verify, /diff, /answer [detail|full], /explain, /impact, '
+                '/stats, or /exit.'
             )
             while True:
                 if story_buffer is not None:
@@ -2983,6 +3028,10 @@ def ai_session_command(
                         '/story enter multiline story mode; finish with /end; '
                         '/story-file <path> load a story from a text file; '
                         '/plan [detail] reconcile the loaded story with repository evidence; '
+                        '/implement create a preview-only bounded patch proposal; '
+                        '/apply apply only inside an isolated linked Git worktree; '
+                        '/verify show validation commands without running them; '
+                        '/diff review current changes against the proposal; '
                         '/cancel cancel multiline story entry; '
                         '/answer [summary|detail|full]; /explain; /impact; '
                         '/stats; /exit; or enter a question.'
@@ -3066,6 +3115,120 @@ def ai_session_command(
                         except ValueError as exc:
                             typer.echo(f'error: {exc}', err=True)
                     continue
+                if line == '/implement':
+                    if story_state.text is None:
+                        typer.echo(
+                            'error: no story loaded; use /story or /story-file first',
+                            err=True,
+                        )
+                        continue
+                    current_plan = _current_session_story_plan(
+                        loaded,
+                        story_state,
+                        current_subject,
+                        current_project,
+                    )
+                    if current_plan is None:
+                        typer.echo(
+                            'error: no current story plan; run /plan first',
+                            err=True,
+                        )
+                        continue
+                    try:
+                        proposed = engineering_agent.propose(loaded, current_plan)
+                    except (EngineeringAgentError, EngineeringProviderFailure) as exc:
+                        typer.echo(f'error: {exc}', err=True)
+                    else:
+                        engineering_proposal = proposed
+                        typer.echo(
+                            render_implementation_proposal(proposed),
+                            nl=False,
+                        )
+                    continue
+                if line == '/apply':
+                    if engineering_proposal is None:
+                        typer.echo(
+                            'error: no validated implementation proposal; run /implement first',
+                            err=True,
+                        )
+                        continue
+                    current_plan = _current_session_story_plan(
+                        loaded,
+                        story_state,
+                        current_subject,
+                        current_project,
+                    )
+                    if current_plan is None:
+                        typer.echo(
+                            'error: implementation proposal is stale; run /plan and /implement again',
+                            err=True,
+                        )
+                        continue
+                    try:
+                        applied = engineering_agent.apply(
+                            current_plan,
+                            engineering_proposal,
+                        )
+                    except (EngineeringAgentError, EngineeringApplyError) as exc:
+                        typer.echo(f'error: {exc}', err=True)
+                    else:
+                        typer.echo(render_apply_result(applied), nl=False)
+                    continue
+                if line == '/verify' or line.startswith('/verify '):
+                    option = line.removeprefix('/verify').strip()
+                    if option not in {'', 'run'}:
+                        typer.echo('error: usage: /verify [run]', err=True)
+                        continue
+                    current_plan = _current_session_story_plan(
+                        loaded,
+                        story_state,
+                        current_subject,
+                        current_project,
+                    )
+                    if current_plan is None:
+                        typer.echo(
+                            'error: no current story plan; run /plan first',
+                            err=True,
+                        )
+                        continue
+                    verification = engineering_agent.verification_plan(current_plan)
+                    typer.echo(render_verification_plan(verification), nl=False)
+                    if option == 'run':
+                        typer.echo(
+                            'error: /verify run is intentionally unavailable in PR173; '
+                            'review and run the displayed argv explicitly',
+                            err=True,
+                        )
+                    continue
+                if line == '/diff':
+                    if engineering_proposal is None:
+                        typer.echo(
+                            'error: no validated implementation proposal; run /implement first',
+                            err=True,
+                        )
+                        continue
+                    current_plan = _current_session_story_plan(
+                        loaded,
+                        story_state,
+                        current_subject,
+                        current_project,
+                    )
+                    if current_plan is None:
+                        typer.echo(
+                            'error: implementation proposal is stale; run /plan and /implement again',
+                            err=True,
+                        )
+                        continue
+                    try:
+                        report = engineering_agent.diff_report(
+                            current_plan,
+                            engineering_proposal,
+                        )
+                    except (EngineeringAgentError, EngineeringApplyError) as exc:
+                        typer.echo(f'error: {exc}', err=True)
+                    else:
+                        typer.echo(render_engineering_diff(report), nl=False)
+                    continue
                 if line == '/search' or line.startswith('/search '):
                     discovery.clear()
                     try:
@@ -3102,7 +3265,10 @@ def ai_session_command(
                     typer.echo('project=' + (current_project or 'none'))
                     continue
                 if line == '/stats':
-                    typer.echo(_runtime_statistics_json(runtime_session))
+                    typer.echo(_runtime_statistics_json(
+                        runtime_session,
+                        engineering_agent.telemetry,
+                    ))
                     continue
                 if line == '/explain':
                     _session_explain(
