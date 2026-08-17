@@ -106,6 +106,15 @@ from .ai_memory import ConversationMemoryStore
 from .ai_review import ReviewEngine, ReviewRequest
 from .ai_ask import AskEngine, AskRequest, EngineeringChatContextBuilder
 from .repository_runtime import RepositoryRuntimeSession
+from .story_planning import (
+    StoryPlan,
+    StoryPlanningRequest,
+    StoryPlanningService,
+    StoryPlanView,
+    normalize_story_text,
+    render_story_plan,
+    story_fingerprint,
+)
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
 from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
@@ -2363,6 +2372,35 @@ class _SessionStoryBuffer:
         )
 
 
+class _SessionStoryState:
+    '''Disposable normalized story and deterministic in-session plan cache.'''
+
+    def __init__(self) -> None:
+        self._text: str | None = None
+        self._fingerprint: str | None = None
+        self._plans: dict[str, StoryPlan] = {}
+
+    @property
+    def text(self) -> str | None:
+        return self._text
+
+    @property
+    def fingerprint(self) -> str | None:
+        return self._fingerprint
+
+    def load(self, text: str) -> None:
+        normalized = normalize_story_text(text)
+        self._text = normalized
+        self._fingerprint = story_fingerprint(normalized)
+        self._plans.clear()
+
+    def plan(self, request: StoryPlanningRequest) -> StoryPlan | None:
+        return self._plans.get(request.plan_fingerprint)
+
+    def retain(self, plan: StoryPlan) -> None:
+        self._plans[plan.plan_fingerprint] = plan
+
+
 def _validate_session_request_text(text: str, *, label: str) -> str:
     if not isinstance(text, str):
         raise TypeError('session request input must be text')
@@ -2800,6 +2838,33 @@ def _session_ask(
     return result.conversation_id
 
 
+def _session_plan(
+    planner: StoryPlanningService,
+    snapshot,
+    state: _SessionStoryState,
+    subject: str | None,
+    project: str | None,
+    view: StoryPlanView,
+) -> None:
+    if state.text is None:
+        typer.echo(
+            'error: no story loaded; use /story or /story-file first',
+            err=True,
+        )
+        return
+    request = StoryPlanningRequest(
+        state.text,
+        snapshot.snapshot_id,
+        subject,
+        project,
+    )
+    plan = state.plan(request)
+    if plan is None:
+        plan = planner.plan(snapshot, request)
+        state.retain(plan)
+    typer.echo(render_story_plan(plan, view=view), nl=False)
+
+
 @ai_app.command('session')
 def ai_session_command(
     root: Annotated[Path, typer.Argument(help='Workspace root.')] = Path('.'),
@@ -2843,6 +2908,7 @@ def ai_session_command(
         current_project = project
         conversation_id = None
         story_buffer: _SessionStoryBuffer | None = None
+        story_state = _SessionStoryState()
         try:
             context_builder = EngineeringChatContextBuilder(
                 runtime_session=runtime_session,
@@ -2853,10 +2919,15 @@ def ai_session_command(
                 context_builder=context_builder,
             )
             explain_engine = ExplainEngine(runtime_session=runtime_session)
+            story_planner = StoryPlanningService(
+                runtime_session,
+                workspace_root=root,
+                llm_client=LlmClient(provider),
+            )
             typer.echo(
                 'Atlas session ready. Use /help, /search, /subject, /project, '
-                '/ask-file, /story, /answer [detail|full], /explain, /impact, '
-                '/stats, or /exit.'
+                '/ask-file, /story, /plan [detail], /answer [detail|full], '
+                '/explain, /impact, /stats, or /exit.'
             )
             while True:
                 if story_buffer is not None:
@@ -2885,6 +2956,7 @@ def ai_session_command(
                         typer.echo(
                             f'story loaded: {len(question)} characters'
                         )
+                        story_state.load(question)
                         typer.echo(
                             'processing story against current subject...'
                         )
@@ -2910,6 +2982,7 @@ def ai_session_command(
                         '/ask-file <path> ask using a text file as one request; '
                         '/story enter multiline story mode; finish with /end; '
                         '/story-file <path> load a story from a text file; '
+                        '/plan [detail] reconcile the loaded story with repository evidence; '
                         '/cancel cancel multiline story entry; '
                         '/answer [summary|detail|full]; /explain; /impact; '
                         '/stats; /exit; or enter a question.'
@@ -2961,6 +3034,7 @@ def ai_session_command(
                         f'story loaded: {len(file_input.text)} characters '
                         f'({file_input.byte_count} bytes)'
                     )
+                    story_state.load(file_input.text)
                     typer.echo(
                         'processing story against current subject...'
                     )
@@ -2969,6 +3043,28 @@ def ai_session_command(
                         current_subject, current_project, language,
                         capability, maximum_input_tokens, result_limit,
                     )
+                    continue
+                if line == '/plan' or line.startswith('/plan '):
+                    raw_view = line.removeprefix('/plan').strip() or 'summary'
+                    try:
+                        plan_view = StoryPlanView(raw_view.casefold())
+                    except ValueError:
+                        typer.echo(
+                            'error: usage: /plan [detail]',
+                            err=True,
+                        )
+                    else:
+                        try:
+                            _session_plan(
+                                story_planner,
+                                loaded,
+                                story_state,
+                                current_subject,
+                                current_project,
+                                plan_view,
+                            )
+                        except ValueError as exc:
+                            typer.echo(f'error: {exc}', err=True)
                     continue
                 if line == '/search' or line.startswith('/search '):
                     discovery.clear()
