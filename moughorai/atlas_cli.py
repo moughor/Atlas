@@ -127,6 +127,7 @@ from .engineering_agent import (
     render_implementation_proposal,
     render_verification_plan,
 )
+from .agent_context import AgentContextService, AgentGraphDepth
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
 from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
@@ -177,6 +178,14 @@ snapshot_app = typer.Typer(
 app.add_typer(ai_app, name="ai")
 app.add_typer(snapshot_app, name="snapshot")
 _logger = get_logger("cli")
+
+
+agent_app = typer.Typer(
+    name='agent',
+    help='Export bounded deterministic repository intelligence for coding agents.',
+    no_args_is_help=True,
+)
+app.add_typer(agent_app, name='agent')
 
 
 @app.callback()
@@ -660,6 +669,71 @@ def governance_command(
         count = GovernanceAuditLog(path).verify()
         typer.echo(f"audit: valid")
         typer.echo(f"records: {count}")
+
+    _run_command(operation)
+
+
+@agent_app.command('context')
+def agent_context_command(
+    root: Annotated[
+        Path,
+        typer.Argument(help='Repository root containing a validated Atlas snapshot.'),
+    ],
+    story_file: Annotated[
+        Path,
+        typer.Option('--story-file', help='UTF-8 Jira/story text file.'),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option('--output', help='External directory for the four context artifacts.'),
+    ],
+    snapshot: Annotated[
+        Path | None,
+        typer.Option('--snapshot', help='Read a specific checksum-verified .ass snapshot.'),
+    ] = None,
+    subject: Annotated[
+        str | None,
+        typer.Option('--subject', help='Optional exact canonical Java subject.'),
+    ] = None,
+    project: Annotated[
+        str | None,
+        typer.Option('--project', help='Optional authoritative project constraint.'),
+    ] = None,
+    depth: Annotated[
+        AgentGraphDepth,
+        typer.Option('--depth', help='Projection tier: story or expanded.'),
+    ] = AgentGraphDepth.STORY,
+) -> None:
+    '''Generate context.md, context.json, graph.json, and graph.mmd without a provider.'''
+
+    def operation() -> None:
+        story = _read_session_request_file(story_file).text
+        loaded = _load_ai_snapshot(root, snapshot)
+        session = RepositoryRuntimeSession(workspace_root=root)
+        try:
+            artifacts = AgentContextService(
+                session,
+                workspace_root=root,
+            ).export(
+                loaded,
+                story_text=story,
+                output=output,
+                subject=subject,
+                project=project,
+                depth=depth,
+            )
+        finally:
+            session.close()
+        target = output.expanduser().resolve()
+        typer.echo(f'agent-context: {target}')
+        typer.echo(f'context-fingerprint: {artifacts.package.context_fingerprint}')
+        typer.echo(f'graph-fingerprint: {artifacts.graph.graph_fingerprint}')
+        typer.echo(
+            f'graph: {len(artifacts.graph.nodes)} nodes, '
+            f'{len(artifacts.graph.edges)} edges, depth={depth.value}'
+        )
+        for name, size in artifacts.output_files:
+            typer.echo(f'artifact: {name} ({size} bytes)')
 
     _run_command(operation)
 

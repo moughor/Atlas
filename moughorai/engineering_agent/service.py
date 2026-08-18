@@ -333,14 +333,7 @@ class EngineeringAgentRuntime:
         )
 
     def verification_plan(self, plan: StoryPlan) -> EngineeringVerificationPlan:
-        commands, limitations = _verification_commands(self._root, plan)
-        return EngineeringVerificationPlan(
-            plan.story_fingerprint,
-            plan.plan_fingerprint,
-            commands,
-            tuple(item.display_name for item in plan.represented_tests),
-            limitations,
-        )
+        return build_engineering_verification_plan(self._root, plan)
 
     def diff_report(
         self,
@@ -1266,6 +1259,26 @@ def _verification_commands(
         'PR173 presents validation argv only; /verify run is intentionally unavailable.'
     )
     return tuple(commands), tuple(limitations)
+
+
+def build_engineering_verification_plan(
+    workspace_root: str | Path,
+    plan: StoryPlan,
+) -> EngineeringVerificationPlan:
+    '''Build PR173 validation guidance without constructing or invoking a provider.'''
+    if not isinstance(plan, StoryPlan):
+        raise TypeError('verification planning requires a StoryPlan')
+    root = Path(workspace_root).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError('engineering workspace root must be a directory')
+    commands, limitations = _verification_commands(root, plan)
+    return EngineeringVerificationPlan(
+        plan.story_fingerprint,
+        plan.plan_fingerprint,
+        commands,
+        tuple(item.display_name for item in plan.represented_tests),
+        limitations,
+    )
 
 
 def _module_for_path(root: Path, relative_path: str) -> str | None:

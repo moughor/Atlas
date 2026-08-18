@@ -23,6 +23,7 @@ from .renderer import (
     render_verification_plan,
 )
 from .service import (
+    build_engineering_verification_plan,
     EngineeringAgentError,
     EngineeringAgentRuntime,
     EngineeringApplyError,
@@ -48,6 +49,7 @@ __all__ = [
     'EngineeringValidationCommand',
     'EngineeringVerificationPlan',
     'RequirementDisposition',
+    'build_engineering_verification_plan',
     'render_apply_result',
     'render_engineering_diff',
     'render_implementation_proposal',
