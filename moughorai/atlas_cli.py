@@ -127,7 +127,18 @@ from .engineering_agent import (
     render_implementation_proposal,
     render_verification_plan,
 )
-from .agent_context import AgentContextService, AgentGraphDepth
+from .agent_context import (
+    AgentContextService,
+    AgentGraphDepth,
+    load_agent_context_package,
+    load_agent_graph_projection,
+)
+from .agent_review import (
+    AgentReviewConfiguration,
+    AgentReviewService,
+    render_agent_post_change_review,
+    resolve_default_graph_path,
+)
 from .ai_patch import GitPatchValidator, PatchEngine, PatchRequest
 from .ai_git_context import GitContextService
 from .ai import ATLAS_AI_VERSION, atlas_ai_capabilities
@@ -185,7 +196,7 @@ _logger = get_logger("cli")
 
 agent_app = typer.Typer(
     name='agent',
-    help='Primary supported export workflow for external coding agents.',
+    help='Primary supported export workflow and post-change review for external coding agents.',
     no_args_is_help=True,
 )
 app.add_typer(agent_app, name='agent')
@@ -763,6 +774,73 @@ def agent_context_command(
             )
         for name, size in artifacts.output_files:
             typer.echo(f'artifact: {name} ({size} bytes)')
+
+    _run_command(operation)
+
+
+@agent_app.command('review')
+def agent_review_command(
+    root: Annotated[
+        Path,
+        typer.Argument(help='Git repository root reviewed against Atlas context.'),
+    ],
+    context: Annotated[
+        Path,
+        typer.Option('--context', help='Validated Atlas context.json authority.'),
+    ],
+    base: Annotated[
+        str,
+        typer.Option('--base', help='Required pre-change Git base reference.'),
+    ],
+    graph: Annotated[
+        Path | None,
+        typer.Option(
+            '--graph',
+            help='Validated graph.json; defaults to the context-referenced sibling.',
+        ),
+    ] = None,
+    snapshot: Annotated[
+        Path | None,
+        typer.Option('--snapshot', help='Read a specific checksum-verified .ass snapshot.'),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option('--json', help='Print deterministic canonical review JSON.'),
+    ] = False,
+) -> None:
+    '''Review Git scope against pre-change Atlas context without mutating source.'''
+
+    def operation() -> None:
+        resolved_root = root.expanduser().resolve()
+        package = load_agent_context_package(context)
+        graph_path = (
+            graph.expanduser().resolve()
+            if graph is not None
+            else resolve_default_graph_path(context, package)
+        )
+        projection = load_agent_graph_projection(graph_path)
+        loaded = _load_ai_snapshot(resolved_root, snapshot)
+        configuration = AgentReviewConfiguration()
+        git = GitDiffService(resolved_root)
+        diff = git.collect(base=base)
+        untracked = git.collect_untracked_paths(
+            maximum_paths=configuration.maximum_changed_files
+        )
+        review = AgentReviewService(
+            loaded,
+            repository_root=resolved_root,
+        ).review(
+            package,
+            projection,
+            diff,
+            untracked,
+            configuration=configuration,
+        )
+        typer.echo(
+            review.to_json() if json_output
+            else render_agent_post_change_review(review),
+            nl=False,
+        )
 
     _run_command(operation)
 

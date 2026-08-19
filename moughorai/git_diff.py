@@ -20,6 +20,35 @@ class GitDiffError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class UntrackedPaths:
+    paths: tuple[str, ...]
+    total_count: int
+    omitted_count: int
+
+    def __post_init__(self) -> None:
+        paths = tuple(sorted({_validated_path(item) for item in self.paths}))
+        if (
+            isinstance(self.total_count, bool)
+            or not isinstance(self.total_count, int)
+            or isinstance(self.omitted_count, bool)
+            or not isinstance(self.omitted_count, int)
+            or self.total_count < 0
+            or self.omitted_count < 0
+            or self.total_count != len(paths) + self.omitted_count
+        ):
+            raise ValueError('untracked path counts are inconsistent')
+        object.__setattr__(self, 'paths', paths)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            'paths': list(self.paths),
+            'total_count': self.total_count,
+            'included_count': len(self.paths),
+            'omitted_count': self.omitted_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DiffHunk:
     old_start: int
     old_count: int
@@ -466,6 +495,60 @@ class GitDiffService:
             workspace_prefix=workspace_prefix,
         )
         return self._workspace_relative(parsed)
+
+    def collect_untracked_paths(
+        self,
+        *,
+        maximum_paths: int = 256,
+        maximum_output_bytes: int = 8 * 1024 * 1024,
+    ) -> UntrackedPaths:
+        if (
+            isinstance(maximum_paths, bool)
+            or not isinstance(maximum_paths, int)
+            or maximum_paths < 1
+        ):
+            raise ValueError('maximum untracked paths must be a positive integer')
+        if (
+            isinstance(maximum_output_bytes, bool)
+            or not isinstance(maximum_output_bytes, int)
+            or maximum_output_bytes < 1
+        ):
+            raise ValueError('maximum untracked output bytes must be positive')
+        command = [
+            'git', '-c', 'core.quotepath=false', 'ls-files', '--others',
+            '--exclude-standard', '--full-name', '-z', '--',
+        ]
+        completed = subprocess.run(command, cwd=self.root, capture_output=True)
+        if completed.returncode:
+            message = completed.stderr.decode('utf-8', errors='replace').strip()
+            raise GitDiffError(message or 'git untracked path collection failed')
+        if len(completed.stdout) > maximum_output_bytes:
+            raise GitDiffError('Git untracked path output exceeds the safety bound')
+        try:
+            raw_paths = completed.stdout.decode('utf-8').split('\0')
+        except UnicodeDecodeError as exc:
+            raise GitDiffError('Git untracked paths must be UTF-8') from exc
+        if raw_paths and raw_paths[-1] == '':
+            raw_paths.pop()
+        elif raw_paths:
+            raise GitDiffError('Git untracked path output is not NUL terminated')
+        prefix = self._workspace_prefix()
+        marker = prefix.rstrip('/') + '/' if prefix != '.' else ''
+        normalized: set[str] = set()
+        for raw_path in raw_paths:
+            path = _validated_path(raw_path)
+            if marker:
+                if not path.startswith(marker):
+                    continue
+                path = _validated_path(path[len(marker):])
+            normalized.add(path)
+        ordered = tuple(sorted(normalized))
+        included = ordered[:maximum_paths]
+        return UntrackedPaths(
+            included,
+            len(ordered),
+            len(ordered) - len(included),
+        )
 
     def _validate_ref(self, value: str) -> str:
         completed = subprocess.run(

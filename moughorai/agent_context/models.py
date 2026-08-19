@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 
@@ -15,6 +17,14 @@ AGENT_GRAPH_FORMAT = 'atlas-agent-graph'
 AGENT_GRAPH_VERSION = 3
 AGENT_CONTEXT_PRODUCER = 'atlas-pr177/3'
 AGENT_CONTEXT_LEGACY_PRODUCER = 'atlas-pr175/1'
+SUPPORTED_AGENT_CONTEXT_PRODUCERS = {
+    1: AGENT_CONTEXT_LEGACY_PRODUCER,
+    2: 'atlas-pr176/2',
+    3: AGENT_CONTEXT_PRODUCER,
+}
+SUPPORTED_AGENT_GRAPH_PRODUCERS = dict(SUPPORTED_AGENT_CONTEXT_PRODUCERS)
+MAXIMUM_AGENT_CONTEXT_BYTES = 4 * 1024 * 1024
+MAXIMUM_AGENT_GRAPH_BYTES = 16 * 1024 * 1024
 
 
 def canonical_json(value: object, *, indent: int | None = None) -> str:
@@ -82,6 +92,21 @@ class AgentGraphConfiguration:
             'query_max_nodes': self.query_max_nodes,
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> 'AgentGraphConfiguration':
+        _require_fields(
+            value,
+            {'depth', 'max_nodes', 'max_edges', 'upstream_depth', 'query_max_nodes'},
+            'agent graph configuration',
+        )
+        return cls(
+            AgentGraphDepth(_string(value['depth'], 'agent graph depth')),
+            _integer(value['max_nodes'], 'agent graph maximum nodes'),
+            _integer(value['max_edges'], 'agent graph maximum edges'),
+            _integer(value['upstream_depth'], 'agent graph upstream depth'),
+            _integer(value['query_max_nodes'], 'agent graph query maximum nodes'),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AgentGraphNode:
@@ -110,6 +135,29 @@ class AgentGraphNode:
             'evidence_ids': list(self.evidence_ids),
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> 'AgentGraphNode':
+        _require_fields(
+            value,
+            {
+                'id', 'kind', 'qualified_name', 'simple_name', 'project',
+                'source_path', 'source_span', 'role', 'confidence', 'evidence_ids',
+            },
+            'agent graph node',
+        )
+        return cls(
+            _string(value['id'], 'agent graph node ID'),
+            _string(value['kind'], 'agent graph node kind'),
+            _string(value['qualified_name'], 'agent graph qualified name'),
+            _string(value['simple_name'], 'agent graph simple name'),
+            _optional_string(value['project'], 'agent graph node project'),
+            _optional_string(value['source_path'], 'agent graph node source path'),
+            _optional_mapping(value['source_span'], 'agent graph node source span'),
+            _string(value['role'], 'agent graph node role'),
+            _string(value['confidence'], 'agent graph node confidence'),
+            _strings(value['evidence_ids'], 'agent graph node evidence IDs'),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AgentGraphEdge:
@@ -136,6 +184,24 @@ class AgentGraphEdge:
         if self.status is not None:
             value['status'] = self.status
         return value
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> 'AgentGraphEdge':
+        required = {'from', 'to', 'type', 'confidence', 'authority', 'evidence'}
+        _require_allowed_fields(
+            value, required, {*required, 'depth', 'status'}, 'agent graph edge'
+        )
+        depth = value.get('depth')
+        return cls(
+            _string(value['from'], 'agent graph edge source'),
+            _string(value['to'], 'agent graph edge target'),
+            _string(value['type'], 'agent graph edge type'),
+            _string(value['confidence'], 'agent graph edge confidence'),
+            _string(value['authority'], 'agent graph edge authority'),
+            _strings(value['evidence'], 'agent graph edge evidence'),
+            None if depth is None else _integer(depth, 'agent graph edge depth'),
+            _optional_string(value.get('status'), 'agent graph edge status'),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +245,40 @@ class StoryAnchor:
             'provenance': self.provenance,
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> 'StoryAnchor':
+        _require_fields(
+            value,
+            {
+                'text', 'normalized_text', 'anchor_type', 'strength', 'specificity',
+                'source_location_in_story', 'technical_note', 'identifier_like',
+                'exact_match_preferred', 'semantic_search_allowed',
+                'ambiguity_penalty', 'provenance',
+            },
+            'story anchor',
+        )
+        location = _mapping(
+            value['source_location_in_story'], 'story anchor source location'
+        )
+        _require_fields(location, {'start', 'end'}, 'story anchor source location')
+        return cls(
+            _string(value['text'], 'story anchor text'),
+            _string(value['normalized_text'], 'story anchor normalized text'),
+            _string(value['anchor_type'], 'story anchor type'),
+            _integer(value['strength'], 'story anchor strength'),
+            _integer(value['specificity'], 'story anchor specificity'),
+            {
+                'start': _integer(location['start'], 'story anchor start'),
+                'end': _integer(location['end'], 'story anchor end'),
+            },
+            _boolean(value['technical_note'], 'story anchor technical flag'),
+            _boolean(value['identifier_like'], 'story anchor identifier flag'),
+            _boolean(value['exact_match_preferred'], 'story anchor exact flag'),
+            _boolean(value['semantic_search_allowed'], 'story anchor semantic flag'),
+            _integer(value['ambiguity_penalty'], 'story anchor ambiguity penalty'),
+            _string(value['provenance'], 'story anchor provenance'),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AgentDiscoveredRoot:
@@ -200,6 +300,7 @@ class AgentDiscoveredRoot:
     score: int = 0
     score_reasons: tuple[str, ...] = ()
     search_modes: tuple[str, ...] = ()
+    contract_version: int = 3
 
     def __post_init__(self) -> None:
         if self.classification not in {'resolved', 'candidate'}:
@@ -208,9 +309,11 @@ class AgentDiscoveredRoot:
             raise ValueError('discovered root rank must be a positive integer')
         if isinstance(self.score, bool) or not isinstance(self.score, int):
             raise ValueError('discovered root score must be an integer')
+        if self.contract_version not in {2, 3}:
+            raise ValueError('discovered root contract version is invalid')
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        value = {
             'canonical_subject_id': self.canonical_subject_id,
             'kind': self.kind,
             'qualified_name': self.qualified_name,
@@ -225,11 +328,52 @@ class AgentDiscoveredRoot:
             'matched_anchors': list(self.matched_anchors),
             'discovery_rationale': list(self.discovery_rationale),
             'evidence_ids': list(self.evidence_ids),
-            'role': self.role,
-            'score': self.score,
-            'score_reasons': list(self.score_reasons),
-            'search_modes': list(self.search_modes),
         }
+        if self.contract_version >= 3:
+            value.update({
+                'role': self.role,
+                'score': self.score,
+                'score_reasons': list(self.score_reasons),
+                'search_modes': list(self.search_modes),
+            })
+        return value
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> 'AgentDiscoveredRoot':
+        base_fields = {
+            'canonical_subject_id', 'kind', 'qualified_name', 'simple_name',
+            'project', 'source_path', 'source_span', 'rank', 'classification',
+            'confidence', 'authority', 'matched_anchors',
+            'discovery_rationale', 'evidence_ids',
+        }
+        version = 2 if set(value) == base_fields else 3
+        fields = base_fields | (
+            {'role', 'score', 'score_reasons', 'search_modes'} if version == 3 else set()
+        )
+        _require_fields(value, fields, 'agent discovered root')
+        return cls(
+            _string(value['canonical_subject_id'], 'discovered root ID'),
+            _string(value['kind'], 'discovered root kind'),
+            _string(value['qualified_name'], 'discovered root qualified name'),
+            _string(value['simple_name'], 'discovered root simple name'),
+            _optional_string(value['project'], 'discovered root project'),
+            _optional_string(value['source_path'], 'discovered root source path'),
+            _optional_mapping(value['source_span'], 'discovered root source span'),
+            _integer(value['rank'], 'discovered root rank'),
+            _string(value['classification'], 'discovered root classification'),
+            _string(value['confidence'], 'discovered root confidence'),
+            _string(value['authority'], 'discovered root authority'),
+            _strings(value['matched_anchors'], 'discovered root matched anchors'),
+            _strings(value['discovery_rationale'], 'discovered root rationale'),
+            _strings(value['evidence_ids'], 'discovered root evidence IDs'),
+            _string(value['role'], 'discovered root role') if version == 3 else 'unknown',
+            _integer(value['score'], 'discovered root score') if version == 3 else 0,
+            _strings(value['score_reasons'], 'discovered root score reasons')
+            if version == 3 else (),
+            _strings(value['search_modes'], 'discovered root search modes')
+            if version == 3 else (),
+            version,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +425,70 @@ class AgentGraphProjection:
 
     def to_json(self) -> str:
         return canonical_json(self.to_dict(), indent=2) + '\n'
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> 'AgentGraphProjection':
+        version = _supported_version(
+            value, AGENT_GRAPH_FORMAT, SUPPORTED_AGENT_GRAPH_PRODUCERS,
+            'agent graph',
+        )
+        fields = {
+            'format', 'version', 'producer', 'graph_fingerprint', 'snapshot_id',
+            'story_fingerprint', 'plan_fingerprint', 'configuration',
+            'root_subjects', 'nodes', 'edges', 'represented_tests',
+            'requirements', 'uncertainties', 'omitted_counts',
+        }
+        if version >= 2:
+            fields.add('discovered_roots')
+        _require_fields(value, fields, 'agent graph')
+        nodes = tuple(
+            AgentGraphNode.from_dict(item)
+            for item in _mappings(value['nodes'], 'agent graph nodes')
+        )
+        edges = tuple(
+            AgentGraphEdge.from_dict(item)
+            for item in _mappings(value['edges'], 'agent graph edges')
+        )
+        node_ids = {item.id for item in nodes}
+        if len(node_ids) != len(nodes):
+            raise ValueError('agent graph node IDs must be unique')
+        if any(item.source not in node_ids or item.target not in node_ids for item in edges):
+            raise ValueError('agent graph edges must reference included nodes')
+        omitted = _mapping(value['omitted_counts'], 'agent graph omitted counts')
+        candidate = cls(
+            _string(value['graph_fingerprint'], 'agent graph fingerprint'),
+            _string(value['snapshot_id'], 'agent graph snapshot ID'),
+            _string(value['story_fingerprint'], 'agent graph story fingerprint'),
+            _string(value['plan_fingerprint'], 'agent graph plan fingerprint'),
+            AgentGraphConfiguration.from_dict(
+                _mapping(value['configuration'], 'agent graph configuration')
+            ),
+            _strings(value['root_subjects'], 'agent graph root subjects'),
+            nodes,
+            edges,
+            _strings(value['represented_tests'], 'agent graph represented tests'),
+            _mappings(value['requirements'], 'agent graph requirements'),
+            _strings(value['uncertainties'], 'agent graph uncertainties'),
+            {
+                _string(key, 'agent graph omission name'): _integer(
+                    count, 'agent graph omission count'
+                )
+                for key, count in omitted.items()
+            },
+            tuple(
+                AgentDiscoveredRoot.from_dict(item)
+                for item in _mappings(
+                    value.get('discovered_roots', ()), 'agent graph discovered roots'
+                )
+            ),
+            _string(value['format'], 'agent graph format'),
+            version,
+            _string(value['producer'], 'agent graph producer'),
+        )
+        expected = fingerprint('agent-graph', candidate.payload_without_fingerprint())
+        if candidate.graph_fingerprint != expected:
+            raise ValueError('agent graph fingerprint mismatch')
+        return candidate
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +560,81 @@ class AgentContextPackage:
     def to_json(self) -> str:
         return canonical_json(self.to_dict(), indent=2) + '\n'
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> 'AgentContextPackage':
+        version = _supported_version(
+            value, AGENT_CONTEXT_FORMAT, SUPPORTED_AGENT_CONTEXT_PRODUCERS,
+            'agent context',
+        )
+        fields = {
+            'format', 'version', 'producer', 'context_fingerprint', 'story',
+            'repository_identity', 'authoritative_project', 'selected_subject',
+            'primary_implementation_surface', 'important_collaborators',
+            'represented_callers', 'represented_callees', 'impact_summary',
+            'represented_tests', 'requirement_reconciliation',
+            'remediation_operational_work', 'uncertainty',
+            'recommended_investigation_order', 'validation_guidance',
+            'graph_artifacts', 'expected_change_surface',
+        }
+        if version >= 2:
+            fields.add('discovered_roots')
+        if version >= 3:
+            fields.update({'story_anchors', 'discovery_diagnostics'})
+        _require_fields(value, fields, 'agent context')
+        candidate = cls(
+            _string(value['context_fingerprint'], 'agent context fingerprint'),
+            _mapping(value['story'], 'agent context story'),
+            _mapping(value['repository_identity'], 'agent repository identity'),
+            _optional_string(
+                value['authoritative_project'], 'agent context authoritative project'
+            ),
+            _optional_string(value['selected_subject'], 'agent context selected subject'),
+            _mappings(
+                value['primary_implementation_surface'],
+                'agent primary implementation surface',
+            ),
+            _mappings(value['important_collaborators'], 'agent collaborators'),
+            _mappings(value['represented_callers'], 'agent represented callers'),
+            _mappings(value['represented_callees'], 'agent represented callees'),
+            _mapping(value['impact_summary'], 'agent impact summary'),
+            _mappings(value['represented_tests'], 'agent represented tests'),
+            _mappings(
+                value['requirement_reconciliation'], 'agent requirement reconciliation'
+            ),
+            _mappings(
+                value['remediation_operational_work'], 'agent remediation work'
+            ),
+            _strings(value['uncertainty'], 'agent context uncertainty'),
+            _mappings(
+                value['recommended_investigation_order'],
+                'agent investigation order',
+            ),
+            _mapping(value['validation_guidance'], 'agent validation guidance'),
+            _mapping(value['graph_artifacts'], 'agent graph artifacts'),
+            _mapping(value['expected_change_surface'], 'agent expected change surface'),
+            tuple(
+                AgentDiscoveredRoot.from_dict(item)
+                for item in _mappings(
+                    value.get('discovered_roots', ()), 'agent discovered roots'
+                )
+            ),
+            tuple(
+                StoryAnchor.from_dict(item)
+                for item in _mappings(value.get('story_anchors', ()), 'story anchors')
+            ),
+            (
+                _mapping(value['discovery_diagnostics'], 'discovery diagnostics')
+                if version >= 3 else None
+            ),
+            _string(value['format'], 'agent context format'),
+            version,
+            _string(value['producer'], 'agent context producer'),
+        )
+        expected = fingerprint('agent-context', candidate.payload_without_fingerprint())
+        if candidate.context_fingerprint != expected:
+            raise ValueError('agent context fingerprint mismatch')
+        return candidate
+
 
 @dataclass(frozen=True, slots=True)
 class AgentContextArtifacts:
@@ -377,3 +660,135 @@ class AgentContextArtifacts:
 def json_value(value: Any) -> Any:
     '''Return a JSON-safe deep copy while rejecting non-deterministic values.'''
     return json.loads(canonical_json(value))
+
+
+def load_agent_context_package(path: str | Path) -> AgentContextPackage:
+    payload = _load_json_object(path, MAXIMUM_AGENT_CONTEXT_BYTES, 'agent context')
+    try:
+        return AgentContextPackage.from_dict(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f'agent context authority is invalid: {exc}') from exc
+
+
+def load_agent_graph_projection(path: str | Path) -> AgentGraphProjection:
+    payload = _load_json_object(path, MAXIMUM_AGENT_GRAPH_BYTES, 'agent graph')
+    try:
+        return AgentGraphProjection.from_dict(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f'agent graph authority is invalid: {exc}') from exc
+
+
+def _load_json_object(
+    path: str | Path,
+    maximum_bytes: int,
+    label: str,
+) -> dict[str, object]:
+    selected = Path(path).expanduser().resolve()
+    if not selected.is_file():
+        raise ValueError(f'{label} file does not exist: {selected}')
+    with selected.open('rb') as handle:
+        raw = handle.read(maximum_bytes + 1)
+    if len(raw) > maximum_bytes:
+        raise ValueError(f'{label} file exceeds the {maximum_bytes}-byte bound')
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError as exc:
+        raise ValueError(f'{label} file must be UTF-8') from exc
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'{label} file is not valid JSON') from exc
+    return _mapping(payload, label)
+
+
+def _supported_version(
+    value: Mapping[str, object],
+    expected_format: str,
+    producers: Mapping[int, str],
+    label: str,
+) -> int:
+    if not isinstance(value, Mapping):
+        raise TypeError(f'{label} must be an object')
+    if value.get('format') != expected_format:
+        raise ValueError(f'unsupported {label} format')
+    version = _integer(value.get('version'), f'{label} version')
+    if version not in producers:
+        raise ValueError(f'unsupported {label} version: {version}')
+    if value.get('producer') != producers[version]:
+        raise ValueError(f'{label} producer does not match version {version}')
+    return version
+
+
+def _require_fields(
+    value: Mapping[str, object], expected: set[str], label: str
+) -> None:
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError(f'invalid {label} fields')
+
+
+def _require_allowed_fields(
+    value: Mapping[str, object],
+    required: set[str],
+    allowed: set[str],
+    label: str,
+) -> None:
+    if not isinstance(value, Mapping):
+        raise TypeError(f'{label} must be an object')
+    if not required <= set(value) or not set(value) <= allowed:
+        raise ValueError(f'invalid {label} fields')
+
+
+def _mapping(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f'{label} must be an object')
+    if any(not isinstance(key, str) for key in value):
+        raise TypeError(f'{label} keys must be strings')
+    return json_value(dict(value))
+
+
+def _optional_mapping(value: object, label: str) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return _mapping(value, label)
+
+
+def _mappings(value: object, label: str) -> tuple[dict[str, object], ...]:
+    values = _sequence(value, label)
+    return tuple(_mapping(item, f'{label} entry') for item in values)
+
+
+def _strings(value: object, label: str) -> tuple[str, ...]:
+    return tuple(_string(item, f'{label} entry') for item in _sequence(value, label))
+
+
+def _sequence(value: object, label: str) -> tuple[object, ...]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes, bytearray))
+    ):
+        raise TypeError(f'{label} must be an array')
+    return tuple(value)
+
+
+def _string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError(f'{label} must be a non-empty string')
+    return value
+
+
+def _optional_string(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _string(value, label)
+
+
+def _integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f'{label} must be an integer')
+    return value
+
+
+def _boolean(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f'{label} must be a boolean')
+    return value

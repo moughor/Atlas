@@ -177,6 +177,48 @@ Normally give the story, `context.md`, and `graph.json` to Kiro/Codex.
 The output directory must be outside SyGMa. Atlas fails rather than deleting
 unrelated entries from an existing output directory.
 
+### Post-change review
+
+After Kiro/Codex edits SyGMa, compare the working tree with an explicit
+pre-change Git reference:
+
+```powershell
+python -B -m moughorai.atlas_cli agent review C:\sygma\sygma `
+  --context C:\AtlasContexts\SYGMA-63059\context.json `
+  --base <pre-change-ref>
+```
+
+`--base` is required and is resolved with Git; Atlas never infers it. The
+command reads the `graph.json` referenced by `context.json`. Use `--graph`
+only to select an explicitly stored matching graph and `--json` for canonical
+machine-readable output.
+
+Agent review is read-only. It reads tracked Git diff metadata, non-ignored
+untracked paths, the existing context/graph package, and the verified snapshot.
+It does not read untracked contents, edit source, rescan, publish a snapshot,
+invoke a provider, or run Java/Maven.
+
+The result classifies scope relative to the precomputed Atlas map:
+
+- `WITHIN_EXPECTED_SURFACE` means an expected path, canonical subject, or
+  context root matched;
+- `PLAUSIBLE_SCOPE_EXPANSION` means bounded project, graph, test, or
+  requirement evidence explains an additional file;
+- `UNEXPECTED_SCOPE` means a represented local change lacks that explanation;
+  and
+- `UNREPRESENTED_CHANGE` means pre-change Atlas authority cannot sufficiently
+  represent the change, commonly for a new untracked file.
+
+These are scope classifications, not correctness verdicts. Call edges, TEST
+reachability, declaration identity, and requirement status come from the
+pre-change snapshot and may be stale after edits. Represented tests are the
+first tests to inspect/run, not proof of runtime coverage. Requirement status
+is never changed merely because a file was edited.
+
+Atlas 2.1 context packages do not record the Git commit that generated them.
+The review therefore reports `UNKNOWN_BASE_PROVENANCE` even when the supplied
+base resolves successfully. Confirm the intended pre-change ref operationally.
+
 ### Advanced/manual targeting
 
 Use `--subject` when the exact canonical target is already known or an expert
@@ -428,7 +470,8 @@ The final search is a small provider-free readiness check.
 5. Generate story context without `--subject` or `--project`.
 6. Give the story, `context.md`, and `graph.json` to Kiro/Codex.
 7. Let the agent implement and run project validation/tests.
-8. Review the Git diff and remaining uncertainty.
+8. Run Atlas post-change scope review, then inspect the Git diff and remaining
+   uncertainty.
 
 ### Generate context
 
@@ -454,6 +497,14 @@ python -B -m moughorai.atlas_cli agent context C:\sygma\sygma `
 python -B -m moughorai.atlas_cli snapshot status `
   --root C:\sygma\sygma `
   --json
+```
+
+### Review changes
+
+```powershell
+python -B -m moughorai.atlas_cli agent review C:\sygma\sygma `
+  --context C:\AtlasContexts\SYGMA-12345\context.json `
+  --base <pre-change-ref>
 ```
 
 ### Atlas version
