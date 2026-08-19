@@ -1,7 +1,52 @@
 # Atlas
 
-Atlas is a modular static-analysis platform for multi-project workspaces.
-Atlas 2.0 provides deterministic analysis reports, incremental, concurrent,
+## Atlas 2.1 — Agent Intelligence
+
+Atlas is a deterministic enterprise repository-intelligence backend for
+external coding agents. It maps canonical identities, project ownership,
+dependencies, Java call relationships, represented TEST reachability, impact,
+story requirements, and uncertainty into bounded, reproducible context.
+
+**Kiro/Codex write; Atlas maps, grounds, and verifies.** Atlas does not replace
+the coding agent's source interpretation, editing, or execution loop.
+
+The primary supported Atlas 2.1 workflow is:
+
+```text
+SyGMa
+-> Atlas snapshot and graph
+-> story-specific agent context
+-> Kiro / Codex
+-> implementation
+```
+
+Generate the context package outside the source repository:
+
+```powershell
+python -B -m moughorai.atlas_cli agent context C:\sygma\sygma `
+  --story-file C:\path\story.txt `
+  --output C:\temp\atlas-context `
+  --depth story
+```
+
+The command writes exactly `context.md`, `context.json`, `graph.json`, and
+`graph.mmd`. Give the original story, `context.md`, and `graph.json` to the
+external coding agent. Atlas autonomously ranks represented roots from the
+story; `--subject` and `--project` are advanced optional targeting controls, not
+normal workflow requirements. The story file may contain up to 50,000
+normalized characters and 256 KiB of UTF-8 and is never silently truncated.
+
+The default `story` graph targets 20–100 high-value nodes and is capped at 100
+nodes/600 edges; explicit `--depth expanded` is capped at 500 nodes/4,000
+edges. The full Atlas graph stays internal. Context export uses an existing
+validated snapshot and requires no provider, Ollama, GPU, Maven, Java runtime,
+repository rescan, or source change.
+
+See [Atlas 2.1 Agent Intelligence](docs/architecture/ATLAS_2_1_AGENT_INTELLIGENCE.md)
+the [Atlas 2.1 Operations Guide](docs/ATLAS_2_1_OPERATIONS_GUIDE.md), and the
+[2.1 release notes](docs/RELEASE_NOTES_2_1.md).
+
+Atlas 2.1 also retains deterministic analysis reports, incremental, concurrent,
 adaptive, and distributed execution, crash recovery, baselines, Git-diff
 analysis, watch mode, quality gates, plugin and rule SDKs, SARIF output, CI
 templates, historical reporting, profiling, dashboards, structured logging,
@@ -118,10 +163,12 @@ debt score and keeps missing impact explicitly unranked; a cycle remains observe
 debt evidence rather than proof of a defect. See
 [`docs/PR142_TECHNICAL_DEBT.md`](docs/PR142_TECHNICAL_DEBT.md).
 
-The current repository includes implemented work through PR142. PR137 Refactoring
-Advisor, PR138 Security Intelligence, and PR142 Technical Debt remain deliberately
-partial roadmap items; PR139 consumes only compatible published capabilities. Recent repository
-intelligence work adds source-free summaries, a canonical knowledge graph,
+The current repository includes the supported Agent Intelligence path through
+PR175. PR174 executable verification is not present on canonical main and remains
+future/experimental work. PR137 Refactoring Advisor, PR138 Security Intelligence,
+and PR142 Technical Debt remain deliberately partial roadmap items; PR139 consumes
+only compatible published capabilities. Recent repository intelligence work adds
+source-free summaries, a canonical knowledge graph,
 evidence-backed architecture and design-pattern findings, conservative
 reachability, deterministic risk/hotspot indicators, bounded executive reports, and
 canonical subject explanations, search, impact prediction, refactoring advice, and

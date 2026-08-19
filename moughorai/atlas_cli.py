@@ -162,12 +162,15 @@ def _version_callback(value: bool) -> None:
 
 app = typer.Typer(
     name="atlas",
-    help="Atlas modular static-analysis platform.",
+    help="Atlas deterministic repository-intelligence backend.",
     no_args_is_help=True,
 )
 ai_app = typer.Typer(
     name="ai",
-    help="Reason over verified Atlas semantic snapshots.",
+    help=(
+        "Query verified Atlas semantic snapshots; the interactive "
+        "engineering-agent runtime is experimental."
+    ),
     no_args_is_help=True,
 )
 snapshot_app = typer.Typer(
@@ -182,7 +185,7 @@ _logger = get_logger("cli")
 
 agent_app = typer.Typer(
     name='agent',
-    help='Export bounded deterministic repository intelligence for coding agents.',
+    help='Primary supported export workflow for external coding agents.',
     no_args_is_help=True,
 )
 app.add_typer(agent_app, name='agent')
@@ -199,7 +202,7 @@ def root_callback(
     log_file: Annotated[Path | None, typer.Option("--log-file", help="Write Atlas logs to this file.")] = None,
     correlation_id: Annotated[str | None, typer.Option("--correlation-id", help="Correlation ID for this invocation.")] = None,
 ) -> None:
-    """Atlas modular static-analysis platform."""
+    """Atlas deterministic repository-intelligence backend."""
     active = configure_logging(
         level=log_level,
         output_format=log_format,
@@ -681,7 +684,13 @@ def agent_context_command(
     ],
     story_file: Annotated[
         Path,
-        typer.Option('--story-file', help='UTF-8 Jira/story text file.'),
+        typer.Option(
+            '--story-file',
+            help=(
+                'UTF-8 Jira/story text file (maximum 50,000 normalized '
+                'characters and 256 KiB).'
+            ),
+        ),
     ],
     output: Annotated[
         Path,
@@ -693,21 +702,27 @@ def agent_context_command(
     ] = None,
     subject: Annotated[
         str | None,
-        typer.Option('--subject', help='Optional exact canonical Java subject.'),
+        typer.Option(
+            '--subject',
+            help='Advanced optional exact canonical Java subject override.',
+        ),
     ] = None,
     project: Annotated[
         str | None,
-        typer.Option('--project', help='Optional authoritative project constraint.'),
+        typer.Option(
+            '--project',
+            help='Advanced optional authoritative project discovery constraint.',
+        ),
     ] = None,
     depth: Annotated[
         AgentGraphDepth,
         typer.Option('--depth', help='Projection tier: story or expanded.'),
     ] = AgentGraphDepth.STORY,
 ) -> None:
-    '''Generate context.md, context.json, graph.json, and graph.mmd without a provider.'''
+    '''Discover story roots and export four bounded deterministic context artifacts.'''
 
     def operation() -> None:
-        story = _read_session_request_file(story_file).text
+        story = _read_agent_story_file(story_file).text
         loaded = _load_ai_snapshot(root, snapshot)
         session = RepositoryRuntimeSession(workspace_root=root)
         try:
@@ -732,6 +747,20 @@ def agent_context_command(
             f'graph: {len(artifacts.graph.nodes)} nodes, '
             f'{len(artifacts.graph.edges)} edges, depth={depth.value}'
         )
+        resolved_roots = sum(
+            item.classification == 'resolved'
+            for item in artifacts.graph.discovered_roots
+        )
+        candidate_roots = sum(
+            item.classification == 'candidate'
+            for item in artifacts.graph.discovered_roots
+        )
+        if artifacts.graph.version >= 2:
+            typer.echo(
+                f'roots: {resolved_roots} authoritative, '
+                f'{candidate_roots} candidate, '
+                f"{artifacts.graph.omitted_counts.get('discovery_roots', 0)} omitted"
+            )
         for name, size in artifacts.output_files:
             typer.echo(f'artifact: {name} ({size} bytes)')
 
@@ -2404,6 +2433,8 @@ _SESSION_SEARCH_DEFAULT_LIMIT = 10
 _SESSION_SEARCH_MAXIMUM_LIMIT = 20
 _SESSION_REQUEST_MAXIMUM_CHARACTERS = 3_000
 _SESSION_REQUEST_MAXIMUM_BYTES = _SESSION_REQUEST_MAXIMUM_CHARACTERS * 4
+_AGENT_STORY_MAXIMUM_CHARACTERS = 50_000
+_AGENT_STORY_MAXIMUM_BYTES = 256 * 1024
 _SESSION_SEARCH_CONFIGURATION = CodeIntelligenceConfiguration(
     max_depth=1,
     max_nodes=1,
@@ -2561,6 +2592,48 @@ def _read_session_request_file(path: Path) -> _SessionFileInput:
         _validate_session_request_text(text, label='input file'),
         len(payload),
     )
+
+
+def _read_agent_story_file(path: Path) -> _SessionFileInput:
+    try:
+        metadata = path.stat()
+    except FileNotFoundError as exc:
+        raise ValueError(f'agent story file does not exist: {path}') from exc
+    except OSError as exc:
+        raise ValueError(f'agent story file is not readable: {path}') from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f'agent story path is not a regular file: {path}')
+    if metadata.st_size > _AGENT_STORY_MAXIMUM_BYTES:
+        raise ValueError(
+            f'agent story file contains {metadata.st_size} bytes; accepted maximum '
+            f'is {_AGENT_STORY_MAXIMUM_BYTES} bytes (256 KiB)'
+        )
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f'agent story file is not readable: {path}') from exc
+    if len(payload) > _AGENT_STORY_MAXIMUM_BYTES:
+        raise ValueError(
+            f'agent story file contains {len(payload)} bytes; accepted maximum '
+            f'is {_AGENT_STORY_MAXIMUM_BYTES} bytes (256 KiB)'
+        )
+    try:
+        text = payload.decode('utf-8-sig')
+    except UnicodeDecodeError as exc:
+        raise ValueError('agent story file is not valid UTF-8 plain text') from exc
+    normalized = normalize_story_text(text)
+    if len(normalized) > _AGENT_STORY_MAXIMUM_CHARACTERS:
+        raise ValueError(
+            f'agent story contains {len(normalized)} normalized characters; '
+            f'accepted maximum is {_AGENT_STORY_MAXIMUM_CHARACTERS} characters'
+        )
+    if any(
+        (ord(character) < 32 and character not in {'\t', '\n'})
+        or ord(character) == 127
+        for character in normalized
+    ):
+        raise ValueError('agent story file is not UTF-8 plain text')
+    return _SessionFileInput(path, normalized, len(payload))
 
 
 @dataclass(frozen=True, slots=True)
@@ -3006,7 +3079,7 @@ def ai_session_command(
         typer.Option('--max-input-tokens', min=1024),
     ] = 7000,
 ) -> None:
-    '''Run repeated engineering requests over one validated runtime.'''
+    '''Run the experimental engineering-agent runtime over a validated snapshot.'''
 
     def operation() -> None:
         loaded = _load_ai_snapshot(root, snapshot)
@@ -3043,7 +3116,8 @@ def ai_session_command(
                 ),
             )
             typer.echo(
-                'Atlas session ready. Use /help, /search, /subject, /project, '
+                'Experimental engineering-agent runtime ready. Use /help, '
+                '/search, /subject, /project, '
                 '/ask-file, /story, /plan [detail], /implement, /apply, '
                 '/verify, /diff, /answer [detail|full], /explain, /impact, '
                 '/stats, or /exit.'
@@ -3102,9 +3176,9 @@ def ai_session_command(
                         '/story enter multiline story mode; finish with /end; '
                         '/story-file <path> load a story from a text file; '
                         '/plan [detail] reconcile the loaded story with repository evidence; '
-                        '/implement create a preview-only bounded patch proposal; '
-                        '/apply apply only inside an isolated linked Git worktree; '
-                        '/verify show validation commands without running them; '
+                        '/implement [experimental] create a preview-only bounded patch proposal; '
+                        '/apply [experimental] apply only inside an isolated linked Git worktree; '
+                        '/verify [experimental] show validation commands without running them; '
                         '/diff review current changes against the proposal; '
                         '/cancel cancel multiline story entry; '
                         '/answer [summary|detail|full]; /explain; /impact; '

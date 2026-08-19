@@ -10,10 +10,11 @@ from typing import Any
 
 
 AGENT_CONTEXT_FORMAT = 'atlas-agent-context'
-AGENT_CONTEXT_VERSION = 1
+AGENT_CONTEXT_VERSION = 2
 AGENT_GRAPH_FORMAT = 'atlas-agent-graph'
-AGENT_GRAPH_VERSION = 1
-AGENT_CONTEXT_PRODUCER = 'atlas-pr175/1'
+AGENT_GRAPH_VERSION = 2
+AGENT_CONTEXT_PRODUCER = 'atlas-pr176/2'
+AGENT_CONTEXT_LEGACY_PRODUCER = 'atlas-pr175/1'
 
 
 def canonical_json(value: object, *, indent: int | None = None) -> str:
@@ -138,6 +139,48 @@ class AgentGraphEdge:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentDiscoveredRoot:
+    canonical_subject_id: str
+    kind: str
+    qualified_name: str
+    simple_name: str
+    project: str
+    source_path: str
+    source_span: dict[str, object]
+    rank: int
+    classification: str
+    confidence: str
+    authority: str
+    matched_anchors: tuple[str, ...]
+    discovery_rationale: tuple[str, ...]
+    evidence_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.classification not in {'resolved', 'candidate'}:
+            raise ValueError('discovered root classification is invalid')
+        if isinstance(self.rank, bool) or not isinstance(self.rank, int) or self.rank < 1:
+            raise ValueError('discovered root rank must be a positive integer')
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            'canonical_subject_id': self.canonical_subject_id,
+            'kind': self.kind,
+            'qualified_name': self.qualified_name,
+            'simple_name': self.simple_name,
+            'project': self.project,
+            'source_path': self.source_path,
+            'source_span': self.source_span,
+            'rank': self.rank,
+            'classification': self.classification,
+            'confidence': self.confidence,
+            'authority': self.authority,
+            'matched_anchors': list(self.matched_anchors),
+            'discovery_rationale': list(self.discovery_rationale),
+            'evidence_ids': list(self.evidence_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AgentGraphProjection:
     graph_fingerprint: str
     snapshot_id: str
@@ -151,12 +194,13 @@ class AgentGraphProjection:
     requirements: tuple[dict[str, object], ...]
     uncertainties: tuple[str, ...]
     omitted_counts: dict[str, int]
+    discovered_roots: tuple[AgentDiscoveredRoot, ...] = ()
     format: str = AGENT_GRAPH_FORMAT
     version: int = AGENT_GRAPH_VERSION
     producer: str = AGENT_CONTEXT_PRODUCER
 
     def payload_without_fingerprint(self) -> dict[str, object]:
-        return {
+        payload = {
             'format': self.format,
             'version': self.version,
             'producer': self.producer,
@@ -172,6 +216,11 @@ class AgentGraphProjection:
             'uncertainties': list(self.uncertainties),
             'omitted_counts': dict(sorted(self.omitted_counts.items())),
         }
+        if self.version >= 2:
+            payload['discovered_roots'] = [
+                item.to_dict() for item in self.discovered_roots
+            ]
+        return payload
 
     def to_dict(self) -> dict[str, object]:
         payload = self.payload_without_fingerprint()
@@ -187,8 +236,8 @@ class AgentContextPackage:
     context_fingerprint: str
     story: dict[str, object]
     repository_identity: dict[str, object]
-    authoritative_project: str
-    selected_subject: str
+    authoritative_project: str | None
+    selected_subject: str | None
     primary_implementation_surface: tuple[dict[str, object], ...]
     important_collaborators: tuple[dict[str, object], ...]
     represented_callers: tuple[dict[str, object], ...]
@@ -202,12 +251,13 @@ class AgentContextPackage:
     validation_guidance: dict[str, object]
     graph_artifacts: dict[str, object]
     expected_change_surface: dict[str, object]
+    discovered_roots: tuple[AgentDiscoveredRoot, ...] = ()
     format: str = AGENT_CONTEXT_FORMAT
     version: int = AGENT_CONTEXT_VERSION
     producer: str = AGENT_CONTEXT_PRODUCER
 
     def payload_without_fingerprint(self) -> dict[str, object]:
-        return {
+        payload = {
             'format': self.format,
             'version': self.version,
             'producer': self.producer,
@@ -231,6 +281,11 @@ class AgentContextPackage:
             'graph_artifacts': self.graph_artifacts,
             'expected_change_surface': self.expected_change_surface,
         }
+        if self.version >= 2:
+            payload['discovered_roots'] = [
+                item.to_dict() for item in self.discovered_roots
+            ]
+        return payload
 
     def to_dict(self) -> dict[str, object]:
         payload = self.payload_without_fingerprint()

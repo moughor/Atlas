@@ -28,12 +28,12 @@ def workspace(root: Path) -> Path:
     return root
 
 
-def test_atlas_2_version_is_canonical_everywhere() -> None:
+def test_atlas_2_release_version_is_canonical_everywhere() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert metadata["project"]["version"] == moughorai.__version__ == __version__ == "2.0.0"
+    assert metadata["project"]["version"] == moughorai.__version__ == __version__ == "2.1.0"
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.stdout == "Atlas 2.0.0\n"
+    assert result.stdout == "Atlas 2.1.0\n"
 
 
 def test_sarif_uses_canonical_product_version() -> None:
@@ -84,6 +84,6 @@ def test_ci_template_generation_is_stable_in_release(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == content
 
 
-def test_readme_describes_atlas_2_and_compatibility_document_exists() -> None:
-    assert "Atlas 2.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+def test_readme_describes_current_atlas_2_release_and_compatibility() -> None:
+    assert "Atlas 2.1" in (ROOT / "README.md").read_text(encoding="utf-8")
     assert (ROOT / "docs" / "PR100_ATLAS_2_STABILIZATION.md").is_file()

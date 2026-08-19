@@ -1,5 +1,24 @@
 # Changelog
 
+## Atlas 2.1 — Agent Intelligence
+
+- Established `atlas agent context` as the supported primary workflow for
+  handing bounded, deterministic repository intelligence to external coding
+  agents.
+- Documented the four-artifact context package, story and expanded graph tiers,
+  provider-free operation, authoritative edge semantics, and full-graph
+  confinement.
+- Added full UTF-8 story-file acceptance up to 50,000 normalized characters and
+  256 KiB without changing interactive/provider limits or truncating input.
+- Added deterministic subject-free and multi-root discovery with ranked
+  authoritative/candidate roots and bounded merged neighborhoods.
+- Positioned Atlas as the repository-intelligence backend: Kiro/Codex write;
+  Atlas maps, grounds, and verifies.
+- Retained `atlas ai session` as an experimental engineering-agent runtime and
+  kept PR174 executable verification out of canonical main.
+- Advanced the canonical package, CLI, and SARIF release identity to 2.1.0
+  without changing public API v1 or the semantic snapshot schema.
+
 ## PERF1 deterministic process project extraction
 
 - Added opt-in `atlas analyze --executor process --workers N` execution with
