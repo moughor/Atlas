@@ -10,10 +10,10 @@ from typing import Any
 
 
 AGENT_CONTEXT_FORMAT = 'atlas-agent-context'
-AGENT_CONTEXT_VERSION = 2
+AGENT_CONTEXT_VERSION = 3
 AGENT_GRAPH_FORMAT = 'atlas-agent-graph'
-AGENT_GRAPH_VERSION = 2
-AGENT_CONTEXT_PRODUCER = 'atlas-pr176/2'
+AGENT_GRAPH_VERSION = 3
+AGENT_CONTEXT_PRODUCER = 'atlas-pr177/3'
 AGENT_CONTEXT_LEGACY_PRODUCER = 'atlas-pr175/1'
 
 
@@ -139,14 +139,56 @@ class AgentGraphEdge:
 
 
 @dataclass(frozen=True, slots=True)
+class StoryAnchor:
+    text: str
+    normalized_text: str
+    anchor_type: str
+    strength: int
+    specificity: int
+    source_location_in_story: dict[str, int]
+    technical_note: bool
+    identifier_like: bool
+    exact_match_preferred: bool
+    semantic_search_allowed: bool
+    ambiguity_penalty: int
+    provenance: str
+
+    def __post_init__(self) -> None:
+        if not self.text or not self.normalized_text:
+            raise ValueError('story anchor text must not be blank')
+        if not 0 <= self.strength <= 100 or not 0 <= self.specificity <= 100:
+            raise ValueError('story anchor strength and specificity must be bounded')
+        if not 0 <= self.ambiguity_penalty <= 100:
+            raise ValueError('story anchor ambiguity penalty must be bounded')
+        if set(self.source_location_in_story) != {'start', 'end'}:
+            raise ValueError('story anchor location must contain start and end offsets')
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            'text': self.text,
+            'normalized_text': self.normalized_text,
+            'anchor_type': self.anchor_type,
+            'strength': self.strength,
+            'specificity': self.specificity,
+            'source_location_in_story': self.source_location_in_story,
+            'technical_note': self.technical_note,
+            'identifier_like': self.identifier_like,
+            'exact_match_preferred': self.exact_match_preferred,
+            'semantic_search_allowed': self.semantic_search_allowed,
+            'ambiguity_penalty': self.ambiguity_penalty,
+            'provenance': self.provenance,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AgentDiscoveredRoot:
     canonical_subject_id: str
     kind: str
     qualified_name: str
     simple_name: str
-    project: str
-    source_path: str
-    source_span: dict[str, object]
+    project: str | None
+    source_path: str | None
+    source_span: dict[str, object] | None
     rank: int
     classification: str
     confidence: str
@@ -154,12 +196,18 @@ class AgentDiscoveredRoot:
     matched_anchors: tuple[str, ...]
     discovery_rationale: tuple[str, ...]
     evidence_ids: tuple[str, ...] = ()
+    role: str = 'unknown'
+    score: int = 0
+    score_reasons: tuple[str, ...] = ()
+    search_modes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.classification not in {'resolved', 'candidate'}:
             raise ValueError('discovered root classification is invalid')
         if isinstance(self.rank, bool) or not isinstance(self.rank, int) or self.rank < 1:
             raise ValueError('discovered root rank must be a positive integer')
+        if isinstance(self.score, bool) or not isinstance(self.score, int):
+            raise ValueError('discovered root score must be an integer')
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -177,6 +225,10 @@ class AgentDiscoveredRoot:
             'matched_anchors': list(self.matched_anchors),
             'discovery_rationale': list(self.discovery_rationale),
             'evidence_ids': list(self.evidence_ids),
+            'role': self.role,
+            'score': self.score,
+            'score_reasons': list(self.score_reasons),
+            'search_modes': list(self.search_modes),
         }
 
 
@@ -252,6 +304,8 @@ class AgentContextPackage:
     graph_artifacts: dict[str, object]
     expected_change_surface: dict[str, object]
     discovered_roots: tuple[AgentDiscoveredRoot, ...] = ()
+    story_anchors: tuple[StoryAnchor, ...] = ()
+    discovery_diagnostics: dict[str, object] | None = None
     format: str = AGENT_CONTEXT_FORMAT
     version: int = AGENT_CONTEXT_VERSION
     producer: str = AGENT_CONTEXT_PRODUCER
@@ -285,6 +339,9 @@ class AgentContextPackage:
             payload['discovered_roots'] = [
                 item.to_dict() for item in self.discovered_roots
             ]
+        if self.version >= 3:
+            payload['story_anchors'] = [item.to_dict() for item in self.story_anchors]
+            payload['discovery_diagnostics'] = self.discovery_diagnostics or {}
         return payload
 
     def to_dict(self) -> dict[str, object]:

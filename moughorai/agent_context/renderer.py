@@ -39,12 +39,24 @@ def render_agent_context(package: AgentContextPackage) -> str:
         )
         candidates = tuple(
             item for item in package.discovered_roots
-            if item.classification == 'candidate'
+            if item.classification == 'candidate' and item.role != 'external_symbol'
+        )
+        external = tuple(
+            item for item in package.discovered_roots
+            if item.role == 'external_symbol'
         )
         lines.extend(('### Authoritative / resolved roots', ''))
-        _append_roots(lines, authoritative)
+        if package.version >= 3:
+            _append_root_groups(lines, authoritative)
+        else:
+            _append_roots(lines, authoritative)
         lines.extend(('', '### Candidate / uncertain roots', ''))
-        _append_roots(lines, candidates)
+        if package.version >= 3:
+            _append_root_groups(lines, candidates)
+            lines.extend(('', '### External / unresolved technical anchors', ''))
+            _append_roots(lines, external)
+        else:
+            _append_roots(lines, candidates)
         lines.append('')
     lines.extend(('## Primary implementation surface', ''))
     _append_references(lines, package.primary_implementation_surface)
@@ -184,7 +196,8 @@ def render_agent_graph_mermaid(graph: AgentGraphProjection) -> str:
         connector = '-.->' if edge.type in {
             'story_requirement_relation', 'possible_call_target',
             'possible_dispatch_target', 'reverse_upstream',
-            'forward_test_reachability',
+            'forward_test_reachability', 'story_anchor_relation',
+            'external_dependency',
         } else '-->'
         lines.append(
             f'  {source} {connector}|{_mermaid_text(label)}| {target}'
@@ -207,11 +220,53 @@ def _append_references(lines: list[str], values) -> None:
         )
 
 
+def _append_root_groups(lines: list[str], values) -> None:
+    if not values:
+        lines.append('- None discovered.')
+        return
+    labels = {
+        'ui': 'UI',
+        'controller': 'Controller / presenter',
+        'service_interface': 'Service interface',
+        'service': 'Service',
+        'persistence': 'Persistence / query',
+        'domain': 'Domain',
+        'integration': 'Integration / service locator',
+        'test': 'Tests',
+        'unknown': 'Other represented surface',
+    }
+    roles = tuple(dict.fromkeys(item.role for item in values))
+    for role in roles:
+        label = labels.get(role, role.replace('_', ' ').title())
+        lines.extend((f'#### {label}', ''))
+        _append_roots(lines, tuple(item for item in values if item.role == role))
+        lines.append('')
+    lines.pop()
+
+
 def _append_roots(lines: list[str], values) -> None:
     if not values:
         lines.append('- None discovered.')
         return
     for item in values:
+        if not item.source_span:
+            source_ref = item.source_path or 'unresolved external source'
+            project_ref = f'`{item.project}`' if item.project else 'unresolved / external'
+            lines.append(
+                f'{item.rank}. `{item.qualified_name}` — `{item.canonical_subject_id}`'
+            )
+            lines.append(
+                f'   - Project: {project_ref}; confidence: `{item.confidence}`; '
+                f'authority: `{item.authority}`'
+            )
+            lines.append(f'   - Role: `{item.role}`; score: `{item.score}`')
+            lines.append(f'   - Source: `{source_ref}`')
+            if item.matched_anchors:
+                anchors = ', '.join(f'`{anchor}`' for anchor in item.matched_anchors)
+                lines.append('   - Story anchors: ' + anchors)
+            if item.discovery_rationale:
+                lines.append(f'   - Rationale: {item.discovery_rationale[0]}')
+            continue
         start = item.source_span['start']
         end = item.source_span['end']
         source_ref = (
@@ -246,6 +301,8 @@ def _edge_label(edge_type: str, status: str | None) -> str:
         'forward_test_reachability': 'represented TEST reachability',
         'project_ownership': 'owns',
         'story_requirement_relation': 'requirement',
+        'story_anchor_relation': 'story anchor',
+        'external_dependency': 'unresolved external dependency',
     }
     base = labels.get(edge_type, edge_type.replace('_', ' '))
     return f'{base} {status}' if status else base

@@ -145,7 +145,7 @@ class StoryPlanningService:
         selected_name = (
             report.subject.name if report is not None else None
         )
-        anchors = _story_anchors(
+        anchors = request.discovery_anchors or _story_anchors(
             request.story_text,
             request.configuration.max_anchors,
             selected_name=selected_name,

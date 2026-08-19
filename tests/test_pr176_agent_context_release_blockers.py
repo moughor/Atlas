@@ -184,7 +184,7 @@ def test_subject_free_one_root_and_multi_root_candidate_projection(
         ),
     )
 
-    assert one.package.version == one.graph.version == 2
+    assert one.package.version == one.graph.version == 3
     assert one.package.selected_subject == discovery_fixture['subjects'][
         (PROJECT_A, 'getTopicCacheById')
     ]
@@ -211,6 +211,20 @@ def test_subject_free_one_root_and_multi_root_candidate_projection(
     assert len(multi.graph.nodes) <= 100
     assert len(multi.graph.edges) <= 600
     assert multi.graph.omitted_counts['discovery_search_matches'] >= 0
+    assert multi.package.story_anchors
+    assert multi.package.discovery_diagnostics['search_stage_order'] == [
+        'strong_anchor_extraction',
+        'exact_identity',
+        'represented_source_name',
+        'semantic_search',
+        'role_diversity',
+        'graph_expansion',
+    ]
+    assert multi.package.discovery_diagnostics['weak_matches_penalized'] >= 0
+    assert multi.package.to_dict()['story_anchors']
+    assert 'External/unresolved technical anchors' in multi.context_markdown or (
+        not any(item.role == 'external_symbol' for item in multi.graph.discovered_roots)
+    )
 
 
 def test_ambiguous_and_no_useful_root_packages_remain_conservative(

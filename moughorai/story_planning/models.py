@@ -87,6 +87,7 @@ class StoryPlanningRequest:
     subject: str | None = None
     project: str | None = None
     configuration: StoryPlanningConfiguration = StoryPlanningConfiguration()
+    discovery_anchors: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'story_text', normalize_story_text(self.story_text))
@@ -97,6 +98,11 @@ class StoryPlanningRequest:
         for name in ('subject', 'project'):
             value = getattr(self, name)
             object.__setattr__(self, name, value.strip() if value and value.strip() else None)
+        if self.discovery_anchors is not None:
+            anchors = tuple(dict.fromkeys(
+                item.strip() for item in self.discovery_anchors if item.strip()
+            ))
+            object.__setattr__(self, 'discovery_anchors', anchors)
         if not isinstance(self.configuration, StoryPlanningConfiguration):
             raise TypeError('story planning configuration is invalid')
 
@@ -113,6 +119,8 @@ class StoryPlanningRequest:
             'project': self.project,
             'configuration': self.configuration.to_dict(),
         }
+        if self.discovery_anchors is not None:
+            payload['discovery_anchors'] = list(self.discovery_anchors)
         digest = hashlib.sha256(json.dumps(
             payload,
             ensure_ascii=False,

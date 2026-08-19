@@ -15,6 +15,7 @@ from .models import (
     AgentGraphEdge,
     AgentGraphNode,
     AgentGraphProjection,
+    StoryAnchor,
 )
 from .renderer import render_agent_context, render_agent_graph_mermaid
 from .service import AgentContextError, AgentContextService
@@ -36,6 +37,7 @@ __all__ = [
     'AgentGraphEdge',
     'AgentGraphNode',
     'AgentGraphProjection',
+    'StoryAnchor',
     'render_agent_context',
     'render_agent_graph_mermaid',
 ]

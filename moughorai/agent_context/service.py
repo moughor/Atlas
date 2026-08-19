@@ -41,6 +41,11 @@ from .models import (
     AgentGraphProjection,
     fingerprint,
 )
+from .discovery import (
+    PreparedStoryDiscovery,
+    complete_story_discovery,
+    prepare_story_discovery,
+)
 from .renderer import render_agent_context, render_agent_graph_mermaid
 
 
@@ -55,6 +60,14 @@ _CANDIDATE_EDGE_KINDS = frozenset({
 })
 _ROLE_RANK = {
     'primary': 0,
+    'ui': 0,
+    'controller': 1,
+    'service_interface': 2,
+    'service': 3,
+    'persistence': 4,
+    'domain': 5,
+    'integration': 6,
+    'external_symbol': 7,
     'collaborator': 1,
     'represented_test': 2,
     'callee': 3,
@@ -126,11 +139,30 @@ class AgentContextService:
         if not isinstance(snapshot, AtlasSemanticSnapshot):
             raise TypeError('agent context requires a validated semantic snapshot')
         configuration = AgentGraphConfiguration.for_depth(depth)
+        prepared = None
+        if subject is None:
+            runtime = self._session.runtime_for(snapshot)
+            java = runtime.java_code_intelligence
+            if java.callable_index is None or java.code_graph is None:
+                raise AgentContextError('validated Java graph artifacts are unavailable')
+            entries = {
+                item.canonical_subject_id: item for item in java.callable_index.entries
+            }
+            represented_projects = {item.project_id for item in entries.values()}
+            if project is not None and project not in represented_projects:
+                raise AgentContextError(
+                    f'requested project {project!r} is not represented by the validated '
+                    'Java callable index; agent context generation is fail-closed'
+                )
+            prepared = prepare_story_discovery(
+                snapshot, entries, story_text, project, self._root
+            )
         request = StoryPlanningRequest(
             story_text,
             snapshot.snapshot_id,
             subject,
             project,
+            discovery_anchors=(prepared.semantic_anchors if prepared else None),
         )
         planner = StoryPlanningService(
             self._session,
@@ -144,6 +176,7 @@ class AgentContextService:
                 plan,
                 project,
                 configuration,
+                prepared,
             )
         primary = _primary_item(plan)
         if primary is None or plan.subject_resolution_status != 'resolved':
@@ -213,6 +246,7 @@ class AgentContextService:
         plan: StoryPlan,
         project: str | None,
         configuration: AgentGraphConfiguration,
+        prepared: PreparedStoryDiscovery,
     ) -> AgentContextArtifacts:
         runtime = self._session.runtime_for(snapshot)
         java = runtime.java_code_intelligence
@@ -231,26 +265,14 @@ class AgentContextService:
                 'Java callable index; agent context generation is fail-closed'
             )
 
-        supplementary_anchors = _supplementary_story_anchors(plan)
-        (
-            supplementary_hits,
-            supplementary_limitations,
-            supplementary_omitted_count,
-        ) = _supplementary_discovery(
-            runtime,
-            supplementary_anchors,
-            project,
-            entries,
-        )
-        discovered = _discover_roots(
+        root_limit = 8 if configuration.depth is AgentGraphDepth.STORY else 24
+        discovery = complete_story_discovery(
+            prepared,
             plan,
             entries,
-            project,
-            supplementary_anchors=supplementary_anchors,
-            supplementary_hits=supplementary_hits,
+            root_limit=root_limit,
         )
-        root_limit = 8 if configuration.depth is AgentGraphDepth.STORY else 24
-        selected_roots = discovered[:root_limit]
+        selected_roots = discovery.roots
         if project is not None and not selected_roots:
             raise AgentContextError(
                 f'no represented discovery root was found in requested project '
@@ -258,9 +280,10 @@ class AgentContextService:
             )
 
         reports = []
-        projected_roots = []
         query_configuration = _query_configuration(configuration)
         for root in selected_roots:
+            if root.kind != 'method' or root.project is None:
+                continue
             result = java.query(
                 root.canonical_subject_id,
                 kind='method',
@@ -273,7 +296,6 @@ class AgentContextService:
                 and result.report.subject.project == root.project
             ):
                 reports.append(result.report)
-                projected_roots.append(root)
 
         graph = _project_discovered_graph(
             snapshot,
@@ -282,11 +304,11 @@ class AgentContextService:
             entries,
             java.code_graph,
             configuration,
-            tuple(projected_roots),
-            omitted_root_count=max(0, len(discovered) - len(projected_roots)),
+            selected_roots,
+            omitted_root_count=discovery.omitted_root_count,
             project=project,
-            discovery_limitations=supplementary_limitations,
-            discovery_search_omitted_count=supplementary_omitted_count,
+            discovery_limitations=discovery.limitations,
+            discovery_search_omitted_count=0,
         )
         verification = build_engineering_verification_plan(self._root, plan)
         package = _context_package_discovered(
@@ -297,6 +319,7 @@ class AgentContextService:
             verification,
             project,
             self._root,
+            discovery,
         )
         return AgentContextArtifacts(
             package,
@@ -930,7 +953,7 @@ def _project_discovered_graph(
             if root is not None:
                 node = replace(
                     node,
-                    role='primary' if root.classification == 'resolved' else 'candidate',
+                    role=root.role,
                     confidence=root.confidence,
                     evidence_ids=tuple(sorted(set(
                         node.evidence_ids + root.evidence_ids
@@ -943,8 +966,8 @@ def _project_discovered_graph(
     if not partials:
         _add_discovery_base(candidates, edges, plan, entries, project)
 
+    story_id = 'story:' + plan.story_fingerprint.removeprefix('story:v1:')
     for root in roots:
-        entry = entries[root.canonical_subject_id]
         node = AgentGraphNode(
             root.canonical_subject_id,
             root.kind,
@@ -953,13 +976,16 @@ def _project_discovered_graph(
             root.project,
             root.source_path,
             root.source_span,
-            'primary' if root.classification == 'resolved' else 'candidate',
+            root.role,
             root.confidence,
             root.evidence_ids,
         )
         _merge_node(candidates, node, _discovery_node_rank(node, root))
-        owner_id = f'project:{root.project}'
-        if owner_id not in candidates:
+        if root.project is not None:
+            owner_id = f'project:{root.project}'
+        else:
+            owner_id = None
+        if owner_id is not None and owner_id not in candidates:
             _add_special_node(
                 candidates,
                 owner_id,
@@ -970,12 +996,26 @@ def _project_discovered_graph(
                 (-2, owner_id),
                 project=root.project,
             )
+        if owner_id is not None and not any(
+            edge.source == owner_id
+            and edge.target == root.canonical_subject_id
+            and edge.type == 'project_ownership'
+            for edge in edges.values()
+        ):
+            _add_edge(edges, AgentGraphEdge(
+                owner_id,
+                root.canonical_subject_id,
+                'project_ownership',
+                'authoritative',
+                root.authority,
+            ))
         _add_edge(edges, AgentGraphEdge(
-            owner_id,
+            story_id,
             root.canonical_subject_id,
-            'project_ownership',
-            'authoritative',
-            'atlas-pr156',
+            'external_dependency' if root.role == 'external_symbol'
+            else 'story_anchor_relation',
+            root.confidence,
+            root.authority,
         ))
 
     ordered_candidates = sorted(
@@ -1051,7 +1091,7 @@ def _project_discovered_graph(
         uncertainties,
         omitted_counts,
         included_roots,
-        version=2,
+        version=3,
         producer=AGENT_CONTEXT_PRODUCER,
     )
     return replace(
@@ -1348,6 +1388,7 @@ def _context_package_discovered(
     verification,
     requested_project,
     repository_root,
+    discovery,
 ) -> AgentContextPackage:
     nodes = {item.id: item for item in graph.nodes}
     roots = tuple(graph.discovered_roots)
@@ -1363,8 +1404,8 @@ def _context_package_discovered(
     collaborators = tuple(
         _node_reference(item) for item in graph.nodes
         if item.kind not in {'story', 'requirement', 'project'}
-        and item.role in {'collaborator', 'callee', 'candidate', 'requirement_anchor'}
-        and item.id not in {root.canonical_subject_id for root in resolved_roots}
+        and item.role not in {'impacted', 'represented_test'}
+        and item.id not in root_ids
     )[:32]
     callers = _graph_relationship_references(
         graph,
@@ -1409,7 +1450,9 @@ def _context_package_discovered(
     remediation = tuple(
         item for item in requirements if item['id'] in remediation_ids
     )
-    root_projects = tuple(sorted({item.project for item in roots}))
+    root_projects = tuple(sorted({
+        item.project for item in roots if item.project is not None
+    }))
     authoritative_project = requested_project or (
         root_projects[0] if len(root_projects) == 1 else None
     )
@@ -1453,6 +1496,7 @@ def _context_package_discovered(
     expected_subjects = tuple(sorted(
         item.id for item in graph.nodes
         if item.kind not in {'story', 'requirement', 'project'}
+        and item.kind not in {'source_file', 'external_symbol'}
         and item.role != 'impacted'
     ))
     expected_paths = tuple(sorted({
@@ -1520,7 +1564,9 @@ def _context_package_discovered(
             'snapshot_id': snapshot.snapshot_id,
         },
         roots,
-        version=2,
+        discovery.anchors,
+        discovery.diagnostics,
+        version=3,
         producer=AGENT_CONTEXT_PRODUCER,
     )
     return replace(
@@ -1775,14 +1821,16 @@ def _add_edge(edges, edge) -> None:
 def _edge_sort_key(edge) -> tuple[object, ...]:
     rank = {
         'story_requirement_relation': 0,
-        'project_ownership': 1,
-        'resolved_direct_call': 2,
-        'constructor_call': 3,
-        'possible_call_target': 4,
-        'possible_dispatch_target': 5,
-        'method_reference': 6,
-        'reverse_upstream': 7,
-        'forward_test_reachability': 8,
+        'story_anchor_relation': 1,
+        'external_dependency': 2,
+        'project_ownership': 3,
+        'resolved_direct_call': 4,
+        'constructor_call': 5,
+        'possible_call_target': 6,
+        'possible_dispatch_target': 7,
+        'method_reference': 8,
+        'reverse_upstream': 9,
+        'forward_test_reachability': 10,
     }.get(edge.type, 99)
     return (
         rank,
