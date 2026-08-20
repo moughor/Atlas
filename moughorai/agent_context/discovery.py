@@ -38,6 +38,16 @@ _COMMON = frozenset({
     'use', 'using', 'when', 'with', 'without',
 })
 _GENERIC_TECHNICAL = frozenset({'getinstance', 'get', 'set', 'id', 'value'})
+# Improvement #2: Jira metadata markers — identifiers that appear only in
+# Jira headers (story title, component, epic, sprint fields) and are not
+# relevant code anchors worth spending semantic search budget on.
+_JIRA_HEADER_MARKERS = re.compile(
+    r'(?i)\b(?:story\s+points|component|epic|sprint|pi\d+|'
+    r'evolutive\s+maintenance|backlog)\b'
+)
+_JIRA_METADATA_TOKENS = frozenset({
+    'egrants', 'sygma', 'syg', 'dev', 'gap', 'amd', 'pmon',
+})
 _ROLE_ORDER = (
     'ui', 'controller', 'service_interface', 'service', 'persistence',
     'domain', 'integration', 'test', 'unknown', 'external_symbol',
@@ -137,14 +147,26 @@ def extract_story_anchors(story: str, *, maximum: int = 48) -> tuple[StoryAnchor
             technical=True, exact=False, semantic=False,
             provenance='technical-note-expression',
         )
+        # Improvement #1: detect type parameters in generics (e.g. Cache<Integer, Topic>)
+        # Tokens inside angle brackets are class names, not common English words.
+        _type_param_positions: set[int] = set()
+        angle_start = raw.find('<')
+        if angle_start >= 0:
+            angle_end = raw.rfind('>')
+            if angle_end > angle_start:
+                for tp_match in _IDENTIFIER.finditer(raw[angle_start:angle_end + 1]):
+                    _type_param_positions.add(angle_start + tp_match.start())
         for token in _IDENTIFIER.finditer(raw):
             name = token.group(0)
             if name in {'Integer', 'String'}:
                 continue
             folded = name.casefold()
+            # If token is a type parameter in a generic expression, it's a class
+            # name — reduce the ambiguity penalty significantly.
+            is_type_param = token.start() in _type_param_positions
             penalty = (
                 55 if folded in _GENERIC_TECHNICAL
-                else 50 if folded in {'cache', 'topic', 'project'}
+                else (15 if is_type_param else 50) if folded in {'cache', 'topic', 'project'}
                 else 0
             )
             retain(
@@ -203,6 +225,12 @@ def extract_story_anchors(story: str, *, maximum: int = 48) -> tuple[StoryAnchor
             )
         elif title and len(value) >= 4:
             penalty = 38 if key in {'project', 'topic', 'service', 'cache'} else 18
+            # Improvement #3: if the entity appears frequently in the story,
+            # it's central to the story — reduce penalty proportionally.
+            freq = _story_frequency(text, value)
+            if freq >= 5 and penalty > 18:
+                # Frequent entity: reduce penalty (min 18 to stay above noise)
+                penalty = max(18, penalty - min(20, freq * 3))
             retain(
                 value, match.start(), 'business_entity', 58, 54,
                 identifier=False, exact=False, semantic=penalty < 30,
@@ -226,7 +254,46 @@ def prepare_story_discovery(
     semantic_anchors = tuple(
         item.text for item in anchors
         if item.semantic_search_allowed and _effective_strength(item) >= 45
+        # Improvement #2: don't waste semantic search budget on Jira metadata
+        and item.text.casefold() not in _JIRA_METADATA_TOKENS
+        and not _is_jira_header_only_token(item, story)
     )[:20]
+    # Story-centrality override: if normal semantic searches are few (<3),
+    # promote the top body-domain entities that are just below threshold.
+    # Short stories with only English terms (no code identifiers) still
+    # deserve searches for their core concepts like "Payment", "Invoice".
+    if len(semantic_anchors) < 3:
+        _GENERIC_VERBS = frozenset({
+            'create', 'update', 'delete', 'get', 'set', 'add', 'remove',
+            'find', 'check', 'send', 'close', 'open', 'read', 'write',
+            'compare', 'accept', 'reject', 'return',
+        })
+        _GENERIC_NOUNS = frozenset({
+            'model', 'data', 'code', 'list', 'type', 'name', 'status',
+            'default', 'existing', 'notes', 'points', 'component',
+            'epic', 'sprint', 'grants', 'services', 'modularization',
+        })
+        override_candidates = [
+            item for item in anchors
+            if item.semantic_search_allowed
+            and _effective_strength(item) >= 30
+            and item.anchor_type == 'business_entity'
+            and item.text.casefold() not in _JIRA_METADATA_TOKENS
+            and item.text.casefold() not in _GENERIC_VERBS
+            and item.text.casefold() not in _GENERIC_NOUNS
+            and not _is_jira_header_only_token(item, story)
+            and item.text not in semantic_anchors
+        ]
+        # Rank by frequency in story body (most central first)
+        normalized = normalize_story_text(story)
+        override_candidates.sort(
+            key=lambda a: (-_story_frequency(normalized, a.text), a.text),
+        )
+        needed = min(3 - len(semantic_anchors), len(override_candidates))
+        if needed > 0:
+            semantic_anchors = semantic_anchors + tuple(
+                item.text for item in override_candidates[:needed]
+            )
     symbols = tuple(
         item for item in snapshot.semantic_context.get('symbols', ())
         if isinstance(item, dict)
@@ -1055,6 +1122,66 @@ def _anchor_sort_key(item: StoryAnchor):
 
 def _effective_strength(item: StoryAnchor) -> int:
     return max(0, item.strength - item.ambiguity_penalty)
+
+
+def _is_jira_header_only_token(anchor: StoryAnchor, story: str) -> bool:
+    '''Improvement #2: Detect tokens that only appear in Jira header fields.
+
+    A token is considered Jira-metadata-only if:
+    1. It appears in a region that contains Jira field markers (Story Points,
+       Component, Epic, Sprint, etc.), AND
+    2. It does NOT appear anywhere in the story body (the actual requirement text).
+
+    This avoids filtering tokens from story intros that happen to appear before
+    the first bullet point.
+    '''
+    text = normalize_story_text(story)
+    folded = text.casefold()
+    # Only apply this filter if the story has recognizable Jira metadata fields
+    if not _JIRA_HEADER_MARKERS.search(folded):
+        return False
+    # Find the end of the Jira header: the region containing structured fields.
+    # Look for the last Jira field marker, then the next paragraph break after it.
+    last_marker_end = 0
+    for match in _JIRA_HEADER_MARKERS.finditer(folded):
+        last_marker_end = max(last_marker_end, match.end())
+    if last_marker_end == 0:
+        return False
+    # Header ends at the next blank line or "As a" after the last marker
+    header_end = last_marker_end
+    newline_after = text.find('\n\n', last_marker_end)
+    as_a = re.search(r'\bas\s+a\s+\w', folded[last_marker_end:])
+    if newline_after >= 0:
+        header_end = newline_after
+    if as_a:
+        header_end = min(header_end, last_marker_end + as_a.start())
+    # Token must be in the header region
+    anchor_pos = anchor.source_location_in_story.get('start', 0)
+    if anchor_pos >= header_end:
+        return False
+    # And must NOT appear in the body (text after header)
+    anchor_folded = anchor.text.casefold()
+    return anchor_folded not in folded[header_end:]
+
+
+def _story_frequency(text: str, token: str) -> int:
+    '''Improvement #3: Count occurrences of a token in story text (case-insensitive).'''
+    folded = text.casefold()
+    target = token.casefold()
+    count = 0
+    start = 0
+    while True:
+        offset = folded.find(target, start)
+        if offset < 0:
+            break
+        # Only count whole-word matches
+        before_ok = offset == 0 or not folded[offset - 1].isalnum()
+        after_pos = offset + len(target)
+        after_ok = after_pos >= len(folded) or not folded[after_pos].isalnum()
+        if before_ok and after_ok:
+            count += 1
+        start = offset + 1
+    return count
 
 
 def _normalize(value: str) -> str:
