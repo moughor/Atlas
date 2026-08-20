@@ -53,6 +53,120 @@ _ROLE_ORDER = (
     'domain', 'integration', 'test', 'unknown', 'external_symbol',
 )
 
+_CREATION_INTENT = re.compile(
+    r'(?i)\b(?:create|implement|build)\s+(?:a\s+|the\s+)?'
+    r'(?:new\s+)?([A-Za-z][A-Za-z0-9 _-]{1,80}?)(?:\s*[.,;:\n]|$)'
+)
+_NEW_ENTITY = re.compile(
+    r'(?i)\bnew\s+([A-Z][A-Za-z0-9 _-]{1,80}?)(?:\s*[.,;:\n(]|$)'
+)
+
+
+def _detect_creation_intent(story: str) -> tuple[str, ...]:
+    """Extract entity names being created from the story text.
+
+    Recognizes patterns like:
+      - 'Create (a|the)? <Entity>'
+      - 'Implement <Entity>'
+      - 'Build (a|the)? <Entity>'
+      - 'new <Entity>'
+
+    Returns a tuple of entity name strings (stripped, non-empty, deduplicated).
+    """
+    text = normalize_story_text(story)
+    entities: dict[str, str] = {}
+    for match in _CREATION_INTENT.finditer(text):
+        raw = match.group(1).strip()
+        if raw and raw.casefold() not in _COMMON:
+            entities[raw.casefold()] = raw
+    for match in _NEW_ENTITY.finditer(text):
+        raw = match.group(1).strip()
+        if raw and raw.casefold() not in _COMMON:
+            entities.setdefault(raw.casefold(), raw)
+    return tuple(entities.values())
+
+
+def _apply_creation_intent_boost(
+    candidates: dict[str, '_Candidate'],
+    creation_entities: tuple[str, ...],
+    story: str,
+) -> None:
+    """Boost candidates that surround the entity being created.
+
+    When a story describes creating something new, the thing itself won't exist
+    in the snapshot. Instead, boost surrounding code: abstract bases, interfaces,
+    similar implementations, and candidates whose names partially match.
+    """
+    if not creation_entities:
+        return
+    # Extract word-level parts from creation entities for matching
+    entity_parts: set[str] = set()
+    for entity in creation_entities:
+        entity_parts.update(_identifier_parts(entity))
+    # Detect if story mentions service creation (for service_interface boost)
+    folded_story = story.casefold()
+    service_creation = any(
+        term in folded_story
+        for term in ('create rest service', 'create service', 'implement service',
+                     'build service', 'create a service', 'create the service')
+    )
+
+    for candidate in tuple(candidates.values()):
+        if candidate.score < 50:
+            continue
+        candidate_parts = set(_identifier_parts(candidate.simple_name))
+        boost = 0
+        reason = ''
+
+        # 1. Boost Abstract/Base types that share words with the creation target
+        if candidate_parts & {'abstract', 'base'}:
+            overlap = entity_parts & candidate_parts
+            if overlap:
+                boost = max(boost, 150)
+                reason = (
+                    f'Abstract/base type shares terminology with creation target '
+                    f'({", ".join(sorted(overlap))}).'
+                )
+
+        # 2. Boost interface patterns (I<Name>) that match the creation target
+        if (
+            candidate.simple_name.startswith('I')
+            and len(candidate.simple_name) > 1
+            and candidate.simple_name[1].isupper()
+        ):
+            # Interface: check overlap with creation entity parts
+            interface_parts = set(_identifier_parts(candidate.simple_name[1:]))
+            overlap = entity_parts & interface_parts
+            if overlap:
+                boost = max(boost, 130)
+                reason = (
+                    f'Interface pattern matches creation target terminology '
+                    f'({", ".join(sorted(overlap))}).'
+                )
+
+        # 3. Boost service_interface role when story says 'Create service'
+        if service_creation and candidate.role == 'service_interface':
+            boost = max(boost, 120)
+            reason = reason or (
+                'Service interface is relevant to the service creation intent.'
+            )
+
+        # 4. Small bonus for candidates whose simple_name contains parts of the
+        #    creation target (partial name overlap)
+        if not boost:
+            overlap = entity_parts & candidate_parts
+            if overlap and len(overlap) >= 1:
+                boost = 80
+                reason = (
+                    f'Candidate name shares terminology with creation target '
+                    f'({", ".join(sorted(overlap))}).'
+                )
+
+        if boost > 0:
+            candidate.score += boost
+            candidate.modes.add('creation_intent_boost')
+            candidate.reasons.add(reason)
+
 
 @dataclass(slots=True)
 class _Candidate:
@@ -83,6 +197,8 @@ class PreparedStoryDiscovery:
     weak_matches_penalized: int
     exact_matches: int
     source_candidates_considered: int
+    bracket_labels: tuple[str, ...] = ()
+    creation_entities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +366,7 @@ def prepare_story_discovery(
 ) -> PreparedStoryDiscovery:
     anchors = extract_story_anchors(story)
     desired_roles = _desired_roles(story, anchors)
+    bracket_labels = _extract_bracket_labels(story)
     candidates: dict[str, _Candidate] = {}
     semantic_anchors = tuple(
         item.text for item in anchors
@@ -360,13 +477,14 @@ def prepare_story_discovery(
     for symbol in type_symbols:
         candidate = _candidate_from_symbol(symbol)
         if candidate is not None:
-            _retain_role_candidate(candidates, candidate, anchors, desired_roles)
+            _retain_role_candidate(candidates, candidate, anchors, desired_roles, bracket_labels)
     for record in source_records:
         _retain_role_candidate(
             candidates,
             _candidate_from_source(record),
             anchors,
             desired_roles,
+            bracket_labels,
         )
     _retain_owner_member_matches(candidates, entries.values(), anchors)
 
@@ -383,6 +501,12 @@ def prepare_story_discovery(
                 'authority is still required before it is classified as resolved.'
             )
 
+    # Creation-intent boosting: when the story describes something new to create,
+    # boost surrounding code (abstract bases, interfaces, similar implementations).
+    creation_entities = _detect_creation_intent(story)
+    if creation_entities:
+        _apply_creation_intent_boost(candidates, creation_entities, story)
+
     return PreparedStoryDiscovery(
         anchors,
         semantic_anchors,
@@ -392,6 +516,8 @@ def prepare_story_discovery(
         sum(item.anchor_type == 'weak_lexical' for item in anchors),
         exact_matches,
         len(type_symbols) + len(source_records),
+        bracket_labels,
+        creation_entities,
     )
 
 
@@ -487,6 +613,8 @@ def complete_story_discovery(
         'anchor_count': len(prepared.anchors),
         'exact_matches': prepared.exact_matches,
         'semantic_searches': len(prepared.semantic_anchors),
+        'bracket_labels': prepared.bracket_labels,
+        'creation_entities': prepared.creation_entities,
         'root_candidates_considered': len(eligible),
         'selected_root_count': len(roots),
         'role_diversity': sorted({item.role for item in roots}),
@@ -684,7 +812,73 @@ def _retain_owner_member_matches(candidates, entries, anchors) -> None:
             )
 
 
-def _retain_role_candidate(candidates, candidate, anchors, desired_roles) -> None:
+_BRACKET_LABEL = re.compile(r'\[([A-Za-z][A-Za-z0-9 _-]*)\]')
+_GENERIC_BRACKET_LABELS = frozenset({
+    'syg', 'sygma', 'ng', 'dev', 'gap', 'tech',
+})
+
+
+def _extract_bracket_labels(story: str) -> tuple[str, ...]:
+    '''Extract module-hint labels from brackets in the first line of the story.
+
+    Handles hyphenated and multi-word labels such as [SYGMA-SHARED-UI],
+    [ERL Batch], [SYGMA-ADMIN].  The common 'SYGMA-' prefix is stripped so
+    that 'SYGMA-SHARED-UI' becomes 'SHARED-UI'.  Generic short tokens like
+    'SYG', 'NG', 'DEV', 'TECH' alone are still filtered out.
+    '''
+    first_line = story.split('\n', 1)[0]
+    labels: list[str] = []
+    for match in _BRACKET_LABEL.finditer(first_line):
+        label = match.group(1).strip()
+        if not label:
+            continue
+        # Strip the common SYGMA- prefix (case-insensitive)
+        stripped = re.sub(r'^(?:SYGMA|sygma|Sygma)[- _]', '', label)
+        if not stripped:
+            stripped = label  # fallback if entire label was 'SYGMA'
+        # Filter out generic single-word short labels
+        if stripped.casefold() in _GENERIC_BRACKET_LABELS:
+            continue
+        # Also filter very short single-word labels (<=3 chars) that are generic
+        words = re.split(r'[\s_-]+', stripped)
+        if len(words) == 1 and len(words[0]) <= 3 and words[0].casefold() in _GENERIC_BRACKET_LABELS:
+            continue
+        labels.append(stripped)
+    return tuple(dict.fromkeys(labels))
+
+
+def _label_matches_project(label: str, project: str) -> bool:
+    '''Fuzzy match: label matches a project name by segment overlap.
+
+    Checks whether the full label (with hyphens/underscores normalized) matches
+    the project name directly, and falls back to matching any individual word
+    part of the label (length >= 3) against the project.  For example:
+    - 'SHARED-UI' matches a project containing 'shared-ui', 'shared_ui', 'shared', or 'ui'
+    - 'ADMIN' matches 'mod-admin', 'sygma-admin', etc.
+    - 'ERL Batch' matches a project containing 'erl'
+    '''
+    label_lower = label.casefold()
+    project_lower = project.casefold()
+    # Normalize separators for whole-label comparison
+    label_normalized = re.sub(r'[\s_-]+', '-', label_lower)
+    project_normalized = re.sub(r'[\s_-]+', '-', project_lower)
+    # Full label match (with normalized separators)
+    if label_normalized in project_normalized:
+        return True
+    # Also try underscore variant
+    label_underscore = re.sub(r'[\s_-]+', '_', label_lower)
+    project_underscore = re.sub(r'[\s_-]+', '_', project_lower)
+    if label_underscore in project_underscore:
+        return True
+    # Part-based matching: any individual word part (>= 3 chars) in the project
+    parts = re.split(r'[\s_-]+', label_lower)
+    for part in parts:
+        if len(part) >= 3 and part in project_lower:
+            return True
+    return False
+
+
+def _retain_role_candidate(candidates, candidate, anchors, desired_roles, bracket_labels=()) -> None:
     components = set(_identifier_parts(candidate.simple_name))
     components.update(_path_components(candidate.source_path or ''))
     contributions = []
@@ -729,10 +923,16 @@ def _retain_role_candidate(candidates, candidate, anchors, desired_roles) -> Non
     if candidate.kind == 'type' and candidate.source_path:
         if PurePosixPath(candidate.source_path).stem != candidate.simple_name:
             nested_penalty = 180
+    bracket_label_bonus = 0
+    if bracket_labels and candidate.project:
+        for label in bracket_labels:
+            if _label_matches_project(label, candidate.project):
+                bracket_label_bonus = 200
+                break
     total = (
         sum(item[1] for item in contributions)
         + role_score + evidence_score + role_surface_bonus
-        + source_container_bonus - nested_penalty
+        + source_container_bonus + bracket_label_bonus - nested_penalty
     )
     if total < 100:
         return
@@ -740,6 +940,7 @@ def _retain_role_candidate(candidates, candidate, anchors, desired_roles) -> Non
     if current is None:
         candidate.score += (
             role_score + evidence_score + role_surface_bonus + source_container_bonus
+            + bracket_label_bonus
         )
         candidate.score -= nested_penalty
         candidates[candidate.canonical_id] = candidate
@@ -747,8 +948,14 @@ def _retain_role_candidate(candidates, candidate, anchors, desired_roles) -> Non
     else:
         current.score += (
             role_score + evidence_score + role_surface_bonus + source_container_bonus
+            + bracket_label_bonus
         )
         current.score -= nested_penalty
+    if bracket_label_bonus:
+        current.reasons.add(
+            f'Story bracket label matched project module ({candidate.project}).'
+        )
+        current.modes.add('bracket_label_module')
     if role_score:
         current.reasons.add(
             f'Story behavior requests the {candidate.role} implementation layer.'
@@ -1005,7 +1212,15 @@ def _diverse_selection(candidates, desired_roles, limit):
     selected = []
     selected_ids = set()
     selected_sources = set()
+    # Track how many times the same (project, simple_name) pair has been selected.
+    # Prevents the same entity (e.g. different methods of ccm2Utils) from consuming
+    # too many root slots when they all match the same story anchor.
+    selected_name_counts: dict[tuple[str | None, str], int] = {}
     suppressed = 0
+
+    # Maximum times the same (project, simple_name) pair can appear in results.
+    # External symbols are exempt from this limit.
+    _MAX_SAME_NAME = 2
 
     def add(candidate, *, allow_same_source=False):
         nonlocal suppressed
@@ -1015,6 +1230,16 @@ def _diverse_selection(candidates, desired_roles, limit):
         if source_key and source_key in selected_sources and not allow_same_source:
             suppressed += 1
             return False
+        # Name-based deduplication: prevent the same simple_name within the same
+        # project from consuming too many root slots (e.g. different methods of
+        # the same utility class all matching the same story anchor).
+        if candidate.role != 'external_symbol' and candidate.simple_name:
+            name_key = (candidate.project, candidate.simple_name.casefold())
+            current_count = selected_name_counts.get(name_key, 0)
+            if current_count >= _MAX_SAME_NAME and not allow_same_source:
+                suppressed += 1
+                return False
+            selected_name_counts[name_key] = current_count + 1
         selected.append(candidate)
         selected_ids.add(candidate.canonical_id)
         if source_key:

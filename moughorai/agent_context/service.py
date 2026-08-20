@@ -75,6 +75,7 @@ _ROLE_RANK = {
     'requirement_anchor': 5,
     'impacted': 6,
     'candidate': 7,
+    'neighborhood_context': 8,
     'project': 8,
     'story': 9,
 }
@@ -912,6 +913,142 @@ def _project_graph(
     )
 
 
+_MIN_USEFUL_GRAPH_NODES = 30
+_EXPANSION_TARGET_NODES = 50
+
+
+def _expand_small_graph_neighborhood(
+    candidates,
+    edges,
+    entries,
+    code_graph,
+    root_ids,
+    configuration,
+) -> None:
+    '''Expand 1-hop neighborhoods when the initial graph is too small.
+
+    When the discovered graph contains fewer than _MIN_USEFUL_GRAPH_NODES
+    semantic nodes (excluding story/project/requirement structural nodes), this
+    expands direct callees and callers of each root until the graph reaches
+    _EXPANSION_TARGET_NODES semantic nodes or the tier cap, whichever is lower.
+    Expanded nodes are marked with role ``neighborhood_context`` so the external
+    agent can distinguish them from primary/candidate targets.
+    '''
+    semantic_count = sum(
+        1 for candidate in candidates.values()
+        if candidate.node.kind not in {'story', 'project', 'requirement'}
+    )
+    if semantic_count >= _MIN_USEFUL_GRAPH_NODES:
+        return
+
+    target_count = min(_EXPANSION_TARGET_NODES, configuration.max_nodes)
+
+    # Build adjacency from code_graph edges (both directions).
+    outgoing: dict[str, list] = defaultdict(list)
+    incoming: dict[str, list] = defaultdict(list)
+    for edge in code_graph.edges:
+        if edge.kind in _HIGH_EDGE_KINDS | _CANDIDATE_EDGE_KINDS:
+            outgoing[edge.caller_subject_id].append(edge)
+            incoming[edge.target_subject_id].append(edge)
+
+    # Sort for determinism: high-confidence first, then by target/source id.
+    for values in outgoing.values():
+        values.sort(key=lambda item: (
+            0 if item.kind in _HIGH_EDGE_KINDS else 1,
+            item.target_subject_id,
+            item.kind.value,
+            item.evidence_id,
+        ))
+    for values in incoming.values():
+        values.sort(key=lambda item: (
+            0 if item.kind in _HIGH_EDGE_KINDS else 1,
+            item.caller_subject_id,
+            item.kind.value,
+            item.evidence_id,
+        ))
+
+    # Expand deterministically: iterate roots in sorted order, callees first,
+    # then callers.
+    sorted_roots = sorted(root_ids)
+    added = 0
+
+    for root_id in sorted_roots:
+        if semantic_count + added >= target_count:
+            break
+        # Outgoing (callees)
+        for edge in outgoing.get(root_id, []):
+            if semantic_count + added >= target_count:
+                break
+            target = edge.target_subject_id
+            if target in candidates:
+                continue
+            target_entry = entries.get(target)
+            if target_entry is None:
+                continue
+            if target_entry.source_classification.value != 'production':
+                continue
+            confidence = (
+                'high_confidence_represented_path'
+                if edge.kind in _HIGH_EDGE_KINDS
+                else 'conservative_represented_path'
+            )
+            _add_entry_node(
+                candidates,
+                target_entry,
+                'neighborhood_context',
+                (10, 0, target),  # rank 10 = below all primary roles
+                (edge.evidence_id,),
+            )
+            _add_edge(edges, AgentGraphEdge(
+                root_id,
+                target,
+                edge.kind.value,
+                confidence,
+                'atlas-pr157+neighborhood-expansion',
+                (edge.evidence_id,),
+                depth=1,
+            ))
+            added += 1
+
+    for root_id in sorted_roots:
+        if semantic_count + added >= target_count:
+            break
+        # Incoming (callers)
+        for edge in incoming.get(root_id, []):
+            if semantic_count + added >= target_count:
+                break
+            source = edge.caller_subject_id
+            if source in candidates:
+                continue
+            source_entry = entries.get(source)
+            if source_entry is None:
+                continue
+            if source_entry.source_classification.value != 'production':
+                continue
+            confidence = (
+                'high_confidence_represented_path'
+                if edge.kind in _HIGH_EDGE_KINDS
+                else 'conservative_represented_path'
+            )
+            _add_entry_node(
+                candidates,
+                source_entry,
+                'neighborhood_context',
+                (10, 1, source),  # rank 10, sub-rank 1 for callers
+                (edge.evidence_id,),
+            )
+            _add_edge(edges, AgentGraphEdge(
+                source,
+                root_id,
+                edge.kind.value,
+                confidence,
+                'atlas-pr157+neighborhood-expansion',
+                (edge.evidence_id,),
+                depth=1,
+            ))
+            added += 1
+
+
 def _project_discovered_graph(
     snapshot,
     plan,
@@ -1017,6 +1154,15 @@ def _project_discovered_graph(
             root.confidence,
             root.authority,
         ))
+
+    # Expand 1-hop neighborhoods when the initial graph is too small to give
+    # the external agent enough implementation context.
+    root_subject_ids = frozenset(
+        item.canonical_subject_id for item in roots
+    )
+    _expand_small_graph_neighborhood(
+        candidates, edges, entries, code_graph, root_subject_ids, configuration
+    )
 
     ordered_candidates = sorted(
         candidates.values(), key=lambda item: (item.rank, item.node.id)

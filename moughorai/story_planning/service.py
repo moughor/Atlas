@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 
@@ -32,6 +33,8 @@ from .models import (
     StoryRequirementStatus,
 )
 
+
+_logger = logging.getLogger(__name__)
 
 _BULLET = re.compile(r'^\s*[-*]\s+(?P<text>\S.*)$')
 _NUMBERED = re.compile(r'^\s*(?:R\s*)?\d+[.)]\s*(?P<text>\S.*)$', re.IGNORECASE)
@@ -541,12 +544,21 @@ def _autoselect_anchor_subject(
                 or simple.casefold() != anchor.casefold()
             ):
                 continue
-            result = java.query(
-                hit.canonical_subject_id,
-                kind='method',
-                project=project or hit.project,
-                configuration=_code_configuration(configuration),
-            )
+            try:
+                result = java.query(
+                    hit.canonical_subject_id,
+                    kind='method',
+                    project=project or hit.project,
+                    configuration=_code_configuration(configuration),
+                )
+            except (ValueError, TypeError) as exc:
+                _logger.debug(
+                    'Skipping malformed code graph edge during anchor '
+                    'auto-selection for %s: %s',
+                    hit.canonical_subject_id,
+                    exc,
+                )
+                continue
             if result.resolution.status is CodeSubjectResolutionStatus.RESOLVED:
                 candidates.append(result)
         unique = {item.resolution.subject.canonical_id: item for item in candidates}
