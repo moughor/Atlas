@@ -277,6 +277,7 @@ def test_package_manifest_and_dependency_direction_remain_narrow() -> None:
         "evidence.py",
         "fire_strike.py",
         "fixture.py",
+        "hwbot_fire_strike.py",
     ]
 
     invalid_imports: list[str] = []
