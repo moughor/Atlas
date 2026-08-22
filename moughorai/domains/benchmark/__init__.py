@@ -13,6 +13,10 @@ from .hwbot_fire_strike import (
     HWBOTFireStrikeParseError,
     parse_hwbot_fire_strike_submission,
 )
+from .ul_3dmark_fire_strike import (
+    UL3DMarkFireStrikeParseError,
+    parse_ul_3dmark_fire_strike_submission,
+)
 
 __all__ = [
     "FIRE_STRIKE_STANDARD_BENCHMARK_ID",
@@ -23,11 +27,13 @@ __all__ = [
     "FireStrikeSubmissionV1",
     "FixtureParseError",
     "HWBOTFireStrikeParseError",
+    "UL3DMarkFireStrikeParseError",
     "canonical_json",
     "canonical_json_bytes",
     "normalize_decimal",
     "parse_fire_strike_submission_fixture",
     "parse_hwbot_fire_strike_submission",
+    "parse_ul_3dmark_fire_strike_submission",
     "sha256_hex",
     "source_submission_identity",
 ]
