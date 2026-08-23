@@ -14,10 +14,17 @@ import threading
 import webbrowser
 
 from moughorai.benchmark_lab_page import PAGE_CSS, PAGE_HTML, PAGE_JS, TOKEN_PLACEHOLDER
+from moughorai.benchmark_lab_workspace import (
+    BenchmarkLabWorkspaceInputError,
+    detect_hwbot_reference,
+    reference_capture_comparison,
+    search_current_session,
+)
 from moughorai.domains.benchmark import (
     CapturedSourceV1,
     FireStrikeSubmissionV1,
     calculate_fire_strike_score,
+    calculate_fire_strike_sensitivity,
     canonical_json_bytes,
     compare_fire_strike_sources,
     parse_hwbot_fire_strike_submission,
@@ -113,10 +120,10 @@ def _score_set(value: object, label: str) -> tuple[str, str, str]:
 
 
 def _percentage_text(delta: int, baseline: int) -> str:
-    sign = "-" if delta < 0 else ""
     quotient, remainder = divmod(abs(delta) * 10_000, baseline)
     if remainder * 2 >= baseline:
         quotient += 1
+    sign = "-" if delta < 0 and quotient != 0 else ""
     whole, fraction = divmod(quotient, 100)
     return f"{sign}{whole}.{fraction:02d}"
 
@@ -128,11 +135,16 @@ class BenchmarkLabState:
     _hwbot: FireStrikeSubmissionV1 | None = None
     _ul: FireStrikeSubmissionV1 | None = None
     _lock: threading.RLock = field(init=False, repr=False)
+    _hwbot_generation: int = field(init=False, default=0, repr=False)
+    _ul_generation: int = field(init=False, default=0, repr=False)
 
     def __post_init__(self) -> None:
         self._lock = threading.RLock()
 
     def ingest_hwbot(self, payload: bytes) -> dict[str, object]:
+        with self._lock:
+            self._hwbot_generation += 1
+            generation = self._hwbot_generation
         capture = CapturedSourceV1(
             payload=payload,
             source_identifier="source:hwbot",
@@ -140,10 +152,14 @@ class BenchmarkLabState:
         )
         parsed = parse_hwbot_fire_strike_submission(capture)
         with self._lock:
-            self._hwbot = parsed
+            if generation == self._hwbot_generation:
+                self._hwbot = parsed
             return self.to_dict()
 
     def ingest_ul(self, payload: bytes) -> dict[str, object]:
+        with self._lock:
+            self._ul_generation += 1
+            generation = self._ul_generation
         capture = CapturedSourceV1(
             payload=payload,
             source_identifier="source:ul-3dmark-results",
@@ -151,11 +167,14 @@ class BenchmarkLabState:
         )
         parsed = parse_ul_3dmark_fire_strike_submission(capture)
         with self._lock:
-            self._ul = parsed
+            if generation == self._ul_generation:
+                self._ul = parsed
             return self.to_dict()
 
     def reset(self) -> dict[str, object]:
         with self._lock:
+            self._hwbot_generation += 1
+            self._ul_generation += 1
             self._hwbot = None
             self._ul = None
             return self.to_dict()
@@ -191,7 +210,8 @@ class BenchmarkLabState:
         baseline_values = _score_set(request["baseline"], "baseline")
         candidate_values = _score_set(request["candidate"], "candidate")
         try:
-            baseline = calculate_fire_strike_score(*baseline_values)
+            sensitivity = calculate_fire_strike_sensitivity(*baseline_values)
+            baseline = sensitivity.baseline
             candidate = calculate_fire_strike_score(*candidate_values)
         except (TypeError, ValueError) as error:
             raise BenchmarkLabRequestError(422, str(error)) from error
@@ -202,6 +222,42 @@ class BenchmarkLabState:
             "delta_score": str(delta),
             "percentage_delta": _percentage_text(delta, baseline.overall_score),
             "percentage_rounding": "nearest-hundredth-half-up",
+            "schema_version": BENCHMARK_LAB_SCHEMA_VERSION,
+            "sensitivity": sensitivity.to_dict(),
+        }
+
+    def detect_hwbot(self, payload: bytes) -> dict[str, object]:
+        request = _json_mapping(payload)
+        if set(request) != {"url"}:
+            raise BenchmarkLabRequestError(
+                400, "HWBOT detection must contain exactly url"
+            )
+        try:
+            detected = detect_hwbot_reference(request["url"])
+        except (TypeError, BenchmarkLabWorkspaceInputError) as error:
+            raise BenchmarkLabRequestError(422, str(error)) from error
+        with self._lock:
+            projection = _source_projection(self._hwbot) if self._hwbot else None
+            return {
+                "capture_comparison": reference_capture_comparison(
+                    detected, projection
+                ),
+                "detection": detected,
+                "schema_version": BENCHMARK_LAB_SCHEMA_VERSION,
+            }
+
+    def search(self, payload: bytes) -> dict[str, object]:
+        request = _json_mapping(payload)
+        if set(request) != {"query"}:
+            raise BenchmarkLabRequestError(
+                400, "Atlas Search must contain exactly query"
+            )
+        try:
+            result = search_current_session(self.to_dict(), request["query"])
+        except (TypeError, BenchmarkLabWorkspaceInputError) as error:
+            raise BenchmarkLabRequestError(422, str(error)) from error
+        return {
+            **result,
             "schema_version": BENCHMARK_LAB_SCHEMA_VERSION,
         }
 
@@ -359,6 +415,14 @@ class BenchmarkLabHandler(BaseHTTPRequestHandler):
             elif self.path == "/api/v1/calculations/fire-strike":
                 self._require_content_type("application/json")
                 result = self.application.state.calculate(self._read_body(MAX_JSON_BYTES))
+            elif self.path == "/api/v1/navigation/hwbot/detect":
+                self._require_content_type("application/json")
+                result = self.application.state.detect_hwbot(
+                    self._read_body(MAX_JSON_BYTES)
+                )
+            elif self.path == "/api/v1/search/current-session":
+                self._require_content_type("application/json")
+                result = self.application.state.search(self._read_body(MAX_JSON_BYTES))
             elif self.path == "/api/v1/reset":
                 self._require_content_type("application/json")
                 request = _json_mapping(self._read_body(MAX_JSON_BYTES))
