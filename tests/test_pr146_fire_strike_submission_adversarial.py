@@ -276,6 +276,7 @@ def test_package_manifest_and_dependency_direction_remain_narrow() -> None:
         "capture.py",
         "evidence.py",
         "fire_strike.py",
+        "fire_strike_scoring.py",
         "fixture.py",
         "hwbot_fire_strike.py",
         "ul_3dmark_fire_strike.py",
