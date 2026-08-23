@@ -2,6 +2,13 @@
 
 from .canonical import canonical_json, canonical_json_bytes, normalize_decimal, sha256_hex
 from .capture import CapturedSourceV1, CaptureValidationError
+from .comparison import (
+    FIRE_STRIKE_SOURCE_COMPARISON_SCHEMA_VERSION,
+    FireStrikeSourceComparisonV1,
+    ScoreComparisonState,
+    ScoreFieldComparisonV1,
+    compare_fire_strike_sources,
+)
 from .evidence import FieldEvidenceV1, FieldState
 from .fire_strike import (
     FIRE_STRIKE_STANDARD_BENCHMARK_ID,
@@ -31,6 +38,7 @@ __all__ = [
     "FIRE_STRIKE_SCORING_METHOD_ID",
     "FIRE_STRIKE_SCORING_ROUNDING_POLICY",
     "FIRE_STRIKE_SCORING_SCHEMA_VERSION",
+    "FIRE_STRIKE_SOURCE_COMPARISON_SCHEMA_VERSION",
     "CapturedSourceV1",
     "CaptureValidationError",
     "FieldEvidenceV1",
@@ -38,12 +46,16 @@ __all__ = [
     "FireStrikeSubmissionV1",
     "FireStrikeScoreCalculationV1",
     "FireStrikeScoreInputError",
+    "FireStrikeSourceComparisonV1",
     "FixtureParseError",
     "HWBOTFireStrikeParseError",
+    "ScoreComparisonState",
+    "ScoreFieldComparisonV1",
     "UL3DMarkFireStrikeParseError",
     "canonical_json",
     "canonical_json_bytes",
     "calculate_fire_strike_score",
+    "compare_fire_strike_sources",
     "normalize_decimal",
     "parse_fire_strike_submission_fixture",
     "parse_hwbot_fire_strike_submission",

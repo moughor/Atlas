@@ -274,6 +274,7 @@ def test_package_manifest_and_dependency_direction_remain_narrow() -> None:
         "__init__.py",
         "canonical.py",
         "capture.py",
+        "comparison.py",
         "evidence.py",
         "fire_strike.py",
         "fire_strike_scoring.py",
