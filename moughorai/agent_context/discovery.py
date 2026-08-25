@@ -168,6 +168,166 @@ def _apply_creation_intent_boost(
             candidate.reasons.add(reason)
 
 
+def _expand_collaborators(
+    candidates: dict[str, '_Candidate'],
+    symbols_by_id: dict[str, dict[str, object]],
+    entries,
+) -> None:
+    """Expand high-confidence domain entities with closely-related collaborators.
+
+    When a domain entity (score >= 500) is discovered, search for other classes
+    in the SAME project whose name shares at least 2 camelCase parts with the
+    entity. This catches mappers, utilities, and controllers that directly
+    collaborate with the domain entity but weren't matched by story anchors.
+
+    Caps total expansions at 8 to avoid noise.
+    """
+    _MAX_EXPANSIONS = 8
+    expanded_count = 0
+
+    # Collect high-confidence domain entities to expand from
+    seed_candidates = [
+        c for c in candidates.values()
+        if c.score >= 500 and c.role == 'domain' and c.project
+    ]
+    if not seed_candidates:
+        return
+
+    # Build a lookup of all type symbols by project for efficient searching
+    symbols_by_project: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for symbol in symbols_by_id.values():
+        if not isinstance(symbol, dict):
+            continue
+        if symbol.get('kind') != 'type':
+            continue
+        proj = symbol.get('project_id')
+        if proj:
+            symbols_by_project[str(proj)].append(symbol)
+
+    # Also index entries by project
+    entries_by_project: dict[str, list] = defaultdict(list)
+    for entry in entries.values() if isinstance(entries, dict) else entries:
+        if hasattr(entry, 'project_id') and entry.project_id:
+            entries_by_project[entry.project_id].append(entry)
+
+    for seed in seed_candidates:
+        if expanded_count >= _MAX_EXPANSIONS:
+            break
+
+        seed_parts = set(_identifier_parts(seed.simple_name))
+        # Filter out very short/generic parts that would cause false matches
+        seed_parts = {p for p in seed_parts if len(p) >= 3}
+        if len(seed_parts) < 2:
+            continue
+
+        # Search symbols in the same project
+        project_symbols = symbols_by_project.get(seed.project, [])
+        for symbol in project_symbols:
+            if expanded_count >= _MAX_EXPANSIONS:
+                break
+
+            sym_id = str(symbol.get('id', ''))
+            if not sym_id or sym_id in candidates:
+                continue
+
+            sym_name = str(symbol.get('name', ''))
+            if not sym_name or sym_name == seed.simple_name:
+                continue
+
+            # Check metadata for production classification
+            metadata = symbol.get('metadata')
+            if isinstance(metadata, dict):
+                classification = str(metadata.get('source_classification', 'production'))
+                if classification == 'test':
+                    continue
+
+            sym_parts = set(_identifier_parts(sym_name))
+            overlap = seed_parts & sym_parts
+            if len(overlap) < 2:
+                continue
+
+            # This is a collaborator — determine its role from name/path
+            source = symbol.get('source')
+            source_str = str(source) if source else ''
+            collab_role = _collaborator_role(sym_name, source_str)
+
+            collab_candidate = _candidate_from_symbol(symbol)
+            if collab_candidate is None:
+                continue
+
+            collab_candidate.role = collab_role
+            collab_candidate.score = 300
+            collab_candidate.modes.add('collaborator_expansion')
+            collab_candidate.reasons.add(
+                f'Collaborator of domain entity {seed.simple_name} '
+                f'(shared: {", ".join(sorted(overlap))}).'
+            )
+            candidates[collab_candidate.canonical_id] = collab_candidate
+            expanded_count += 1
+
+        # Also search entries in the same project
+        project_entries = entries_by_project.get(seed.project, [])
+        for entry in project_entries:
+            if expanded_count >= _MAX_EXPANSIONS:
+                break
+
+            entry_id = entry.canonical_subject_id
+            if entry_id in candidates:
+                continue
+
+            entry_name = entry.identity.name
+            if not entry_name or entry_name == seed.simple_name:
+                continue
+
+            # Only consider type-level entries (not individual methods)
+            if entry.identity.kind.value not in ('type',):
+                # Also check the owner type for method entries
+                owner_name = _owner_simple_name(entry.identity.owner_type)
+                if owner_name == seed.simple_name:
+                    continue
+                entry_parts = set(_identifier_parts(owner_name))
+                overlap = seed_parts & entry_parts
+                if len(overlap) < 2:
+                    continue
+                # Use the owner as the collaborator target — but skip if already seen
+                # (we want the type, not individual methods)
+                continue
+
+            entry_parts = set(_identifier_parts(entry_name))
+            overlap = seed_parts & entry_parts
+            if len(overlap) < 2:
+                continue
+
+            collab_role = _collaborator_role(entry_name, entry.source.path)
+            collab_candidate = _candidate_from_entry(entry)
+            collab_candidate.role = collab_role
+            collab_candidate.score = 300
+            collab_candidate.modes.add('collaborator_expansion')
+            collab_candidate.reasons.add(
+                f'Collaborator of domain entity {seed.simple_name} '
+                f'(shared: {", ".join(sorted(overlap))}).'
+            )
+            candidates[collab_candidate.canonical_id] = collab_candidate
+            expanded_count += 1
+
+
+def _collaborator_role(name: str, path: str) -> str:
+    """Determine a collaborator's role based on its name and path."""
+    name_lower = name.casefold()
+    if 'mapper' in name_lower or 'converter' in name_lower:
+        return 'service'
+    if 'util' in name_lower or 'helper' in name_lower:
+        return 'integration'
+    if 'controller' in name_lower or 'presenter' in name_lower:
+        return 'controller'
+    if 'dao' in name_lower or 'repository' in name_lower:
+        return 'persistence'
+    if 'service' in name_lower:
+        return 'service'
+    # Fall back to path-based detection
+    return _implementation_role(name, path, '', 'production')
+
+
 @dataclass(slots=True)
 class _Candidate:
     canonical_id: str
@@ -506,6 +666,11 @@ def prepare_story_discovery(
     creation_entities = _detect_creation_intent(story)
     if creation_entities:
         _apply_creation_intent_boost(candidates, creation_entities, story)
+
+    # Collaborator expansion: when a high-confidence domain entity is found,
+    # discover closely-related classes (mappers, utils, controllers) in the
+    # same project whose names share significant camelCase parts.
+    _expand_collaborators(candidates, symbols_by_id, entries)
 
     return PreparedStoryDiscovery(
         anchors,
@@ -847,18 +1012,45 @@ def _extract_bracket_labels(story: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(labels))
 
 
+# Domain-specific label-to-project aliases.  When a bracket label like [PMON]
+# does not literally appear in a project name, these aliases map it to the
+# canonical project-name terms that *do* appear.  Each key is a lowercased
+# label; the value is a tuple of terms to try matching against the project.
+_LABEL_PROJECT_ALIASES: dict[str, tuple[str, ...]] = {
+    'pmon': ('review',),
+    'inra': ('review',),
+    'ir': ('review',),
+    'repa': ('gapamd', 'payment'),
+    'gap': ('gapamd', 'gap'),
+    'amd': ('amendments',),
+    'erl': ('evaluation', 'erl'),
+    'batch': ('evaluation', 'erl', 'batch'),
+}
+
+
 def _label_matches_project(label: str, project: str) -> bool:
     '''Fuzzy match: label matches a project name by segment overlap.
 
     Checks whether the full label (with hyphens/underscores normalized) matches
     the project name directly, and falls back to matching any individual word
-    part of the label (length >= 3) against the project.  For example:
+    part of the label (length >= 3) against the project.  Domain-specific
+    aliases (e.g. PMON -> review) are checked first so that sub-type labels
+    correctly boost the parent module.  For example:
+    - 'PMON' matches projects containing 'review' (PMON is a Review sub-type)
     - 'SHARED-UI' matches a project containing 'shared-ui', 'shared_ui', 'shared', or 'ui'
     - 'ADMIN' matches 'mod-admin', 'sygma-admin', etc.
     - 'ERL Batch' matches a project containing 'erl'
     '''
     label_lower = label.casefold()
     project_lower = project.casefold()
+
+    # Domain-specific alias lookup: check if the label maps to known terms
+    alias_terms = _LABEL_PROJECT_ALIASES.get(label_lower)
+    if alias_terms:
+        for term in alias_terms:
+            if term in project_lower:
+                return True
+
     # Normalize separators for whole-label comparison
     label_normalized = re.sub(r'[\s_-]+', '-', label_lower)
     project_normalized = re.sub(r'[\s_-]+', '-', project_lower)

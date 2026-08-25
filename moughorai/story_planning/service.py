@@ -57,6 +57,13 @@ _ANCHOR_STOPWORDS = frozenset({
 })
 _CLASSIFICATIONS = {item.value: item for item in StoryRequirementClassification}
 
+_GENERIC_ACCESSOR_NAMES = frozenset({
+    'exerciseid', 'sessionid', 'projectid', 'id', 'name', 'type',
+    'status', 'state', 'value', 'key', 'code', 'description',
+    'title', 'version', 'date', 'number', 'size', 'count',
+    'ecasid', 'userid', 'scopeid', 'batchid',
+})
+
 
 @dataclass(frozen=True, slots=True)
 class _RequirementSeed:
@@ -543,6 +550,8 @@ def _autoselect_anchor_subject(
                 or hit.kind != 'method'
                 or simple.casefold() != anchor.casefold()
             ):
+                continue
+            if simple.casefold() in _GENERIC_ACCESSOR_NAMES:
                 continue
             try:
                 result = java.query(

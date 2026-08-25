@@ -991,6 +991,10 @@ def _bounded_ambiguous_call_groups(
             resolution_state,
             role,
         ) = key
+        # METHOD_REFERENCE call sites cannot form ambiguous execution groups;
+        # skip defensively rather than raising during construction.
+        if invocation_kind is InvocationKind.METHOD_REFERENCE:
+            continue
         candidates = tuple(sorted({
             item.canonical_target for item in projections
         }))
