@@ -401,12 +401,14 @@ class TestSygmaViewIngest:
     """Integration tests against the real Sygma repository."""
 
     @pytest.fixture(scope="class")
-    def sygma_view_result(self) -> ViewIngestResult:
+    @classmethod
+    def sygma_view_result(cls) -> ViewIngestResult:
         """Run view ingest once and cache for the class."""
         return ingest_view_sql(SYGMA_ROOT)
 
     @pytest.fixture(scope="class")
-    def sygma_graph(self, sygma_view_result):
+    @classmethod
+    def sygma_graph(cls, sygma_view_result):
         """Build a reconciled graph with view result for Sygma tests."""
         from moughorai.database_graph.reconciler import reconcile_database_graph
 
