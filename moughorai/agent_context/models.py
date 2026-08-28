@@ -26,6 +26,11 @@ SUPPORTED_AGENT_GRAPH_PRODUCERS = dict(SUPPORTED_AGENT_CONTEXT_PRODUCERS)
 MAXIMUM_AGENT_CONTEXT_BYTES = 4 * 1024 * 1024
 MAXIMUM_AGENT_GRAPH_BYTES = 16 * 1024 * 1024
 
+# Story trust classification constants
+STORY_TRUST_CLASSIFICATION = 'untrusted_external_input'
+STORY_SOURCE_KIND = 'external_story'
+STORY_INSTRUCTION_AUTHORITY = 'none'
+
 
 def canonical_json(value: object, *, indent: int | None = None) -> str:
     return json.dumps(

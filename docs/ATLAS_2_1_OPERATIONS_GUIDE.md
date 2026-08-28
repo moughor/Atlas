@@ -134,6 +134,33 @@ whole file, and enforces:
 Oversized and invalid UTF-8 files fail explicitly. Atlas never silently
 truncates a story. Graph and context outputs remain independently bounded.
 
+### Story trust classification
+
+Story text (typically from Jira) is classified as **untrusted external input**
+in both `context.json` and `context.md`. The structured story dict in
+`context.json` includes:
+
+- `source_kind`: `external_story`
+- `trust_classification`: `untrusted_external_input`
+- `instruction_authority`: `none`
+
+In `context.md`, Atlas-authored instructions and policy appear **before** the
+story. The story is enclosed in explicit untrusted-data boundaries:
+
+```text
+--- BEGIN UNTRUSTED STORY (verified fingerprint: ...) ---
+<story text>
+--- END UNTRUSTED STORY (verified fingerprint: ...) ---
+```
+
+A policy reminder follows the story boundary confirming that story content
+is requirements evidence, not Atlas instructions. Integrators should:
+
+- enforce tool and file permissions below the prompt, not through Markdown text;
+- never treat raw story content as Atlas-authored policy or instructions;
+- verify that coding agents do not follow directives embedded in story text; and
+- use the fingerprint and trust classification from `context.json` for audit.
+
 Interactive `/ask-file` and `/story-file` retain their provider-facing maximum
 of 3,000 characters and 12,000 bytes. Multiline `/story` uses the same
 3,000-character limit:
@@ -215,9 +242,43 @@ pre-change snapshot and may be stale after edits. Represented tests are the
 first tests to inspect/run, not proof of runtime coverage. Requirement status
 is never changed merely because a file was edited.
 
-Atlas 2.1 context packages do not record the Git commit that generated them.
-The review therefore reports `UNKNOWN_BASE_PROVENANCE` even when the supplied
-base resolves successfully. Confirm the intended pre-change ref operationally.
+Atlas 2.1 context packages now record Git repository provenance including the
+HEAD commit SHA, branch reference, worktree cleanliness state, and capture
+timestamp. Use `--expected-revision` to verify that the snapshot's captured
+provenance matches a specific Git commit:
+
+```powershell
+python -B -m moughorai.atlas_cli agent context C:\sygma\sygma `
+  --story-file C:\Stories\SYGMA-12345.txt `
+  --output C:\AtlasContexts\SYGMA-12345 `
+  --expected-revision abc123def456... `
+  --depth story
+```
+
+Add `--require-exact-revision` to fail closed if the worktree has any tracked
+modifications (dirty overlay) relative to the expected commit:
+
+```powershell
+python -B -m moughorai.atlas_cli agent context C:\sygma\sygma `
+  --story-file C:\Stories\SYGMA-12345.txt `
+  --output C:\AtlasContexts\SYGMA-12345 `
+  --expected-revision abc123def456... `
+  --require-exact-revision `
+  --depth story
+```
+
+Revision alignment returns one of: `exact`, `dirty_overlay`, `stale`,
+`unknown`, `non_git`, or `incompatible`. Without `--require-exact-revision`,
+both `exact` and `dirty_overlay` are accepted. With the flag, only `exact` is
+accepted. Any other alignment fails before context artifacts are written.
+
+Non-Git workspaces are supported with explicit `non_git` provenance rather
+than fabricated identity. When Git is unavailable, provenance reports `unknown`
+alignment and `unavailable` verification.
+
+The provenance is recorded in `context.json` under `repository_identity` →
+`repository_provenance` and includes `vcs`, `head_sha`, `head_ref`,
+`worktree_state`, `captured_at`, and `verification`.
 
 ### Advanced/manual targeting
 
@@ -339,6 +400,159 @@ primary production workflow. Current experimental commands include:
 `/verify run` is intentionally unavailable. PR174 executable verification is
 excluded and remains future/experimental work. Provider-backed experiments may
 require Ollama or another provider; `agent context` does not.
+
+## Database graph capability
+
+Atlas 2.1 reconciles a deterministic database graph from Jailer schema exports
+and JPA entity extraction.  The reconciled graph includes tables, views,
+columns, foreign keys, and JPA entity mappings with authoritative
+fingerprints.  It is published as part of the `database_graph` protocol
+(schema version 1) and advertised in the `capabilities` handshake.
+
+Story-driven database-context selection extracts bounded subgraphs relevant to
+a Jira story.  The selector matches story terms against qualified table and
+column names, expands a configurable hop neighborhood, and caps selected nodes
+with `max_objects`.  Each context result carries both the full-graph and
+context-specific fingerprints, omission counts, and matched story terms.
+
+The reconciled graph is built from the repository source tree and requires no
+database connection or runtime JDBC access.
+
+## SQL validation
+
+`validate_sql` performs static structural validation of SQL statements against
+the reconciled database graph.  It resolves table references, column references,
+and join conditions against known schema objects.  Validation results report:
+
+- `structurally_valid` — all referenced objects exist in the reconciled graph;
+- `structurally_invalid` — unknown tables, columns, or structural issues; and
+- `unsupported_sql` — empty or unparseable input.
+
+Mutating statements (INSERT, UPDATE, DELETE) carry a `BUSINESS_REVIEW_REQUIRED`
+mutation warning.  Updates targeting views produce a `view_mutation` issue.
+Backup tables (BCK-prefixed) produce `backup_object` issues.
+
+Join validation checks whether join conditions align with foreign-key evidence
+from the reconciled graph.
+
+SQL validation is advertised as `sql_validation: true` in the capabilities
+handshake and uses schema version 1.
+
+## Capabilities command
+
+```powershell
+python -B -m moughorai.atlas_cli capabilities --json
+```
+
+The `capabilities` command emits a deterministic JSON handshake payload
+describing the current Atlas version, supported protocol schema versions,
+feature flags, and resource limits.  It requires no repository, snapshot,
+or provider.
+
+The payload structure:
+
+- `schema_version` — always 1;
+- `atlas_version` — the installed Atlas release string;
+- `protocols` — supported protocols and their schema version arrays;
+- `features` — boolean feature flags (`database_graph`, `exact_git_revision`,
+  `local_service`, `request_cancellation`, `sql_validation`,
+  `story_trust_boundary`, `structured_progress`);
+- `limits` — `context_bytes`, `graph_bytes`, `story_bytes`, `story_characters`.
+
+External integrations should call `capabilities` before issuing agent context
+requests to verify protocol compatibility.
+
+## JSON envelope
+
+Pass `--json` to `agent context` to receive a structured result envelope on
+stdout instead of human-oriented text:
+
+```powershell
+python -B -m moughorai.atlas_cli agent context C:\sygma\sygma `
+  --story-file C:\Stories\SYGMA-12345.txt `
+  --output C:\AtlasContexts\SYGMA-12345 `
+  --depth story `
+  --json
+```
+
+The success envelope includes: `schema_version`, `status` (`success`),
+`atlas_version`, `request_id`, `artifacts` (name, bytes, optional fingerprint),
+`snapshot_id`, `revision_alignment`, `repository_provenance`,
+`context_fingerprint`, `graph_fingerprint`, `roots` (resolved, candidate,
+omitted), `graph` (nodes, edges, depth), `omissions`, `warnings`, and `error`
+(null on success).
+
+On error the envelope carries `status` set to the error type (`validation_error`,
+`file_not_found`, `snapshot_error`, `agent_context_error`,
+`revision_mismatch`, etc.) and `error.code` + `error.message`.  Terminal states
+`cancelled` and `deadline_exceeded` emit envelopes with empty artifacts and
+the error block populated.
+
+## Deadline and request tracking
+
+Pass `--deadline-seconds` to set a cooperative wall-clock deadline for the
+agent context request:
+
+```powershell
+python -B -m moughorai.atlas_cli agent context C:\sygma\sygma `
+  --story-file C:\Stories\SYGMA-12345.txt `
+  --output C:\AtlasContexts\SYGMA-12345 `
+  --depth story `
+  --deadline-seconds 120 `
+  --request-id my-build-123
+```
+
+Atlas checks the deadline at phase boundaries (story load, snapshot load,
+provenance, discovery, publication).  If the deadline elapses, partial
+artifacts are cleaned up and the process exits with code 3.  Cooperative
+cancellation via SIGINT/SIGTERM exits with code 4.
+
+`--request-id` supplies a caller-chosen correlation identifier included in all
+JSONL progress events emitted to stderr and in the `--json` envelope.  If
+omitted, Atlas generates a UUID4.
+
+### Structured progress events
+
+When `--deadline-seconds` or `--request-id` is supplied, Atlas emits
+newline-delimited JSON progress events to stderr.  Each event carries:
+
+- `schema_version` (1), `request_id`, `timestamp` (ISO-8601 UTC);
+- `sequence` (monotonically increasing), `phase`, `state`, `message_code`; and
+- optional `completed_units`/`total_units`.
+
+Progress events never affect semantic artifacts or stdout output.
+
+### Exit codes
+
+| Code | Meaning            |
+|------|--------------------|
+| 0    | Success            |
+| 2    | Error              |
+| 3    | Deadline exceeded  |
+| 4    | Cancelled          |
+
+## Warm runtime
+
+Atlas supports bounded in-process runtime reuse across multiple agent context
+requests without reloading snapshots.  The `WarmRuntimeSession` caches a
+single `RepositoryRuntimeSession` keyed by the immutable tuple
+`(workspace_root, snapshot_id, analyzer_version)` — never by branch name or
+file modification time.
+
+When the identity changes, the previous runtime is deterministically released
+before creating a new one.  Cold and warm paths produce byte-identical
+semantic output for the same snapshot.
+
+Memory is bounded: the session refuses new loads when the process resident set
+exceeds a configurable limit (default 5 GiB).
+
+The `local_service: true` capability flag advertises warm-runtime availability
+in the capabilities handshake.
+
+`WarmRuntimeSession.health()` returns a JSON-serialisable dict with:
+`status`, `loaded`, `identity`, `uptime_seconds`, `session_age_seconds`,
+`reuse_count`, `cold_load_count`, `process_rss_bytes`, `max_memory_bytes`,
+`memory_pressure`, and `runtime_statistics`.
 
 ## Updating Atlas
 

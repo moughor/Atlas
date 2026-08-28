@@ -6,6 +6,12 @@ from .models import (
     AtlasSemanticSnapshot,
     SemanticSnapshotError,
 )
+from .provenance import (
+    RepositoryProvenance,
+    RevisionAlignment,
+    WorktreeState,
+    capture_git_provenance,
+)
 from .store import SemanticSnapshotStore
 from .resolution import (
     ACTIVE_SNAPSHOT_FORMAT,
@@ -21,6 +27,10 @@ __all__ = [
     "SEMANTIC_SNAPSHOT_SCHEMA_VERSION",
     "AtlasSemanticSnapshot",
     "SemanticSnapshotError",
+    "RepositoryProvenance",
+    "RevisionAlignment",
+    "WorktreeState",
+    "capture_git_provenance",
     "SemanticSnapshotStore",
     "ACTIVE_SNAPSHOT_FORMAT",
     "ACTIVE_SNAPSHOT_REGISTRATION",
