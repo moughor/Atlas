@@ -298,7 +298,7 @@ def portable_snapshot_payload(snapshot: object, repository_root: Path) -> dict[s
     """Project an ASS into a path-independent, versioned golden payload."""
 
     root = repository_root.expanduser().resolve()
-    context = portable_value(dict(snapshot.semantic_context), root)
+    context = portable_value(dict(snapshot.semantic_context), repository_root)
     payload = {
         "format": PORTABLE_SNAPSHOT_FORMAT,
         "projection_version": PORTABLE_SNAPSHOT_VERSION,
@@ -379,9 +379,19 @@ def portable_value(value: object, repository_root: Path) -> object:
     """Replace the verified checkout root while preserving semantic structure."""
 
     root = repository_root.expanduser().resolve()
+    # Also consider the original un-resolved path so that cross-platform paths
+    # (e.g. a Windows path processed on Linux) are scrubbed correctly.
+    raw = repository_root.expanduser()
+    raw_forward = raw.as_posix().rstrip("/")
+    raw_backward = str(raw).rstrip("\\/")
     forward = root.as_posix().rstrip("/")
     backward = str(root).rstrip("\\/")
     root_uri = root.as_uri().rstrip("/")
+    # Collect all unique non-empty forward/backward representations.
+    all_forward_backward: list[str] = []
+    for candidate in (forward, backward, raw_forward, raw_backward):
+        if candidate and candidate not in all_forward_backward:
+            all_forward_backward.append(candidate)
     encoded = tuple(
         candidate
         for candidate in {
@@ -425,7 +435,7 @@ def portable_value(value: object, repository_root: Path) -> object:
                 result,
                 flags=path_flags,
             )
-        for candidate in (forward, backward):
+        for candidate in all_forward_backward:
             if candidate:
                 result = re.sub(
                     re.escape(candidate) + r"(?=$|[\\/])",

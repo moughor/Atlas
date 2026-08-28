@@ -10,7 +10,9 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
 import stat
+import sys
 import tempfile
 from threading import RLock
 import tracemalloc
@@ -200,6 +202,14 @@ agent_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(agent_app, name='agent')
+
+
+database_app = typer.Typer(
+    name='database',
+    help='Database semantic graph: build, context selection, and SQL validation.',
+    no_args_is_help=True,
+)
+app.add_typer(database_app, name='database')
 
 
 @app.callback()
@@ -687,6 +697,50 @@ def governance_command(
     _run_command(operation)
 
 
+@app.command('capabilities')
+def capabilities_command(
+    json_output: Annotated[
+        bool,
+        typer.Option('--json', help='Print canonical deterministic JSON.'),
+    ] = True,
+) -> None:
+    '''Report machine-readable capability handshake without repository access.'''
+
+    payload = {
+        'schema_version': 1,
+        'atlas_version': __version__,
+        'protocols': {
+            'agent_context': {'schema_versions': [1, 2, 3]},
+            'agent_graph': {'schema_versions': [1, 2, 3]},
+            'database_graph': {'schema_versions': [1]},
+            'semantic_search': {'schema_versions': [1]},
+            'snapshot_status': {'schema_versions': [1]},
+            'sql_validation': {'schema_versions': [1]},
+        },
+        'features': {
+            'database_graph': True,
+            'exact_git_revision': True,
+            'local_service': False,
+            'request_cancellation': True,
+            'sql_validation': True,
+            'story_trust_boundary': True,
+            'structured_progress': True,
+        },
+        'limits': {
+            'context_bytes': 4194304,
+            'graph_bytes': 16777216,
+            'story_bytes': 262144,
+            'story_characters': 50000,
+        },
+    }
+    typer.echo(json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ))
+
+
 @agent_app.command('context')
 def agent_context_command(
     root: Annotated[
@@ -729,53 +783,316 @@ def agent_context_command(
         AgentGraphDepth,
         typer.Option('--depth', help='Projection tier: story or expanded.'),
     ] = AgentGraphDepth.STORY,
+    expected_revision: Annotated[
+        str | None,
+        typer.Option(
+            '--expected-revision',
+            help='Expected Git HEAD commit SHA. Used for provenance verification.',
+        ),
+    ] = None,
+    require_exact_revision: Annotated[
+        bool,
+        typer.Option(
+            '--require-exact-revision',
+            help='Fail if the snapshot provenance does not match the expected revision exactly.',
+        ),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option('--json', help='Emit a structured result envelope instead of human-oriented output.'),
+    ] = False,
+    deadline_seconds: Annotated[
+        float | None,
+        typer.Option(
+            '--deadline-seconds',
+            help='Maximum wall-clock seconds before the request is terminated.',
+        ),
+    ] = None,
+    request_id: Annotated[
+        str | None,
+        typer.Option(
+            '--request-id',
+            help='Caller-supplied request ID for progress correlation.',
+        ),
+    ] = None,
+    include_database: Annotated[
+        bool,
+        typer.Option(
+            '--include-database',
+            help='Additionally build the database graph and include bounded database context.',
+        ),
+    ] = False,
 ) -> None:
     '''Discover story roots and export four bounded deterministic context artifacts.'''
 
     def operation() -> None:
-        story = _read_agent_story_file(story_file).text
-        loaded = _load_ai_snapshot(root, snapshot)
-        session = RepositoryRuntimeSession(workspace_root=root)
-        try:
-            artifacts = AgentContextService(
-                session,
-                workspace_root=root,
-            ).export(
-                loaded,
-                story_text=story,
-                output=output,
-                subject=subject,
-                project=project,
-                depth=depth,
-            )
-        finally:
-            session.close()
-        target = output.expanduser().resolve()
-        typer.echo(f'agent-context: {target}')
-        typer.echo(f'context-fingerprint: {artifacts.package.context_fingerprint}')
-        typer.echo(f'graph-fingerprint: {artifacts.graph.graph_fingerprint}')
-        typer.echo(
-            f'graph: {len(artifacts.graph.nodes)} nodes, '
-            f'{len(artifacts.graph.edges)} edges, depth={depth.value}'
+        from moughorai.agent_context.progress import (
+            Cancelled,
+            DeadlineExceeded,
+            RequestContext,
         )
-        resolved_roots = sum(
-            item.classification == 'resolved'
-            for item in artifacts.graph.discovered_roots
+        from moughorai.semantic_snapshot.provenance import (
+            capture_git_provenance, RevisionAlignment,
         )
-        candidate_roots = sum(
-            item.classification == 'candidate'
-            for item in artifacts.graph.discovered_roots
-        )
-        if artifacts.graph.version >= 2:
-            typer.echo(
-                f'roots: {resolved_roots} authoritative, '
-                f'{candidate_roots} candidate, '
-                f"{artifacts.graph.omitted_counts.get('discovery_roots', 0)} omitted"
-            )
-        for name, size in artifacts.output_files:
-            typer.echo(f'artifact: {name} ({size} bytes)')
 
-    _run_command(operation)
+        ctx = RequestContext(
+            request_id=request_id,
+            deadline_seconds=deadline_seconds,
+            progress_stream=sys.stderr,
+        )
+        generation_dir: Path | None = None
+        try:
+            # Phase 1: story loading
+            ctx.emit_progress('story_load', 'starting', 'story.loading')
+            ctx.check()
+            story = _read_agent_story_file(story_file).text
+            ctx.emit_progress('story_load', 'completed', 'story.loaded')
+
+            # Phase 2: snapshot loading
+            ctx.emit_progress('snapshot_load', 'starting', 'snapshot.loading')
+            ctx.check()
+            loaded = _load_ai_snapshot(root, snapshot)
+            ctx.emit_progress('snapshot_load', 'completed', 'snapshot.loaded')
+
+            # Phase 3: provenance verification
+            ctx.emit_progress('provenance', 'starting', 'provenance.verifying')
+            ctx.check()
+            provenance = capture_git_provenance(root)
+
+            # Extract snapshot-time provenance from history_reference.
+            # The snapshot schema is frozen, but history_reference may
+            # contain the Git SHA at snapshot-creation time.
+            snapshot_sha: str | None = None
+            hr = loaded.history_reference
+            if isinstance(hr, str) and len(hr) in (40, 64):
+                import re as _re
+                if _re.fullmatch(r'[0-9a-f]+', hr):
+                    snapshot_sha = hr
+
+            if require_exact_revision and expected_revision is None:
+                # --require-exact-revision without --expected-revision:
+                # verify the snapshot provenance matches the live HEAD.
+                if provenance.head_sha is None:
+                    raise ValueError(
+                        'snapshot provenance mismatch: --require-exact-revision '
+                        'requires a Git workspace with a known HEAD commit'
+                    )
+                if snapshot_sha is None:
+                    raise ValueError(
+                        'snapshot provenance mismatch: --require-exact-revision '
+                        'requires a snapshot with a recorded history_reference '
+                        f'(snapshot has history_reference={hr!r})'
+                    )
+                if snapshot_sha != provenance.head_sha:
+                    raise ValueError(
+                        f'snapshot provenance mismatch: snapshot was created at '
+                        f'{snapshot_sha} but the live HEAD is '
+                        f'{provenance.head_sha}'
+                    )
+                alignment = provenance.check_revision(provenance.head_sha)
+                accepted = {RevisionAlignment.EXACT}
+                if alignment not in accepted:
+                    raise ValueError(
+                        f'snapshot provenance mismatch: alignment={alignment.value}, '
+                        f'worktree is not clean at {provenance.head_sha}'
+                    )
+
+            elif expected_revision is not None:
+                # Verify the live HEAD matches the expected revision.
+                alignment = provenance.check_revision(expected_revision)
+                accepted = {RevisionAlignment.EXACT}
+                if not require_exact_revision:
+                    accepted.add(RevisionAlignment.DIRTY_OVERLAY)
+                if alignment not in accepted:
+                    raise ValueError(
+                        f'snapshot provenance mismatch: alignment={alignment.value}, '
+                        f'expected={expected_revision}, '
+                        f'captured={provenance.head_sha or "unavailable"}'
+                    )
+                # Also verify the snapshot was created at a compatible revision.
+                if snapshot_sha is not None and snapshot_sha != expected_revision:
+                    raise ValueError(
+                        f'snapshot provenance mismatch: snapshot was created at '
+                        f'{snapshot_sha} but expected revision is '
+                        f'{expected_revision}'
+                    )
+
+            ctx.emit_progress('provenance', 'completed', 'provenance.verified')
+
+            # Phase 4: discovery and graph projection
+            ctx.emit_progress('discovery', 'starting', 'discovery.running')
+            ctx.check()
+
+            # Write artifacts into a generation-scoped temporary directory
+            # that is a sibling of the final output.  On success the temp
+            # directory is atomically moved to *output*; on cancellation or
+            # deadline expiry only the temp directory is removed — a
+            # previous valid output is never deleted.
+            final_output = output.expanduser().resolve()
+            final_output.parent.mkdir(parents=True, exist_ok=True)
+            generation_dir = Path(tempfile.mkdtemp(
+                dir=final_output.parent,
+                prefix=f'.{final_output.name}.gen-',
+            ))
+
+            session = RepositoryRuntimeSession(workspace_root=root)
+            try:
+                artifacts = AgentContextService(
+                    session,
+                    workspace_root=root,
+                    provenance=provenance,
+                ).export(
+                    loaded,
+                    story_text=story,
+                    output=generation_dir,
+                    subject=subject,
+                    project=project,
+                    depth=depth,
+                    cancellation_check=ctx.check,
+                )
+            finally:
+                session.close()
+            ctx.emit_progress('discovery', 'completed', 'discovery.completed')
+
+            # Phase 4b: optional database context
+            db_context_result = None
+            if include_database:
+                ctx.emit_progress('database', 'starting', 'database.building')
+                ctx.check()
+                try:
+                    from moughorai.database_graph import (
+                        DatabaseGraph,
+                        select_database_context,
+                        render_database_context_markdown,
+                    )
+                    from moughorai.database_graph.jailer_ingest import ingest_jailer
+                    from moughorai.database_graph.jpa_extractor import extract_jpa_entities
+                    from moughorai.database_graph.reconciler import reconcile_database_graph
+                    from moughorai.database_graph.view_sql_ingest import ingest_view_sql
+
+                    jailer_result = None
+                    try:
+                        jailer_result = ingest_jailer(root)
+                    except FileNotFoundError:
+                        pass
+
+                    jpa_result = extract_jpa_entities(root)
+                    view_result = ingest_view_sql(root)
+                    db_graph = reconcile_database_graph(
+                        root, jailer_result, jpa_result, view_result=view_result,
+                        provenance=provenance,
+                    )
+                    db_context_result = select_database_context(db_graph, story)
+
+                    # Write database artifacts to the output directory
+                    out_dir = output.expanduser().resolve()
+                    out_dir.mkdir(parents=True, exist_ok=True)
+
+                    db_graph_path = out_dir / 'database_graph.json'
+                    db_graph_path.write_text(
+                        json.dumps(db_graph.to_dict(), ensure_ascii=False, indent=2, sort_keys=True),
+                        encoding='utf-8',
+                    )
+                    db_context_path = out_dir / 'database_context.json'
+                    db_context_path.write_text(
+                        json.dumps(db_context_result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True),
+                        encoding='utf-8',
+                    )
+                    db_context_md_path = out_dir / 'database_context.md'
+                    db_context_md_path.write_text(
+                        render_database_context_markdown(db_context_result),
+                        encoding='utf-8',
+                    )
+                    ctx.emit_progress('database', 'completed', 'database.done')
+                except Exception as exc:
+                    ctx.emit_progress('database', 'failed', f'database.error: {exc}')
+                    typer.echo(f'warning: database context failed: {exc}', err=True)
+
+            # Phase 5: publication / output — promote generation dir
+            ctx.emit_progress('publication', 'starting', 'publication.emitting')
+            ctx.check()
+
+            # Atomic promotion: remove previous output (if any), then move
+            # the generation directory into place.
+            if final_output.exists():
+                shutil.rmtree(final_output)
+            os.rename(generation_dir, final_output)
+            generation_dir = None  # promotion succeeded; nothing to clean up
+            if json_output:
+                _emit_agent_context_envelope(
+                    artifacts, loaded, provenance, depth,
+                    request_id=ctx.request_id,
+                    expected_revision=expected_revision,
+                    snapshot_sha=snapshot_sha,
+                )
+                ctx.emit_progress('publication', 'completed', 'publication.done')
+                return
+
+            typer.echo(f'agent-context: {final_output}')
+            typer.echo(f'context-fingerprint: {artifacts.package.context_fingerprint}')
+            typer.echo(f'graph-fingerprint: {artifacts.graph.graph_fingerprint}')
+            typer.echo(
+                f'graph: {len(artifacts.graph.nodes)} nodes, '
+                f'{len(artifacts.graph.edges)} edges, depth={depth.value}'
+            )
+            resolved_roots = sum(
+                item.classification == 'resolved'
+                for item in artifacts.graph.discovered_roots
+            )
+            candidate_roots = sum(
+                item.classification == 'candidate'
+                for item in artifacts.graph.discovered_roots
+            )
+            if artifacts.graph.version >= 2:
+                typer.echo(
+                    f'roots: {resolved_roots} authoritative, '
+                    f'{candidate_roots} candidate, '
+                    f"{artifacts.graph.omitted_counts.get('discovery_roots', 0)} omitted"
+                )
+            for name, size in artifacts.output_files:
+                typer.echo(f'artifact: {name} ({size} bytes)')
+            ctx.emit_progress('publication', 'completed', 'publication.done')
+
+        except DeadlineExceeded:
+            if generation_dir is not None and generation_dir.exists():
+                shutil.rmtree(generation_dir, ignore_errors=True)
+            ctx.emit_progress('request', 'deadline_exceeded', 'request.deadline_exceeded')
+            if json_output:
+                _emit_agent_context_terminal_envelope(
+                    'deadline_exceeded',
+                    f'request {ctx.request_id} exceeded deadline',
+                    depth,
+                    request_id=ctx.request_id,
+                )
+            else:
+                typer.echo(
+                    f'error: request deadline exceeded after {ctx.elapsed_seconds:.1f}s',
+                    err=True,
+                )
+            raise typer.Exit(code=3)
+
+        except Cancelled:
+            if generation_dir is not None and generation_dir.exists():
+                shutil.rmtree(generation_dir, ignore_errors=True)
+            ctx.emit_progress('request', 'cancelled', 'request.cancelled')
+            if json_output:
+                _emit_agent_context_terminal_envelope(
+                    'cancelled',
+                    f'request {ctx.request_id} was cancelled',
+                    depth,
+                    request_id=ctx.request_id,
+                )
+            else:
+                typer.echo('error: request cancelled', err=True)
+            raise typer.Exit(code=4)
+
+        finally:
+            ctx.close()
+
+    if json_output:
+        _run_agent_context_json(operation, depth, request_id=request_id)
+    else:
+        _run_command(operation)
 
 
 @agent_app.command('review')
@@ -841,6 +1158,349 @@ def agent_review_command(
             else render_agent_post_change_review(review),
             nl=False,
         )
+
+    _run_command(operation)
+
+
+# ---------------------------------------------------------------------------
+# Database graph commands
+# ---------------------------------------------------------------------------
+
+@database_app.command('build')
+def database_build_command(
+    repository: Annotated[
+        Path,
+        typer.Argument(help='Repository root containing Jailer CSV and/or JPA entities.'),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option('--output', '-o', help='Output directory for database graph artifacts.'),
+    ] = Path('.'),
+    json_output: Annotated[
+        bool,
+        typer.Option('--json', help='Emit a structured result envelope to stdout.'),
+    ] = False,
+) -> None:
+    '''Build the full reconciled database semantic graph from Jailer + JPA evidence.'''
+
+    def operation() -> None:
+        from moughorai.semantic_snapshot.provenance import capture_git_provenance
+        from moughorai.database_graph import (
+            DATABASE_GRAPH_SCHEMA_VERSION,
+            canonical_json,
+        )
+        from moughorai.database_graph.jailer_ingest import ingest_jailer
+        from moughorai.database_graph.jpa_extractor import extract_jpa_entities
+        from moughorai.database_graph.reconciler import reconcile_database_graph
+        from moughorai.database_graph.view_sql_ingest import ingest_view_sql
+
+        resolved_root = repository.expanduser().resolve()
+        provenance = capture_git_provenance(resolved_root)
+
+        jailer_result = None
+        try:
+            jailer_result = ingest_jailer(resolved_root)
+        except FileNotFoundError:
+            pass
+
+        jpa_result = extract_jpa_entities(resolved_root)
+        view_result = ingest_view_sql(resolved_root)
+
+        db_graph = reconcile_database_graph(
+            resolved_root,
+            jailer_result,
+            jpa_result,
+            view_result=view_result,
+            provenance=provenance,
+        )
+
+        out_dir = output.expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        graph_path = out_dir / 'database_graph.json'
+        graph_path.write_text(
+            json.dumps(db_graph.to_dict(), ensure_ascii=False, indent=2, sort_keys=True),
+            encoding='utf-8',
+        )
+
+        if json_output:
+            envelope: dict[str, object] = {
+                'schema_version': DATABASE_GRAPH_SCHEMA_VERSION,
+                'status': 'success',
+                'atlas_version': __version__,
+                'artifacts': [
+                    {
+                        'name': 'database_graph.json',
+                        'path': graph_path.as_posix(),
+                        'bytes': graph_path.stat().st_size,
+                    },
+                ],
+                'fingerprints': {
+                    'graph': db_graph.fingerprint,
+                },
+                'graph': {
+                    'nodes': len(db_graph.nodes),
+                    'edges': len(db_graph.edges),
+                },
+                'coverage': db_graph.coverage.to_dict(),
+                'provenance': provenance.to_dict(),
+            }
+            typer.echo(json.dumps(
+                envelope,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ))
+        else:
+            typer.echo(f'database-graph: {graph_path}')
+            typer.echo(f'fingerprint: {db_graph.fingerprint}')
+            typer.echo(f'nodes: {len(db_graph.nodes)}')
+            typer.echo(f'edges: {len(db_graph.edges)}')
+
+    _run_command(operation)
+
+
+@database_app.command('context')
+def database_context_command(
+    repository: Annotated[
+        Path,
+        typer.Argument(help='Repository root containing Jailer CSV and/or JPA entities.'),
+    ],
+    story_file: Annotated[
+        Path,
+        typer.Option(
+            '--story-file',
+            help='UTF-8 story or impediment text file for context selection.',
+        ),
+    ],
+    graph: Annotated[
+        Path | None,
+        typer.Option(
+            '--graph',
+            help='Pre-built database_graph.json; skips rebuild when supplied.',
+        ),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option('--output', '-o', help='Output directory for context artifacts.'),
+    ] = Path('.'),
+    json_output: Annotated[
+        bool,
+        typer.Option('--json', help='Emit a structured result envelope to stdout.'),
+    ] = False,
+) -> None:
+    '''Select bounded database context for a story against the reconciled graph.'''
+
+    def operation() -> None:
+        from moughorai.semantic_snapshot.provenance import capture_git_provenance
+        from moughorai.database_graph import (
+            DATABASE_GRAPH_SCHEMA_VERSION,
+            DatabaseGraph,
+            select_database_context,
+            render_database_context_markdown,
+            render_database_context_mermaid,
+        )
+        from moughorai.database_graph.jailer_ingest import ingest_jailer
+        from moughorai.database_graph.jpa_extractor import extract_jpa_entities
+        from moughorai.database_graph.reconciler import reconcile_database_graph
+        from moughorai.database_graph.view_sql_ingest import ingest_view_sql
+
+        resolved_root = repository.expanduser().resolve()
+        story_input = _read_agent_story_file(story_file)
+
+        # Load or build the graph
+        if graph is not None:
+            graph_path = graph.expanduser().resolve()
+            raw = json.loads(graph_path.read_text(encoding='utf-8'))
+            db_graph = DatabaseGraph.from_dict(raw)
+        else:
+            provenance = capture_git_provenance(resolved_root)
+            jailer_result = None
+            try:
+                jailer_result = ingest_jailer(resolved_root)
+            except FileNotFoundError:
+                pass
+            jpa_result = extract_jpa_entities(resolved_root)
+            view_result = ingest_view_sql(resolved_root)
+            db_graph = reconcile_database_graph(
+                resolved_root, jailer_result, jpa_result,
+                view_result=view_result, provenance=provenance,
+            )
+
+        ctx_result = select_database_context(db_graph, story_input.text)
+
+        out_dir = output.expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        ctx_json_path = out_dir / 'database_context.json'
+        ctx_json_path.write_text(
+            json.dumps(ctx_result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True),
+            encoding='utf-8',
+        )
+
+        ctx_md_path = out_dir / 'database_context.md'
+        ctx_md_path.write_text(
+            render_database_context_markdown(ctx_result),
+            encoding='utf-8',
+        )
+
+        ctx_mmd_path = out_dir / 'database_context.mmd'
+        ctx_mmd_path.write_text(
+            render_database_context_mermaid(ctx_result),
+            encoding='utf-8',
+        )
+
+        if json_output:
+            envelope: dict[str, object] = {
+                'schema_version': DATABASE_GRAPH_SCHEMA_VERSION,
+                'status': 'success',
+                'atlas_version': __version__,
+                'artifacts': [
+                    {
+                        'name': 'database_context.json',
+                        'path': ctx_json_path.as_posix(),
+                        'bytes': ctx_json_path.stat().st_size,
+                    },
+                    {
+                        'name': 'database_context.md',
+                        'path': ctx_md_path.as_posix(),
+                        'bytes': ctx_md_path.stat().st_size,
+                    },
+                    {
+                        'name': 'database_context.mmd',
+                        'path': ctx_mmd_path.as_posix(),
+                        'bytes': ctx_mmd_path.stat().st_size,
+                    },
+                ],
+                'fingerprints': {
+                    'full_graph': ctx_result.full_graph_fingerprint,
+                    'context': ctx_result.context_fingerprint,
+                },
+                'context': {
+                    'nodes': len(ctx_result.selected_nodes),
+                    'edges': len(ctx_result.selected_edges),
+                    'terms_matched': len(ctx_result.story_terms_matched),
+                    'terms_unmatched': len(ctx_result.story_terms_unmatched),
+                },
+                'omitted': ctx_result.omitted_counts.to_dict(),
+            }
+            typer.echo(json.dumps(
+                envelope,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ))
+        else:
+            typer.echo(f'database-context: {out_dir}')
+            typer.echo(f'full-graph-fingerprint: {ctx_result.full_graph_fingerprint}')
+            typer.echo(f'context-fingerprint: {ctx_result.context_fingerprint}')
+            typer.echo(
+                f'context: {len(ctx_result.selected_nodes)} nodes, '
+                f'{len(ctx_result.selected_edges)} edges'
+            )
+            typer.echo(
+                f'terms: {len(ctx_result.story_terms_matched)} matched, '
+                f'{len(ctx_result.story_terms_unmatched)} unmatched'
+            )
+
+    _run_command(operation)
+
+
+@database_app.command('validate-sql')
+def database_validate_sql_command(
+    repository: Annotated[
+        Path,
+        typer.Argument(help='Repository root (used for graph build if --graph is not supplied).'),
+    ],
+    sql_file: Annotated[
+        Path,
+        typer.Option(
+            '--sql-file',
+            help='UTF-8 SQL file containing one or more statements to validate.',
+        ),
+    ],
+    graph: Annotated[
+        Path | None,
+        typer.Option(
+            '--graph',
+            help='Pre-built database_graph.json; skips rebuild when supplied.',
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option('--json', help='Emit structured validation JSON to stdout.'),
+    ] = False,
+) -> None:
+    '''Validate SQL statements against the reconciled database graph.'''
+
+    def operation() -> None:
+        from moughorai.semantic_snapshot.provenance import capture_git_provenance
+        from moughorai.database_graph import (
+            DATABASE_GRAPH_SCHEMA_VERSION,
+            DatabaseGraph,
+            validate_sql,
+        )
+        from moughorai.database_graph.jailer_ingest import ingest_jailer
+        from moughorai.database_graph.jpa_extractor import extract_jpa_entities
+        from moughorai.database_graph.reconciler import reconcile_database_graph
+        from moughorai.database_graph.view_sql_ingest import ingest_view_sql
+
+        resolved_root = repository.expanduser().resolve()
+
+        # Read SQL file
+        sql_path = sql_file.expanduser().resolve()
+        if not sql_path.is_file():
+            raise FileNotFoundError(f'SQL file not found: {sql_path}')
+        sql_text = sql_path.read_text(encoding='utf-8')
+
+        # Load or build the graph
+        if graph is not None:
+            graph_path = graph.expanduser().resolve()
+            raw = json.loads(graph_path.read_text(encoding='utf-8'))
+            db_graph = DatabaseGraph.from_dict(raw)
+        else:
+            provenance = capture_git_provenance(resolved_root)
+            jailer_result = None
+            try:
+                jailer_result = ingest_jailer(resolved_root)
+            except FileNotFoundError:
+                pass
+            jpa_result = extract_jpa_entities(resolved_root)
+            view_result = ingest_view_sql(resolved_root)
+            db_graph = reconcile_database_graph(
+                resolved_root, jailer_result, jpa_result,
+                view_result=view_result, provenance=provenance,
+            )
+
+        result = validate_sql(sql_text, db_graph)
+
+        if json_output:
+            envelope: dict[str, object] = {
+                'schema_version': DATABASE_GRAPH_SCHEMA_VERSION,
+                'status': result.overall_status,
+                'atlas_version': __version__,
+                'fingerprints': {
+                    'graph': result.graph_fingerprint,
+                },
+                'validation': result.to_dict(),
+            }
+            typer.echo(json.dumps(
+                envelope,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ))
+        else:
+            typer.echo(f'sql-validation: {result.overall_status}')
+            typer.echo(f'graph-fingerprint: {result.graph_fingerprint}')
+            typer.echo(f'statements: {len(result.statements)}')
+            total_issues = sum(len(s.issues) for s in result.statements)
+            typer.echo(f'issues: {total_issues}')
+            for stmt in result.statements:
+                if stmt.issues:
+                    for issue in stmt.issues:
+                        typer.echo(
+                            f'  [{issue.severity}] {issue.issue_type}: {issue.detail}'
+                        )
 
     _run_command(operation)
 
@@ -2142,6 +2802,193 @@ def ai_version_command() -> None:
     """Print Atlas AI release version and capabilities."""
     typer.echo(f"Atlas AI {ATLAS_AI_VERSION}")
     typer.echo(atlas_ai_capabilities().to_json())
+
+
+def _emit_agent_context_envelope(
+    artifacts: AgentContextArtifacts,
+    snapshot: Any,
+    provenance: Any,
+    depth: AgentGraphDepth,
+    *,
+    request_id: str | None = None,
+    expected_revision: str | None = None,
+    snapshot_sha: str | None = None,
+) -> None:
+    """Emit a canonical JSON result envelope for agent context export."""
+
+    artifact_entries: list[dict[str, object]] = []
+    for name, size in artifacts.output_files:
+        entry: dict[str, object] = {'name': name, 'bytes': size}
+        if name in ('context.json', 'graph.json'):
+            fp = (
+                artifacts.package.context_fingerprint
+                if name == 'context.json'
+                else artifacts.graph.graph_fingerprint
+            )
+            entry['fingerprint'] = fp
+        artifact_entries.append(entry)
+
+    resolved_roots = sum(
+        item.classification == 'resolved'
+        for item in artifacts.graph.discovered_roots
+    )
+    candidate_roots = sum(
+        item.classification == 'candidate'
+        for item in artifacts.graph.discovered_roots
+    )
+    omitted_roots = artifacts.graph.omitted_counts.get('discovery_roots', 0)
+
+    # Determine revision alignment from provenance.
+    # Without an explicit expected revision, alignment is 'unverified'
+    # because we cannot confirm the snapshot matches the worktree.
+    if expected_revision is not None:
+        # An expected revision was provided and verification passed (or we
+        # would have raised before reaching here).
+        if provenance.vcs == 'none':
+            revision_alignment = 'non_git'
+        elif provenance.head_sha is None:
+            revision_alignment = 'unknown'
+        elif provenance.head_sha != expected_revision:
+            revision_alignment = 'stale'
+        elif snapshot_sha is not None and snapshot_sha != expected_revision:
+            revision_alignment = 'stale'
+        elif provenance.worktree_state == 'clean':
+            revision_alignment = 'exact'
+        elif provenance.worktree_state == 'dirty_untracked_only':
+            revision_alignment = 'exact'
+        elif provenance.worktree_state == 'dirty_tracked':
+            revision_alignment = 'dirty_overlay'
+        else:
+            revision_alignment = 'unknown'
+    elif provenance.vcs == 'none':
+        revision_alignment = 'non_git'
+    else:
+        # No expected revision: we captured live provenance but have no
+        # guarantee the snapshot was created at the same commit.
+        revision_alignment = 'unverified'
+
+    envelope: dict[str, object] = {
+        'schema_version': 1,
+        'status': 'success',
+        'atlas_version': __version__,
+        'request_id': request_id,
+        'artifacts': artifact_entries,
+        'snapshot_id': snapshot.snapshot_id,
+        'revision_alignment': revision_alignment,
+        'repository_provenance': provenance.to_dict(),
+        'context_fingerprint': artifacts.package.context_fingerprint,
+        'graph_fingerprint': artifacts.graph.graph_fingerprint,
+        'roots': {
+            'resolved': resolved_roots,
+            'candidate': candidate_roots,
+            'omitted': omitted_roots,
+        },
+        'graph': {
+            'nodes': len(artifacts.graph.nodes),
+            'edges': len(artifacts.graph.edges),
+            'depth': depth.value,
+        },
+        'omissions': dict(sorted(artifacts.graph.omitted_counts.items())),
+        'warnings': [],
+        'error': None,
+    }
+    typer.echo(json.dumps(
+        envelope,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ))
+
+
+def _emit_agent_context_terminal_envelope(
+    status: str,
+    message: str,
+    depth: AgentGraphDepth,
+    *,
+    request_id: str | None = None,
+) -> None:
+    """Emit a JSON envelope for cancelled or deadline_exceeded terminal states."""
+    envelope: dict[str, object] = {
+        'schema_version': 1,
+        'status': status,
+        'atlas_version': __version__,
+        'request_id': request_id,
+        'artifacts': [],
+        'snapshot_id': None,
+        'revision_alignment': None,
+        'repository_provenance': None,
+        'context_fingerprint': None,
+        'graph_fingerprint': None,
+        'roots': {'resolved': 0, 'candidate': 0, 'omitted': 0},
+        'graph': {'nodes': 0, 'edges': 0, 'depth': depth.value},
+        'omissions': {},
+        'warnings': [],
+        'error': {
+            'code': status,
+            'message': message,
+        },
+    }
+    typer.echo(json.dumps(
+        envelope,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ))
+
+
+def _run_agent_context_json(
+    operation: Callable[[], None],
+    depth: AgentGraphDepth,
+    *,
+    request_id: str | None = None,
+) -> None:
+    """Run an agent context operation, emitting a JSON error envelope on failure."""
+    try:
+        operation()
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        error_code = type(exc).__name__
+        # Map common error types to short canonical codes
+        error_type = type(exc).__name__
+        code_map: dict[str, str] = {
+            'ValueError': 'validation_error',
+            'FileNotFoundError': 'file_not_found',
+            'SemanticSnapshotError': 'snapshot_error',
+            'AgentContextError': 'agent_context_error',
+            'WorkspaceConfigurationError': 'workspace_configuration_error',
+            'WorkspaceStateError': 'workspace_state_error',
+        }
+        error_code = code_map.get(error_type, error_type.lower())
+        if 'revision' in str(exc).lower() or 'provenance' in str(exc).lower():
+            error_code = 'revision_mismatch'
+        error_envelope: dict[str, object] = {
+            'schema_version': 1,
+            'status': 'error',
+            'atlas_version': __version__,
+            'request_id': request_id,
+            'artifacts': [],
+            'snapshot_id': None,
+            'revision_alignment': None,
+            'repository_provenance': None,
+            'context_fingerprint': None,
+            'graph_fingerprint': None,
+            'roots': {'resolved': 0, 'candidate': 0, 'omitted': 0},
+            'graph': {'nodes': 0, 'edges': 0, 'depth': depth.value},
+            'omissions': {},
+            'warnings': [],
+            'error': {
+                'code': error_code,
+                'message': str(exc),
+            },
+        }
+        typer.echo(json.dumps(
+            error_envelope,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ))
+        raise typer.Exit(code=2)
 
 
 def _run_command(operation: Callable[[], None]) -> None:

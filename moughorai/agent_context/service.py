@@ -8,7 +8,9 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Iterable
+from typing import Callable, Iterable
+
+from moughorai.version import __version__
 
 from moughorai.code_intelligence import (
     CodeIntelligenceConfiguration,
@@ -20,6 +22,7 @@ from moughorai.java_code_intelligence.code_graph import CodeGraphEdgeKind
 from moughorai.repository_runtime import RepositoryRuntimeSession
 from moughorai.semantic_search import SemanticSearchRequest
 from moughorai.semantic_snapshot import AtlasSemanticSnapshot
+from moughorai.semantic_snapshot.provenance import RepositoryProvenance
 from moughorai.story_planning import (
     StoryDiscoveryHit,
     StoryPlan,
@@ -31,6 +34,9 @@ from moughorai.story_planning import (
 from .models import (
     AGENT_CONTEXT_LEGACY_PRODUCER,
     AGENT_CONTEXT_PRODUCER,
+    STORY_INSTRUCTION_AUTHORITY,
+    STORY_SOURCE_KIND,
+    STORY_TRUST_CLASSIFICATION,
     AgentContextArtifacts,
     AgentContextPackage,
     AgentDiscoveredRoot,
@@ -50,6 +56,20 @@ from .renderer import render_agent_context, render_agent_graph_mermaid
 
 
 _OUTPUT_NAMES = ('context.json', 'context.md', 'graph.json', 'graph.mmd')
+
+# Pre-publication byte-size limits.  Export fails with ``ArtifactOversizedError``
+# rather than writing partial or bloated artifacts.
+MAXIMUM_CONTEXT_MD_BYTES = 4 * 1024 * 1024   # 4 MiB
+MAXIMUM_GRAPH_MMD_BYTES = 4 * 1024 * 1024    # 4 MiB
+MAXIMUM_CONTEXT_JSON_BYTES = 16 * 1024 * 1024  # 16 MiB
+MAXIMUM_GRAPH_JSON_BYTES = 16 * 1024 * 1024    # 16 MiB
+
+_ARTIFACT_SIZE_LIMITS: dict[str, int] = {
+    'context.json': MAXIMUM_CONTEXT_JSON_BYTES,
+    'context.md': MAXIMUM_CONTEXT_MD_BYTES,
+    'graph.json': MAXIMUM_GRAPH_JSON_BYTES,
+    'graph.mmd': MAXIMUM_GRAPH_MMD_BYTES,
+}
 _HIGH_EDGE_KINDS = frozenset({
     CodeGraphEdgeKind.RESOLVED_DIRECT_CALL,
     CodeGraphEdgeKind.CONSTRUCTOR_CALL,
@@ -90,9 +110,36 @@ _SUPPLEMENTARY_ACTIONS = frozenset({
 _MAXIMUM_SUPPLEMENTARY_ANCHORS = 8
 _MAXIMUM_SUPPLEMENTARY_HITS = 5
 
+_COMMIT_SHA_RE = re.compile(r'^[0-9a-f]{40}([0-9a-f]{24})?$')
+
+
+def _extract_snapshot_sha(snapshot: AtlasSemanticSnapshot) -> str | None:
+    """Extract a validated Git commit SHA from the snapshot's history_reference.
+
+    Returns the SHA string if history_reference is a valid 40- or 64-character
+    lowercase hex string (a Git commit SHA), otherwise None.
+    """
+    hr = snapshot.history_reference
+    if isinstance(hr, str) and _COMMIT_SHA_RE.match(hr):
+        return hr
+    return None
+
 
 class AgentContextError(ValueError):
     '''Raised when a fail-closed agent package cannot be projected.'''
+
+
+class ArtifactOversizedError(AgentContextError):
+    '''Raised when a pre-publication artifact exceeds its byte-size limit.'''
+
+    def __init__(self, artifact_name: str, actual_bytes: int, limit_bytes: int) -> None:
+        self.artifact_name = artifact_name
+        self.actual_bytes = actual_bytes
+        self.limit_bytes = limit_bytes
+        super().__init__(
+            f'artifact {artifact_name!r} is {actual_bytes:,} bytes, '
+            f'exceeding the {limit_bytes:,}-byte limit'
+        )
 
 
 @dataclass(slots=True)
@@ -120,11 +167,13 @@ class AgentContextService:
         runtime_session: RepositoryRuntimeSession,
         *,
         workspace_root: str | Path,
+        provenance: RepositoryProvenance | None = None,
     ) -> None:
         if not isinstance(runtime_session, RepositoryRuntimeSession):
             raise TypeError('agent context requires a repository runtime session')
         self._session = runtime_session
         self._root = Path(workspace_root).expanduser().resolve()
+        self._provenance = provenance
         if not self._root.is_dir():
             raise AgentContextError('agent context repository root must be a directory')
 
@@ -236,6 +285,7 @@ class AgentContextService:
             verification,
             authoritative_project,
             self._root,
+            self._provenance,
         )
         markdown = render_agent_context(package)
         mermaid = render_agent_graph_mermaid(graph)
@@ -321,6 +371,7 @@ class AgentContextService:
             project,
             self._root,
             discovery,
+            self._provenance,
         )
         return AgentContextArtifacts(
             package,
@@ -338,7 +389,16 @@ class AgentContextService:
         subject: str | None = None,
         project: str | None = None,
         depth: AgentGraphDepth | str = AgentGraphDepth.STORY,
+        cancellation_check: 'Callable[[], None] | None' = None,
     ) -> AgentContextArtifacts:
+        """Export story-specific context artifacts to *output*.
+
+        *cancellation_check*, when provided, is called between expensive
+        phases so that cooperative cancellation propagates into the export
+        operation.  It should raise on cancellation or deadline expiry.
+        """
+        if cancellation_check is not None:
+            cancellation_check()
         artifacts = self.generate(
             snapshot,
             story_text=story_text,
@@ -346,6 +406,8 @@ class AgentContextService:
             project=project,
             depth=depth,
         )
+        if cancellation_check is not None:
+            cancellation_check()
         target = self._external_output(output)
         target.mkdir(parents=True, exist_ok=True)
         unexpected = tuple(sorted(
@@ -362,8 +424,20 @@ class AgentContextService:
             'graph.json': artifacts.graph.to_json(),
             'graph.mmd': artifacts.graph_mermaid,
         }
+        encoded = {
+            name: payloads[name].encode('utf-8') for name in _OUTPUT_NAMES
+        }
+        # Pre-publication byte-size validation — fail before any write.
         for name in _OUTPUT_NAMES:
-            _atomic_write(target / name, payloads[name].encode('utf-8'))
+            limit = _ARTIFACT_SIZE_LIMITS.get(name)
+            if limit is not None:
+                actual = len(encoded[name])
+                if actual > limit:
+                    raise ArtifactOversizedError(name, actual, limit)
+        if cancellation_check is not None:
+            cancellation_check()
+        for name in _OUTPUT_NAMES:
+            _atomic_write(target / name, encoded[name])
         sizes = tuple(
             (name, (target / name).stat().st_size) for name in _OUTPUT_NAMES
         )
@@ -1384,6 +1458,7 @@ def _context_package(
     verification,
     project,
     repository_root,
+    provenance=None,
 ) -> AgentContextPackage:
     nodes = {item.id: item for item in graph.nodes}
     primary = tuple(
@@ -1477,18 +1552,26 @@ def _context_package(
             'fingerprint': plan.story_fingerprint,
             'plan_fingerprint': plan.plan_fingerprint,
             'provider_decomposition_used': plan.provider_decomposition_used,
+            'source_kind': STORY_SOURCE_KIND,
+            'trust_classification': STORY_TRUST_CLASSIFICATION,
+            'instruction_authority': STORY_INSTRUCTION_AUTHORITY,
         },
         {
+            'atlas_version': __version__,
             'repository_root': Path(repository_root).as_posix(),
             'snapshot_id': snapshot.snapshot_id,
             'snapshot_schema_version': snapshot.schema_version,
             'workspace_fingerprint': snapshot.workspace_fingerprint,
             'analyzer_version': snapshot.analyzer_version,
             'history_reference': snapshot.history_reference,
+            'snapshot_provenance_sha': _extract_snapshot_sha(snapshot),
             'callable_index_fingerprint': report.traceability.callable_index_fingerprint,
             'code_graph_fingerprint': report.traceability.code_graph_fingerprint,
             'test_evidence_fingerprint': report.traceability.test_evidence_fingerprint,
             'reachability_fingerprint': report.traceability.reachability_fingerprint,
+            'repository_provenance': (
+                provenance.to_dict() if provenance is not None else None
+            ),
         },
         project,
         report.subject.canonical_id,
@@ -1535,6 +1618,7 @@ def _context_package_discovered(
     requested_project,
     repository_root,
     discovery,
+    provenance=None,
 ) -> AgentContextPackage:
     nodes = {item.id: item for item in graph.nodes}
     roots = tuple(graph.discovered_roots)
@@ -1657,14 +1741,19 @@ def _context_package_discovered(
             'fingerprint': plan.story_fingerprint,
             'plan_fingerprint': plan.plan_fingerprint,
             'provider_decomposition_used': plan.provider_decomposition_used,
+            'source_kind': STORY_SOURCE_KIND,
+            'trust_classification': STORY_TRUST_CLASSIFICATION,
+            'instruction_authority': STORY_INSTRUCTION_AUTHORITY,
         },
         {
+            'atlas_version': __version__,
             'repository_root': Path(repository_root).as_posix(),
             'snapshot_id': snapshot.snapshot_id,
             'snapshot_schema_version': snapshot.schema_version,
             'workspace_fingerprint': snapshot.workspace_fingerprint,
             'analyzer_version': snapshot.analyzer_version,
             'history_reference': snapshot.history_reference,
+            'snapshot_provenance_sha': _extract_snapshot_sha(snapshot),
             'callable_index_fingerprint': (
                 traceability.callable_index_fingerprint if traceability else None
             ),
@@ -1676,6 +1765,9 @@ def _context_package_discovered(
             ),
             'reachability_fingerprint': (
                 traceability.reachability_fingerprint if traceability else None
+            ),
+            'repository_provenance': (
+                provenance.to_dict() if provenance is not None else None
             ),
         },
         authoritative_project,

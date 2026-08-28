@@ -62,7 +62,7 @@ class WorkspaceContextBuilder:
         payload = {
             "schema_version": self.SCHEMA_VERSION,
             "workspace": {
-                "root": workspace.root.as_posix(),
+                "root": ".",
                 "projects": [
                     project.to_dict(root=workspace.root)
                     for project in sorted(selected, key=lambda item: item.name)
@@ -98,7 +98,7 @@ class WorkspaceContextBuilder:
             "repository_summary": (
                 {}
                 if repository_summary is None
-                else self._value(repository_summary.to_dict())
+                else self._portable_summary(repository_summary.to_dict())
             ),
         }
         with self.measurement.scope(
@@ -112,6 +112,14 @@ class WorkspaceContextBuilder:
             scope.set_objects_retained(len(graph.nodes) + len(graph.edges))
             payload["semantic_graph"] = graph.to_dict()
         return WorkspaceSemanticContext(payload)
+
+    @classmethod
+    def _portable_summary(cls, summary: dict[str, Any]) -> dict[str, Any]:
+        """Replace absolute root in repository summary with a portable placeholder."""
+        result = cls._value(summary)
+        if isinstance(result, dict) and "root" in result:
+            result["root"] = "."
+        return result
 
     @staticmethod
     def _semantic_graph(symbols: tuple[GlobalSymbol, ...]) -> dict[str, Any]:
