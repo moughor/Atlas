@@ -1,57 +1,65 @@
-"""View SQL ingest for the Atlas Sygma Database Graph.
+"""Oracle view and materialized-view SQL ingestion for the Atlas Database Graph.
 
-Scans Flyway ``R__*.sql`` files in a Sygma repository to extract view and
-materialized view definitions.  Produces :class:`DatabaseGraphNode` and
-:class:`DatabaseGraphEdge` instances with full evidence provenance, ready
-for the reconciler.
+Scans a Sygma repository for Oracle view and materialized-view SQL definitions
+across four source directories, parses each file to extract object names,
+projected columns, and table dependencies, detects duplicate definitions, and
+produces :class:`DatabaseGraphNode` and :class:`DatabaseGraphEdge` instances
+with full evidence provenance.
 
 Scan paths (relative to *repo_root*):
 
-- ``sygma-db/src/main/resources/db/migration/views/R__*.sql``         — regular views
-- ``sygma-db/src/main/resources/db/env_specific/mviews/R__*.sql``     — materialized views
-- ``csc-common/csc-common-db/src/main/resources/db_csc/migration/views/R__*.sql``  — CSC views
+1. ``sygma-db/src/main/resources/VIEWS/``          — regular views (recursive)
+2. ``sygma-db/src/main/resources/MATERIALIZED_VIEWS/`` — materialized views (recursive)
+3. ``sygma-db/src/main/resources/db/migration/views/`` — Flyway repeatable view defs
+4. ``sygma-db/src/main/resources/db/env_specific/mviews/`` — environment-specific MVs
+
+``BACK_UP`` directories and ``target/`` build-artifact directories are excluded.
 """
 
 from __future__ import annotations
 
-import glob as _glob_mod
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from .models import (
-    DatabaseGraphNode,
+    ConflictRecord,
     DatabaseGraphEdge,
-    DatabaseGraphCoverage,
+    DatabaseGraphNode,
+    EdgeKind,
     EvidenceRecord,
     EvidenceSource,
     EvidenceStatus,
     NodeKind,
-    EdgeKind,
 )
 
 __all__ = [
-    "ViewSqlIngestResult",
+    "ViewIngestResult",
+    "ViewSqlIngestResult",  # backward-compatible alias
     "ingest_view_sql",
 ]
 
 log = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
-# Default scan-path globs (relative to repo root)
+# Scan-path configuration
 # ---------------------------------------------------------------------------
 
-_DEFAULT_VIEW_RELPATHS: tuple[str, ...] = (
-    "sygma-db/src/main/resources/db/migration/views/R__*.sql",
-    "csc-common/csc-common-db/src/main/resources/db_csc/migration/views/R__*.sql",
+# (relative_dir, glob, is_mview, priority)
+# Priority: higher number = more current.  Migration/env_specific preferred.
+_SCAN_SPECS: tuple[tuple[str, str, bool, int], ...] = (
+    ("sygma-db/src/main/resources/VIEWS", "**/*.sql", False, 1),
+    ("sygma-db/src/main/resources/MATERIALIZED_VIEWS", "**/*.sql", True, 1),
+    ("sygma-db/src/main/resources/db/migration/views", "*.sql", False, 2),
+    ("sygma-db/src/main/resources/db/env_specific/mviews", "*.sql", True, 2),
 )
 
-_DEFAULT_MVIEW_RELPATHS: tuple[str, ...] = (
-    "sygma-db/src/main/resources/db/env_specific/mviews/R__*.sql",
-)
+# Path segments to exclude
+_EXCLUDED_SEGMENTS = {"BACK_UP", "target"}
 
 
 # ---------------------------------------------------------------------------
@@ -59,74 +67,120 @@ _DEFAULT_MVIEW_RELPATHS: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
-class ViewSqlIngestResult:
-    """Outcome of a view SQL ingest run.
+class ViewIngestResult:
+    """Outcome of a view SQL ingest run."""
 
-    Attributes:
-        nodes: All produced nodes (views, materialized views, columns).
-        edges: All produced edges (HAS_COLUMN, READS_FROM).
-        view_count: Number of regular-view nodes produced.
-        materialized_view_count: Number of materialized-view nodes produced.
-        column_count: Number of projected-column nodes produced.
-        dependency_count: Number of READS_FROM edges (view → source table).
-        warnings: Non-fatal parse warnings collected during ingest.
-    """
-
-    nodes: tuple[DatabaseGraphNode, ...]
-    edges: tuple[DatabaseGraphEdge, ...]
+    view_nodes: tuple[DatabaseGraphNode, ...]
+    column_nodes: tuple[DatabaseGraphNode, ...]
+    dependency_edges: tuple[DatabaseGraphEdge, ...]
+    column_edges: tuple[DatabaseGraphEdge, ...]
+    all_nodes: tuple[DatabaseGraphNode, ...]
+    all_edges: tuple[DatabaseGraphEdge, ...]
     view_count: int
-    materialized_view_count: int
+    mv_count: int
     column_count: int
     dependency_count: int
+    conflicts: tuple[ConflictRecord, ...]
+    source_paths_scanned: tuple[str, ...]
     warnings: tuple[str, ...]
+
+    # Backward-compatible aliases used by reconciler.py
+    @property
+    def nodes(self) -> tuple[DatabaseGraphNode, ...]:
+        """Alias for :attr:`all_nodes` (backward compatibility)."""
+        return self.all_nodes
+
+    @property
+    def edges(self) -> tuple[DatabaseGraphEdge, ...]:
+        """Alias for :attr:`all_edges` (backward compatibility)."""
+        return self.all_edges
+
+    @property
+    def materialized_view_count(self) -> int:
+        """Alias for :attr:`mv_count` (backward compatibility)."""
+        return self.mv_count
+
+
+# Backward-compatible alias for existing code that imported ViewSqlIngestResult
+ViewSqlIngestResult = ViewIngestResult
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Deterministic id helpers
 # ---------------------------------------------------------------------------
 
 def _stable_id(canonical_name: str) -> str:
-    """Produce a deterministic SHA-256-based identifier from a canonical name."""
     return hashlib.sha256(canonical_name.encode()).hexdigest()
 
 
 def _edge_id(*parts: str) -> str:
-    """Produce a deterministic edge identifier from ordered parts."""
-    payload = "|".join(parts)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
 # SQL comment stripping
 # ---------------------------------------------------------------------------
 
-# Matches block comments  /* ... */  (non-greedy, DOTALL)
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
-# Matches single-line comments  -- ...
 _LINE_COMMENT_RE = re.compile(r"--[^\n]*")
 
 
 def _strip_sql_comments(sql: str) -> str:
     """Remove SQL block and line comments, preserving line structure."""
-    # Replace block comments with equivalent whitespace to keep line numbers stable.
     def _block_repl(m: re.Match[str]) -> str:
-        # Preserve newlines inside the comment so line-offsets stay valid.
         return "\n" * m.group(0).count("\n")
-
     sql = _BLOCK_COMMENT_RE.sub(_block_repl, sql)
     sql = _LINE_COMMENT_RE.sub("", sql)
     return sql
 
 
 # ---------------------------------------------------------------------------
+# PL/SQL wrapper stripping
+# ---------------------------------------------------------------------------
+
+# Matches SET SERVEROUTPUT ON at the start
+_SET_SERVEROUTPUT_RE = re.compile(
+    r"^\s*set\s+serveroutput\s+on\s*;?\s*\n?",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Matches DECLARE ... BEGIN ... END; / blocks (PL/SQL anonymous blocks)
+# Uses a conservative approach: find DECLARE, track BEGIN/END depth
+_PLSQL_BLOCK_RE = re.compile(
+    r"""
+    (?:^|\n)\s*                # start of line or after newline
+    (?:DECLARE|BEGIN)\b        # PL/SQL block start keyword
+    [\s\S]*?                   # block body (non-greedy)
+    \bEND\s*;                  # END; terminator
+    \s*/?\s*\n?                # optional / execution and newline
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _strip_plsql_wrappers(sql: str) -> str:
+    """Remove PL/SQL wrapper blocks that precede the actual CREATE statement.
+
+    Handles SET SERVEROUTPUT ON and DECLARE...BEGIN...END;/ blocks that
+    appear before CREATE MATERIALIZED VIEW in Sygma MV files.
+    """
+    # Only strip content before the first CREATE keyword
+    create_match = re.search(r"\bCREATE\b", sql, re.IGNORECASE)
+    if create_match is None:
+        return sql
+
+    prefix = sql[:create_match.start()]
+    rest = sql[create_match.start():]
+
+    # Count newlines in prefix to preserve line numbering offset
+    prefix_lines = prefix.count("\n")
+    return "\n" * prefix_lines + rest
+
+
+# ---------------------------------------------------------------------------
 # CREATE VIEW / MATERIALIZED VIEW regex
 # ---------------------------------------------------------------------------
 
-# Captures:
-#   group('mat')   — 'MATERIALIZED' if present
-#   group('name')  — view name, optionally schema-qualified and/or quoted
-#   group('cols')  — parenthesised column-alias list (without parens), optional
-#   group('body')  — the SELECT ... body after AS
 _CREATE_VIEW_RE = re.compile(
     r"""
     \bCREATE\s+
@@ -146,7 +200,7 @@ _CREATE_VIEW_RE = re.compile(
     (?:
         \(\s*(?P<cols>[^)]+)\s*\)        # optional column alias list in parens
     )?
-    [\s\S]*?                             # skip any MV clauses (REFRESH, BUILD, etc.)
+    [\s\S]*?                             # skip any MV clauses (BUILD, REFRESH, etc.)
     \bAS\s+
     (?P<body>.+)
     """,
@@ -155,22 +209,17 @@ _CREATE_VIEW_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Identifier parsing helpers
+# Identifier parsing
 # ---------------------------------------------------------------------------
 
 def _unquote(ident: str) -> str:
-    """Remove surrounding double-quotes from an Oracle quoted identifier."""
     s = ident.strip()
     if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
         return s[1:-1]
-    return s.upper()  # Oracle identifiers are case-insensitive → normalise
+    return s.upper()
 
 
 def _parse_qualified_name(raw: str) -> tuple[str | None, str]:
-    """Parse an optionally schema-qualified name.
-
-    Returns (schema_or_None, object_name), both normalised.
-    """
     parts = [_unquote(p) for p in raw.strip().split(".")]
     if len(parts) == 2:
         return parts[0], parts[1]
@@ -182,7 +231,6 @@ def _parse_qualified_name(raw: str) -> tuple[str | None, str]:
 # ---------------------------------------------------------------------------
 
 def _parse_column_list(raw: str) -> list[str]:
-    """Parse a comma-separated column alias list from inside parentheses."""
     cols: list[str] = []
     for token in raw.split(","):
         token = token.strip()
@@ -194,33 +242,72 @@ def _parse_column_list(raw: str) -> list[str]:
 def _extract_select_aliases(body: str) -> list[str]:
     """Best-effort extraction of column aliases from a SELECT clause.
 
-    Only handles the top-level SELECT (not subqueries).  Stops at the first
-    unparenthesised FROM keyword.
+    Handles CTE (WITH ... AS ...) by skipping to the final SELECT.
+    Handles UNION ALL by only parsing the first SELECT's column list.
     """
-    # Locate the SELECT keyword
-    m = re.match(r"\s*SELECT\s+(?:DISTINCT\s+|ALL\s+)?", body, re.IGNORECASE)
+    # If the body starts with WITH (CTE), skip to the outer query SELECT.
+    # The outer SELECT is the FIRST top-level SELECT that comes AFTER all
+    # CTE definitions close, not the LAST SELECT in the file (which may be
+    # inside a trailing PL/SQL GRANT/INDEX block).
+    work = body.strip()
+    if re.match(r"\s*WITH\b", work, re.IGNORECASE):
+        depth = 0
+        cte_ended = False
+        outer_select_pos = -1
+        i = 4  # skip past "WITH"
+        while i < len(work):
+            ch = work[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    cte_ended = True
+            elif depth == 0 and cte_ended:
+                rest = work[i:]
+                m = re.match(r"\bSELECT\b", rest, re.IGNORECASE)
+                if m:
+                    outer_select_pos = i
+                    break
+                # A comma after a CTE block means another CTE follows
+                if ch == ",":
+                    cte_ended = False
+            i += 1
+        if outer_select_pos >= 0:
+            work = work[outer_select_pos:]
+        else:
+            return []
+
+    # Match the SELECT keyword
+    m = re.match(r"\s*SELECT\s+(?:DISTINCT\s+|ALL\s+)?", work, re.IGNORECASE)
     if not m:
         return []
 
-    # Walk forward from the end of SELECT, tracking paren depth.
+    # Walk from end of SELECT, tracking paren depth, to find top-level FROM.
+    # We cannot simply use re.match(r'\bFROM\b', rest) on a slice because
+    # start-of-string counts as a word boundary, causing false matches on
+    # identifiers ending with 'from' (e.g., 'period_from').  Instead, check
+    # that the preceding character is a non-word character or the start of
+    # the string.
     start = m.end()
     depth = 0
     pos = start
-    end = len(body)
+    end = len(work)
     while pos < end:
-        ch = body[pos]
+        ch = work[pos]
         if ch == "(":
             depth += 1
         elif ch == ")":
             depth -= 1
         elif depth == 0:
-            # Check for FROM keyword at top level
-            rest = body[pos:]
-            if re.match(r"\bFROM\b", rest, re.IGNORECASE):
-                break
+            rest = work[pos:]
+            if re.match(r"FROM\b", rest, re.IGNORECASE):
+                # Verify the preceding char is non-word (true word boundary)
+                if pos == 0 or not work[pos - 1].isalnum() and work[pos - 1] != "_":
+                    break
         pos += 1
 
-    select_clause = body[start:pos]
+    select_clause = work[start:pos]
     aliases: list[str] = []
 
     # Split on commas at depth-0
@@ -244,8 +331,8 @@ def _extract_select_aliases(body: str) -> list[str]:
         items.append(trailing)
 
     for item in items:
-        # Skip '*' expressions
-        if item.strip() in ("*",) or item.strip().endswith(".*"):
+        stripped = item.strip()
+        if stripped in ("*",) or stripped.endswith(".*"):
             continue
         alias = _alias_from_select_item(item)
         if alias:
@@ -255,11 +342,6 @@ def _extract_select_aliases(body: str) -> list[str]:
 
 
 def _alias_from_select_item(item: str) -> str | None:
-    """Extract the column alias from a single SELECT item expression.
-
-    Handles:  ``expr AS alias``, ``expr alias`` (when alias is a simple ident),
-    ``table.column``.
-    """
     item = item.strip()
     if not item:
         return None
@@ -269,17 +351,21 @@ def _alias_from_select_item(item: str) -> str | None:
     if m:
         return _unquote(m.group("alias"))
 
-    # Implicit alias: last token if it looks like a plain identifier and is
-    # separated by whitespace from the rest
+    # Implicit alias: last token separated by whitespace
     parts = item.rsplit(None, 1)
     if len(parts) == 2:
         candidate = parts[1].strip()
-        # Must look like a plain identifier (not an operator, number, etc.)
         if re.fullmatch(r'"[^"]+"|[A-Za-z_]\w*', candidate):
-            return _unquote(candidate)
+            # Exclude Oracle functions / keywords that look like identifiers
+            upper = candidate.upper().strip('"')
+            if upper not in _SQL_KEYWORDS:
+                return _unquote(candidate)
 
-    # table.column or just column — use the last segment
-    m = re.fullmatch(r'(?:(?:"[^"]+"|[A-Za-z_]\w*)\s*\.\s*)*(?P<col>"[^"]+"|[A-Za-z_]\w*)', item)
+    # table.column or bare column
+    m = re.fullmatch(
+        r'(?:(?:"[^"]+"|[A-Za-z_]\w*)\s*\.\s*)*(?P<col>"[^"]+"|[A-Za-z_]\w*)',
+        item,
+    )
     if m:
         return _unquote(m.group("col"))
 
@@ -290,9 +376,6 @@ def _alias_from_select_item(item: str) -> str | None:
 # Source-table extraction (FROM / JOIN clauses)
 # ---------------------------------------------------------------------------
 
-# Matches FROM and JOIN table references.
-# Stops collecting when we hit WHERE, GROUP, ORDER, HAVING, UNION, INTERSECT,
-# MINUS, EXCEPT, FETCH, LIMIT, WITH, or end of string.
 _FROM_JOIN_RE = re.compile(
     r"""
     (?:\bFROM\b|\bJOIN\b)
@@ -305,13 +388,6 @@ _FROM_JOIN_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# Keywords after which table references are no longer source tables
-_STOP_KEYWORDS = re.compile(
-    r"\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|UNION|INTERSECT|MINUS|EXCEPT|FETCH|LIMIT)\b",
-    re.IGNORECASE,
-)
-
-# SQL keywords that should never be interpreted as table names
 _SQL_KEYWORDS = frozenset({
     "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
     "FULL", "CROSS", "ON", "AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN",
@@ -330,24 +406,15 @@ _SQL_KEYWORDS = frozenset({
 
 
 def _extract_source_tables(body: str) -> list[tuple[str | None, str]]:
-    """Extract source tables from FROM/JOIN clauses in a view body.
-
-    Returns a de-duplicated list of (schema_or_None, table_name) tuples.
-    Stops scanning at stop-keywords (WHERE, GROUP BY, etc.) at
-    parenthesis depth 0, but continues scanning for additional
-    FROM/JOIN inside subqueries.
-    """
+    """Extract source tables from FROM/JOIN clauses in a view body."""
     seen: set[tuple[str | None, str]] = set()
     result: list[tuple[str | None, str]] = []
 
     for m in _FROM_JOIN_RE.finditer(body):
         raw = m.group("table")
         schema, name = _parse_qualified_name(raw)
-
-        # Skip SQL keywords accidentally captured
         if name in _SQL_KEYWORDS:
             continue
-
         key = (schema, name)
         if key not in seen:
             seen.add(key)
@@ -357,21 +424,52 @@ def _extract_source_tables(body: str) -> list[tuple[str | None, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Trim trailing GRANT / CREATE INDEX / COMMENT statements from body
+# ---------------------------------------------------------------------------
+
+_POST_VIEW_STMTS_RE = re.compile(
+    r"""
+    \b(?:GRANT|CREATE\s+(?:UNIQUE\s+)?INDEX|COMMENT\s+ON)\b
+    [\s\S]*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_WITH_READ_ONLY_RE = re.compile(
+    r"\bWITH\s+READ\s+ONLY\b[\s;]*$",
+    re.IGNORECASE,
+)
+
+
+def _trim_body(body: str) -> str:
+    """Remove GRANT, index creation, and COMMENT statements trailing the body.
+
+    Also strips ``WITH READ ONLY`` and trailing semicolons.
+    """
+    body = _POST_VIEW_STMTS_RE.sub("", body)
+    body = _WITH_READ_ONLY_RE.sub("", body)
+    # Strip trailing semicolons and whitespace
+    body = body.rstrip().rstrip(";").rstrip()
+    return body
+
+
+# ---------------------------------------------------------------------------
 # Single-file parser
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _ParsedView:
     """Intermediate parse result from a single SQL file."""
-
     name: str
     schema: str | None
     is_materialized: bool
     columns: list[str]
     source_tables: list[tuple[str | None, str]]
-    start_line: int  # 1-based
-    end_line: int    # 1-based, inclusive
-    rel_path: str    # repo-relative path
+    start_line: int
+    end_line: int
+    rel_path: str
+    priority: int
+    body_fingerprint: str  # SHA-256 of trimmed body for conflict detection
 
 
 def _parse_sql_file(
@@ -379,8 +477,8 @@ def _parse_sql_file(
     repo_root: Path,
     *,
     is_mview_dir: bool,
+    priority: int,
 ) -> tuple[list[_ParsedView], list[str]]:
-    """Parse a single R__*.sql file and return parsed views + warnings."""
     warnings: list[str] = []
     results: list[_ParsedView] = []
 
@@ -396,10 +494,12 @@ def _parse_sql_file(
     if total_lines == 0:
         total_lines = 1
 
-    # Strip comments while preserving line structure
+    # Strip comments
     cleaned = _strip_sql_comments(raw_text)
 
-    # Try to find CREATE VIEW / CREATE MATERIALIZED VIEW statements
+    # Strip PL/SQL wrappers (DECLARE...BEGIN...END blocks before CREATE)
+    cleaned = _strip_plsql_wrappers(cleaned)
+
     for m in _CREATE_VIEW_RE.finditer(cleaned):
         mat_group = m.group("mat")
         is_mat = bool(mat_group and mat_group.strip()) or is_mview_dir
@@ -409,26 +509,28 @@ def _parse_sql_file(
 
         schema, view_name = _parse_qualified_name(raw_name)
 
-        # Determine line numbers (1-based) from the match position
         start_line = cleaned[:m.start()].count("\n") + 1
         end_line = cleaned[:m.end()].count("\n") + 1
-        # Clamp end_line to file length
         if end_line > total_lines:
             end_line = total_lines
+
+        # Trim trailing non-body statements
+        trimmed_body = _trim_body(body)
 
         # Column aliases
         columns: list[str] = []
         if cols_raw:
             columns = _parse_column_list(cols_raw)
         else:
-            # Best-effort: extract from SELECT clause
-            columns = _extract_select_aliases(body)
+            columns = _extract_select_aliases(trimmed_body)
 
         # Source tables
-        source_tables = _extract_source_tables(body)
+        source_tables = _extract_source_tables(trimmed_body)
 
-        # Determine node kind — use directory hint or SQL keyword
-        kind_name = "materialized_view" if is_mat else "view"
+        # Body fingerprint for conflict detection
+        body_fp = hashlib.sha256(
+            re.sub(r"\s+", " ", trimmed_body.strip()).upper().encode("utf-8")
+        ).hexdigest()
 
         results.append(_ParsedView(
             name=view_name,
@@ -439,6 +541,8 @@ def _parse_sql_file(
             start_line=start_line,
             end_line=end_line,
             rel_path=rel_path,
+            priority=priority,
+            body_fingerprint=body_fp,
         ))
 
     if not results:
@@ -458,7 +562,6 @@ def _make_evidence(
     start_line: int,
     end_line: int,
 ) -> EvidenceRecord:
-    """Build a verified EvidenceRecord with a single source."""
     return EvidenceRecord.verified(
         confidence=1.0,
         sources=(
@@ -473,17 +576,15 @@ def _make_evidence(
 
 
 def _build_view_node(parsed: _ParsedView) -> DatabaseGraphNode:
-    """Build a DatabaseGraphNode for a view or materialized view."""
     kind = NodeKind.MATERIALIZED_VIEW.value if parsed.is_materialized else NodeKind.VIEW.value
-    source_kind = "materialized_view_sql" if parsed.is_materialized else "view_sql"
+    evidence_kind = "mv_sql" if parsed.is_materialized else "view_sql"
 
-    qualified_name = (
-        f"{parsed.schema}.{parsed.name}" if parsed.schema else parsed.name
-    )
+    # Canonical name uses just the object name (strip schema for the ID)
+    qualified_name = parsed.name  # canonical name, always uppercase
     node_id = _stable_id(f"{kind}:{qualified_name}")
 
     evidence = _make_evidence(
-        kind=source_kind,
+        kind=evidence_kind,
         rel_path=parsed.rel_path,
         start_line=parsed.start_line,
         end_line=parsed.end_line,
@@ -495,8 +596,9 @@ def _build_view_node(parsed: _ParsedView) -> DatabaseGraphNode:
         qualified_name=qualified_name,
         schema=parsed.schema,
         properties=(
-            ("read_only", True),
+            ("writable", False),
             ("source_file", parsed.rel_path),
+            ("original_schema", parsed.schema) if parsed.schema else ("original_schema", None),
         ),
         evidence=evidence,
     )
@@ -504,17 +606,16 @@ def _build_view_node(parsed: _ParsedView) -> DatabaseGraphNode:
 
 def _build_column_node(
     col_name: str,
-    view_qualified_name: str,
+    view_name: str,
     view_schema: str | None,
     parsed: _ParsedView,
 ) -> DatabaseGraphNode:
-    """Build a DatabaseGraphNode for a projected column alias."""
-    qualified_name = f"{view_qualified_name}.{col_name}"
+    qualified_name = f"{view_name}.{col_name}"
     node_id = _stable_id(f"column:{qualified_name}")
-    source_kind = "materialized_view_sql" if parsed.is_materialized else "view_sql"
+    evidence_kind = "mv_sql" if parsed.is_materialized else "view_sql"
 
     evidence = _make_evidence(
-        kind=source_kind,
+        kind=evidence_kind,
         rel_path=parsed.rel_path,
         start_line=parsed.start_line,
         end_line=parsed.end_line,
@@ -526,7 +627,7 @@ def _build_column_node(
         qualified_name=qualified_name,
         schema=view_schema,
         properties=(
-            ("read_only", True),
+            ("writable", False),
             ("source_file", parsed.rel_path),
         ),
         evidence=evidence,
@@ -538,19 +639,18 @@ def _build_has_column_edge(
     col_node_id: str,
     parsed: _ParsedView,
 ) -> DatabaseGraphEdge:
-    """Build a HAS_COLUMN edge from a view to a column."""
-    edge_id = _edge_id("HAS_COLUMN", view_node_id, col_node_id)
-    source_kind = "materialized_view_sql" if parsed.is_materialized else "view_sql"
+    eid = _edge_id("HAS_COLUMN", view_node_id, col_node_id)
+    evidence_kind = "mv_sql" if parsed.is_materialized else "view_sql"
 
     evidence = _make_evidence(
-        kind=source_kind,
+        kind=evidence_kind,
         rel_path=parsed.rel_path,
         start_line=parsed.start_line,
         end_line=parsed.end_line,
     )
 
     return DatabaseGraphEdge(
-        id=edge_id,
+        id=eid,
         kind=EdgeKind.HAS_COLUMN.value,
         from_node=view_node_id,
         to_node=col_node_id,
@@ -558,32 +658,32 @@ def _build_has_column_edge(
     )
 
 
-def _build_reads_from_edge(
+def _build_dependency_edge(
     view_node_id: str,
     source_schema: str | None,
     source_table: str,
     parsed: _ParsedView,
+    *,
+    is_from_mv: bool,
 ) -> DatabaseGraphEdge:
-    """Build a READS_FROM edge from a view to a source table."""
-    source_qualified = (
-        f"{source_schema}.{source_table}" if source_schema else source_table
-    )
-    # The target table node might not exist yet — produce a stable id for it
-    # so the reconciler can match or create it later.
+    """Build a DERIVED_FROM (for MVs) or READS_FROM (for views) edge."""
+    source_qualified = f"{source_schema}.{source_table}" if source_schema else source_table
     target_node_id = _stable_id(f"table:{source_qualified}")
-    edge_id = _edge_id("READS_FROM", view_node_id, target_node_id)
-    source_kind = "materialized_view_sql" if parsed.is_materialized else "view_sql"
+
+    edge_kind = EdgeKind.DERIVED_FROM.value if is_from_mv else EdgeKind.READS_FROM.value
+    eid = _edge_id(edge_kind, view_node_id, target_node_id)
+    evidence_kind = "mv_sql" if parsed.is_materialized else "view_sql"
 
     evidence = _make_evidence(
-        kind=source_kind,
+        kind=evidence_kind,
         rel_path=parsed.rel_path,
         start_line=parsed.start_line,
         end_line=parsed.end_line,
     )
 
     return DatabaseGraphEdge(
-        id=edge_id,
-        kind=EdgeKind.READS_FROM.value,
+        id=eid,
+        kind=edge_kind,
         from_node=view_node_id,
         to_node=target_node_id,
         properties=(
@@ -594,135 +694,211 @@ def _build_reads_from_edge(
 
 
 # ---------------------------------------------------------------------------
+# File discovery
+# ---------------------------------------------------------------------------
+
+def _is_excluded(path: Path) -> bool:
+    """Return True if any path component is an excluded segment."""
+    for part in path.parts:
+        if part in _EXCLUDED_SEGMENTS:
+            return True
+    return False
+
+
+def _discover_files(
+    repo_root: Path,
+) -> tuple[list[tuple[Path, bool, int]], list[str]]:
+    """Discover SQL files from all configured scan paths.
+
+    Returns (file_specs, scanned_dirs) where file_specs is a list of
+    (path, is_mview, priority) tuples.
+    """
+    file_specs: list[tuple[Path, bool, int]] = []
+    scanned_dirs: list[str] = []
+
+    for rel_dir, pattern, is_mview, priority in _SCAN_SPECS:
+        scan_dir = repo_root / rel_dir
+        if not scan_dir.is_dir():
+            log.debug("Scan directory does not exist: %s", scan_dir)
+            continue
+
+        scanned_dirs.append(str(scan_dir.relative_to(repo_root)))
+
+        matched = sorted(scan_dir.glob(pattern))
+        for p in matched:
+            if _is_excluded(p.relative_to(repo_root)):
+                continue
+            if p.is_file():
+                file_specs.append((p, is_mview, priority))
+
+    return file_specs, scanned_dirs
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def ingest_view_sql(
     repo_root: str | Path,
-    *,
-    view_relpaths: tuple[str, ...] = _DEFAULT_VIEW_RELPATHS,
-    mview_relpaths: tuple[str, ...] = _DEFAULT_MVIEW_RELPATHS,
-) -> ViewSqlIngestResult:
-    """Scan Flyway ``R__*.sql`` files and extract view/MV definitions.
+) -> ViewIngestResult:
+    """Scan a Sygma repository for Oracle view and materialized-view SQL.
 
     Parameters:
-        repo_root: Absolute or relative path to the repository root.
-        view_relpaths: Glob patterns (relative to *repo_root*) for regular
-            view SQL files.
-        mview_relpaths: Glob patterns (relative to *repo_root*) for
-            materialized view SQL files.
+        repo_root: Absolute path to the Sygma repository root.
 
     Returns:
-        A :class:`ViewSqlIngestResult` with all discovered nodes, edges,
-        and summary counts.
+        A :class:`ViewIngestResult` with all discovered nodes, edges,
+        summary counts, and conflicts.
     """
     root = Path(repo_root).resolve()
 
-    all_nodes: list[DatabaseGraphNode] = []
-    all_edges: list[DatabaseGraphEdge] = []
     all_warnings: list[str] = []
+    conflicts: list[ConflictRecord] = []
+
+    # Phase 1: discover files
+    file_specs, scanned_dirs = _discover_files(root)
+
+    # Phase 2: parse all files
+    # Group by canonical view name for duplicate detection.
+    # Key: uppercase view name  ->  list of _ParsedView (possibly from multiple files)
+    parsed_by_name: dict[str, list[_ParsedView]] = {}
+
+    for file_path, is_mview, priority in file_specs:
+        parsed_views, warnings = _parse_sql_file(
+            file_path, root,
+            is_mview_dir=is_mview,
+            priority=priority,
+        )
+        all_warnings.extend(warnings)
+
+        for pv in parsed_views:
+            canonical = pv.name  # already uppercase from _unquote
+            parsed_by_name.setdefault(canonical, []).append(pv)
+
+    # Phase 3: resolve duplicates and build nodes/edges
+    view_nodes: list[DatabaseGraphNode] = []
+    column_nodes: list[DatabaseGraphNode] = []
+    dependency_edges: list[DatabaseGraphEdge] = []
+    column_edges: list[DatabaseGraphEdge] = []
 
     view_count = 0
-    mview_count = 0
+    mv_count = 0
     column_count = 0
     dependency_count = 0
 
-    # Collect SQL files from all configured paths
-    file_specs: list[tuple[Path, bool]] = []  # (path, is_mview_dir)
+    for canonical_name, candidates in sorted(parsed_by_name.items()):
+        # Select the winning definition
+        if len(candidates) == 1:
+            winner = candidates[0]
+        else:
+            # Sort by priority descending, then by rel_path for determinism
+            candidates_sorted = sorted(
+                candidates, key=lambda c: (-c.priority, c.rel_path)
+            )
+            winner = candidates_sorted[0]
 
-    for pattern in view_relpaths:
-        matched = sorted(root.glob(pattern))
-        if not matched:
-            log.debug("No files matched view pattern: %s", pattern)
-        for p in matched:
-            file_specs.append((p, False))
-
-    for pattern in mview_relpaths:
-        matched = sorted(root.glob(pattern))
-        if not matched:
-            log.debug("No files matched mview pattern: %s", pattern)
-        for p in matched:
-            file_specs.append((p, True))
-
-    # Track seen view qualified names to avoid duplicates
-    seen_views: set[str] = set()
-
-    for file_path, is_mview_dir in file_specs:
-        parsed_views, warnings = _parse_sql_file(file_path, root, is_mview_dir=is_mview_dir)
-        all_warnings.extend(warnings)
-
-        for parsed in parsed_views:
-            # Build view/MV node
-            view_node = _build_view_node(parsed)
-
-            # Deduplicate (same view defined in multiple files — last one wins,
-            # but we warn).
-            if view_node.qualified_name in seen_views:
-                all_warnings.append(
-                    f"Duplicate view definition: {view_node.qualified_name} "
-                    f"in {parsed.rel_path} (already seen)"
+            # Check if definitions actually differ (body fingerprint)
+            fingerprints = {c.body_fingerprint for c in candidates}
+            if len(fingerprints) > 1:
+                # Definitions differ — record conflict
+                conflict = ConflictRecord(
+                    description=(
+                        f"View {canonical_name} defined in {len(candidates)} files "
+                        f"with differing SQL bodies; using {winner.rel_path} "
+                        f"(priority={winner.priority})"
+                    ),
+                    sources=tuple(
+                        EvidenceSource(
+                            kind="mv_sql" if c.is_materialized else "view_sql",
+                            path=c.rel_path,
+                            start_line=c.start_line,
+                            end_line=c.end_line,
+                        )
+                        for c in candidates
+                    ),
+                    resolution="resolved_priority",
+                    resolved_value=winner.rel_path,
                 )
-                continue
-            seen_views.add(view_node.qualified_name)
-
-            all_nodes.append(view_node)
-            if parsed.is_materialized:
-                mview_count += 1
+                conflicts.append(conflict)
+                log.info(
+                    "Conflict for %s: %d definitions, using %s",
+                    canonical_name, len(candidates), winner.rel_path,
+                )
             else:
-                view_count += 1
-
-            # Build column nodes + HAS_COLUMN edges
-            seen_cols: set[str] = set()
-            for col_name in parsed.columns:
-                if col_name in seen_cols:
-                    continue
-                seen_cols.add(col_name)
-
-                col_node = _build_column_node(
-                    col_name,
-                    view_node.qualified_name,
-                    parsed.schema,
-                    parsed,
+                # Same body in multiple files — just log, no conflict
+                log.debug(
+                    "View %s defined in %d files with identical body",
+                    canonical_name, len(candidates),
                 )
-                all_nodes.append(col_node)
-                column_count += 1
 
-                edge = _build_has_column_edge(view_node.id, col_node.id, parsed)
-                all_edges.append(edge)
+        parsed = winner
 
-            # Build READS_FROM edges to source tables
-            seen_deps: set[tuple[str | None, str]] = set()
-            for src_schema, src_table in parsed.source_tables:
-                dep_key = (src_schema, src_table)
-                if dep_key in seen_deps:
-                    continue
-                seen_deps.add(dep_key)
+        # Build view/MV node
+        view_node = _build_view_node(parsed)
+        view_nodes.append(view_node)
 
-                # Skip self-references (recursive views)
-                if src_table == parsed.name and src_schema == parsed.schema:
-                    continue
+        if parsed.is_materialized:
+            mv_count += 1
+        else:
+            view_count += 1
 
-                edge = _build_reads_from_edge(
-                    view_node.id, src_schema, src_table, parsed,
-                )
-                all_edges.append(edge)
-                dependency_count += 1
+        # Build column nodes + HAS_COLUMN edges
+        seen_cols: set[str] = set()
+        for col_name in parsed.columns:
+            if col_name in seen_cols:
+                continue
+            seen_cols.add(col_name)
+
+            col_node = _build_column_node(
+                col_name, parsed.name, parsed.schema, parsed,
+            )
+            column_nodes.append(col_node)
+            column_count += 1
+
+            edge = _build_has_column_edge(view_node.id, col_node.id, parsed)
+            column_edges.append(edge)
+
+        # Build dependency edges
+        seen_deps: set[tuple[str | None, str]] = set()
+        for src_schema, src_table in parsed.source_tables:
+            dep_key = (src_schema, src_table)
+            if dep_key in seen_deps:
+                continue
+            seen_deps.add(dep_key)
+
+            # Skip self-references
+            if src_table == parsed.name and src_schema == parsed.schema:
+                continue
+
+            edge = _build_dependency_edge(
+                view_node.id, src_schema, src_table, parsed,
+                is_from_mv=parsed.is_materialized,
+            )
+            dependency_edges.append(edge)
+            dependency_count += 1
+
+    all_nodes = list(view_nodes) + list(column_nodes)
+    all_edges = list(dependency_edges) + list(column_edges)
 
     log.info(
-        "View SQL ingest: %d views, %d MVs, %d columns, %d deps, %d warnings",
-        view_count,
-        mview_count,
-        column_count,
-        dependency_count,
-        len(all_warnings),
+        "View SQL ingest: %d views, %d MVs, %d columns, %d deps, "
+        "%d conflicts, %d warnings",
+        view_count, mv_count, column_count, dependency_count,
+        len(conflicts), len(all_warnings),
     )
 
-    return ViewSqlIngestResult(
-        nodes=tuple(all_nodes),
-        edges=tuple(all_edges),
+    return ViewIngestResult(
+        view_nodes=tuple(view_nodes),
+        column_nodes=tuple(column_nodes),
+        dependency_edges=tuple(dependency_edges),
+        column_edges=tuple(column_edges),
+        all_nodes=tuple(all_nodes),
+        all_edges=tuple(all_edges),
         view_count=view_count,
-        materialized_view_count=mview_count,
+        mv_count=mv_count,
         column_count=column_count,
         dependency_count=dependency_count,
+        conflicts=tuple(conflicts),
+        source_paths_scanned=tuple(scanned_dirs),
         warnings=tuple(all_warnings),
     )
