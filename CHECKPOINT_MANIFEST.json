@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "checkpoint_id": "20260829T013653Z-atlas-a6ede3a",
+  "created_at": "2026-08-28T23:41:24Z",
+  "project": "atlas",
+  "repository": {
+    "base_sha": "a3c5952e3ba55e81edde0c38d526cb3f352a0b6d",
+    "head_sha": "cc5f057f8796e5aa3e44ce11b1b0a85e08853f93",
+    "tree_sha": "2dee9b04b0f440c3f6a7903283fd456b86a42882",
+    "branch": "recovery/atlas-2.1-abfa6c7a",
+    "status": "clean"
+  },
+  "commits": [
+    {
+      "sha": "c8c5d1b60a7d8a30a10d81e7ae336ed5d1d601a8",
+      "message": "recovery: restore Atlas 2.1 corrected candidate from verified ZIP abfa6c7a"
+    },
+    {
+      "sha": "cc5f057f8796e5aa3e44ce11b1b0a85e08853f93",
+      "message": "fix: reapply Batch 2B-A CTE/WITH column traversal and view ingest rewrite"
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "git_bundle",
+      "filename": "atlas-full-20260828T233653Z-a6ede3a.bundle",
+      "size": 3987553,
+      "sha256": "bcec73f7ae764151d9b431508999b021c851b6e0949b8f028726776bc1bc00ba",
+      "fresh_clone_verified": true,
+      "fresh_clone_head": "cc5f057f8796e5aa3e44ce11b1b0a85e08853f93",
+      "fresh_clone_tree": "2dee9b04b0f440c3f6a7903283fd456b86a42882"
+    },
+    {
+      "kind": "recovery_source_zip",
+      "filename": "Atlas_2.1_corrected_candidate.zip",
+      "size": 2687520,
+      "sha256": "abfa6c7a1155d89d481670de3eaa9e739662e3de8c2c0bfe23736a738eb8aa7c"
+    }
+  ],
+  "inputs": [
+    {
+      "kind": "sygma_eval_pack",
+      "filename": "sygma-ai-eval-pack.zip",
+      "size": 37437,
+      "sha256": "6b6fb28972f720bb0e3a29ab377bbbabedbc1f3ad3564ca95d4f9b7481c0cc64",
+      "version": "sygma-eval-pack/v1.0.0",
+      "cases": 14,
+      "sql_fixtures": 42,
+      "fk_relationships": 7
+    }
+  ],
+  "tests": [
+    {
+      "kind": "focused",
+      "command": "python -m pytest tests/test_p0_integration_safety.py tests/test_p0_03_database_graph.py tests/test_p0_03_integration_protocol.py tests/test_p0_03_operational.py tests/test_batch2ba_view_ingest.py tests/test_cb2_8_revision_provenance.py -v --tb=short",
+      "passed": 169,
+      "failed": 2,
+      "note": "2 failures are test-ordering flakiness in class-scoped fixtures; pass individually",
+      "log_sha256": "b2bc6fd1461b9bff5bcd8e1d7458489f96647e45408df83b697d63ae7a29c211"
+    },
+    {
+      "kind": "full_suite",
+      "command": "python -m pytest tests/ -q --tb=line",
+      "passed": 5230,
+      "failed": 2,
+      "note": "same 2 flaky view ingest fixture-isolation failures",
+      "log_sha256": "a8304379e77ee7b45a9973cc0f81c4c13ef06974103ca623556d8c1769e1de15"
+    }
+  ],
+  "independent_eval_baseline": {
+    "full_graph_objects": "12/14",
+    "bounded_ctx_objects": "5/14",
+    "sql_outcome": "38/42",
+    "sql_outcome_code": "21/42",
+    "fk_relationships": "7/7"
+  },
+  "previous_checkpoint_sha256": "67ebec4957fe4b0e0181d103af3deb44c44bc5697e2d22de73a6e0fb2d05764e"
+}
