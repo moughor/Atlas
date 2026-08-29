@@ -1400,6 +1400,21 @@ def _validate_statement(
             left_t = col_pairs[0][0]
             right_t = col_pairs[0][2]
 
+            # Skip join validation when either table is unresolved — the
+            # unknown_table issue already covers that case and
+            # unsupported_join would be redundant.
+            left_resolved = left_t.upper() in resolved_canonical
+            right_resolved = right_t.upper() in resolved_canonical
+            if not left_resolved or not right_resolved:
+                join_vals.append(JoinValidation(
+                    left_table=left_t,
+                    right_table=right_t,
+                    condition_text=condition or "",
+                    supported_by_evidence=False,
+                    evidence_kind=None,
+                ))
+                continue
+
             # First: check if any relationship exists between these tables
             has_table_rel, table_evidence_kind = index.has_relationship(left_t, right_t)
 
