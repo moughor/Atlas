@@ -889,6 +889,81 @@ def reconcile_database_graph(
         ]
 
     # -----------------------------------------------------------------------
+    # Phase 5b: Deduplicate nodes by (qualified_name, kind)
+    #
+    # Multiple evidence sources (Jailer, view SQL, migration, JPA) may each
+    # create a node for the same object.  The reconciler tracks the
+    # "canonical" table in jailer_tables[] for lookup, but both copies end
+    # up in all_nodes.  Edges from different sources then reference
+    # different node IDs for the same logical object, fragmenting the
+    # FK / HAS_COLUMN adjacency graph.
+    #
+    # Fix: merge duplicates by choosing the canonical node (preferring the
+    # one already in jailer_tables), redirect all edge references, and
+    # remove surplus copies.
+    # -----------------------------------------------------------------------
+
+    # Build groups: (qualified_name_UPPER, kind) → list of node ids
+    _dedup_groups: dict[tuple[str, str], list[str]] = {}
+    _dedup_node_by_id: dict[str, DatabaseGraphNode] = {n.id: n for n in all_nodes}
+    for node in all_nodes:
+        key = (node.qualified_name.upper(), node.kind)
+        _dedup_groups.setdefault(key, []).append(node.id)
+
+    # For groups with >1 node, pick canonical and build redirect map
+    _redirect: dict[str, str] = {}  # old_id → canonical_id
+    _remove_ids: set[str] = set()
+    for (qname_upper, kind), ids in _dedup_groups.items():
+        if len(ids) <= 1:
+            continue
+        # Prefer the node that is in jailer_tables (the lookup index)
+        short = qname_upper.rsplit(".", 1)[-1] if "." in qname_upper else qname_upper
+        canonical_node = jailer_tables.get(short) or jailer_tables.get(qname_upper)
+        if canonical_node is not None and canonical_node.id in set(ids):
+            canonical_id = canonical_node.id
+        else:
+            # Pick the first one deterministically (sorted by id)
+            canonical_id = sorted(ids)[0]
+        for nid in ids:
+            if nid != canonical_id:
+                _redirect[nid] = canonical_id
+                _remove_ids.add(nid)
+
+    if _redirect:
+        # Rewrite edge references
+        new_edges: list[DatabaseGraphEdge] = []
+        for e in all_edges:
+            new_from = _redirect.get(e.from_node, e.from_node)
+            new_to = _redirect.get(e.to_node, e.to_node)
+            if new_from != e.from_node or new_to != e.to_node:
+                # Create a redirected edge (new id to avoid collision)
+                new_edge = DatabaseGraphEdge(
+                    id=e.id,
+                    kind=e.kind,
+                    from_node=new_from,
+                    to_node=new_to,
+                    properties=e.properties,
+                    evidence=e.evidence,
+                )
+                new_edges.append(new_edge)
+            else:
+                new_edges.append(e)
+        all_edges = new_edges
+
+        # Remove duplicate nodes
+        all_nodes = [n for n in all_nodes if n.id not in _remove_ids]
+
+        # Deduplicate edges that now have the same (kind, from_node, to_node)
+        _seen_edges: set[tuple[str, str, str]] = set()
+        deduped_edges: list[DatabaseGraphEdge] = []
+        for e in all_edges:
+            edge_key = (e.kind, e.from_node, e.to_node)
+            if edge_key not in _seen_edges:
+                _seen_edges.add(edge_key)
+                deduped_edges.append(e)
+        all_edges = deduped_edges
+
+    # -----------------------------------------------------------------------
     # Phase 6: Sort for determinism
     # -----------------------------------------------------------------------
     all_nodes.sort(key=lambda n: (n.kind, n.qualified_name, n.id))
