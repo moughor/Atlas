@@ -512,11 +512,11 @@ def reconcile_database_graph(
     repository_root: Path,
     jailer_result: JailerIngestResult | None,
     jpa_result: JpaExtractionResult | None,
+    view_result: ViewSqlIngestResult | None = None,
     provenance: Any | None = None,
     workspace_fingerprint: str = "",
     exclude_backup: bool = True,
-    view_result: ViewSqlIngestResult | None = None,      # NEW
-    migration_result: MigrationIngestResult | None = None,  # NEW
+    migration_result: MigrationIngestResult | None = None,
 ) -> DatabaseGraph:
     """Reconcile Jailer and JPA evidence into a single DatabaseGraph.
 
@@ -931,16 +931,17 @@ def reconcile_database_graph(
     views_scanned = (jailer_result is not None and jailer_result.view_count > 0) or view_result is not None
     synonyms_scanned = False
 
-    view_sql_count = 0
-    if view_result is not None:
-        view_sql_count = view_result.view_count + view_result.mv_count
+    # Add view/MV counts from view_result
+    view_sql_view_count = view_result.view_count if view_result is not None else 0
+    view_sql_mv_count = view_result.mv_count if view_result is not None else 0
+    view_sql_col_count = view_result.column_count if view_result is not None else 0
 
     coverage = DatabaseGraphCoverage(
         tables_resolved=jailer_table_count - excluded_table_count,
         tables_unresolved=0,
-        views_resolved=jailer_view_count + view_sql_count,
+        views_resolved=jailer_view_count + view_sql_view_count + view_sql_mv_count,
         views_unresolved=0,
-        columns_resolved=jailer_col_count - excluded_col_count + (view_result.column_count if view_result else 0),
+        columns_resolved=jailer_col_count - excluded_col_count + view_sql_col_count,
         columns_unresolved=0,
         constraints_resolved=jailer_constraint_count,
         constraints_unresolved=0,
