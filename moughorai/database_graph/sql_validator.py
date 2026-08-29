@@ -1356,29 +1356,46 @@ def _validate_statement(
                 col_node = index.resolve_column(table_for_col, col_name)
 
             if col_node is not None:
-                # Fix 5C: Check for source conflict on found columns
-                _col_qname = col_node.qualified_name.upper()
-                _is_conflicting = (
-                    col_node.evidence.status == EvidenceStatus.CONFLICTING.value
-                    or col_name.upper().endswith("_TODROP")
-                    or index.is_conflicting_column(canonical, col_name)
-                )
-                if _is_conflicting:
+                # Fix 5C: Check for dropped column first (migration evidence)
+                if index.is_dropped_column(canonical, col_name):
                     issues.append(SqlValidationIssue(
-                        issue_type=ISSUE_SOURCE_CONFLICT,
+                        issue_type=ISSUE_DROPPED_COLUMN,
                         object_name=f"{table_for_col}.{col_name}",
                         detail=(
-                            f"Column '{col_name}' on table '{table_for_col}' has "
-                            f"conflicting evidence sources"
+                            f"Column '{col_name}' on table '{table_for_col}' "
+                            f"was dropped by migration"
                         ),
-                        severity="warning",
+                        severity="error",
                     ))
-                column_refs.append(ColumnReference(
-                    name=col_name,
-                    table_name=table_for_col,
-                    resolved=True,
-                    node_id=col_node.id,
-                ))
+                    column_refs.append(ColumnReference(
+                        name=col_name,
+                        table_name=table_for_col,
+                        resolved=False,
+                    ))
+                else:
+                    # Fix 5C: Check for source conflict on found columns
+                    _col_qname = col_node.qualified_name.upper()
+                    _is_conflicting = (
+                        col_node.evidence.status == EvidenceStatus.CONFLICTING.value
+                        or col_name.upper().endswith("_TODROP")
+                        or index.is_conflicting_column(canonical, col_name)
+                    )
+                    if _is_conflicting:
+                        issues.append(SqlValidationIssue(
+                            issue_type=ISSUE_SOURCE_CONFLICT,
+                            object_name=f"{table_for_col}.{col_name}",
+                            detail=(
+                                f"Column '{col_name}' on table '{table_for_col}' has "
+                                f"conflicting evidence sources"
+                            ),
+                            severity="warning",
+                        ))
+                    column_refs.append(ColumnReference(
+                        name=col_name,
+                        table_name=table_for_col,
+                        resolved=True,
+                        node_id=col_node.id,
+                    ))
             else:
                 # Only report unknown_column if the table itself was resolved
                 tbl_node = index.resolve_table(table_for_col)
