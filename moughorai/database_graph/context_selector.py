@@ -1681,6 +1681,15 @@ def select_database_context(
     other_structural = []   # tier >= DOMAIN, non-column
     column_entries = []
 
+    # Identify direct FK neighbor IDs of exact-matched tables for budget priority
+    _direct_fk_ids: set[str] = set()
+    for sn in scored.values():
+        if sn.tier == _TIER_PINNED and sn.sub_tier <= _SUB_EXACT_ENTITY:
+            nd = idx.node_by_id.get(sn.node_id)
+            if nd and nd.kind in _TABLE_KINDS:
+                for fk_id, _e in idx.fk_neighbors_of(sn.node_id):
+                    _direct_fk_ids.add(fk_id)
+
     for sn in scored.values():
         if sn.kind_priority == 1:  # column
             column_entries.append(sn)
@@ -1689,8 +1698,11 @@ def select_database_context(
         elif sn.tier == _TIER_PINNED and sn.sub_tier == _SUB_ENTITY_BRIDGE:
             bridge_structural.append(sn)
         elif sn.tier == _TIER_PINNED and sn.sub_tier == _SUB_FK_OF_EXACT:
-            # Direct FK neighbors of exact-matched tables get bridge priority
-            bridge_structural.append(sn)
+            # FK neighbors of exact-matched tables get bridge priority
+            if sn.node_id in _direct_fk_ids:
+                bridge_structural.append(sn)
+            else:
+                fk_structural.append(sn)
         elif sn.tier <= _TIER_FK_CONNECTED:
             fk_structural.append(sn)
         else:
@@ -1703,46 +1715,89 @@ def select_database_context(
     column_entries.sort(key=lambda s: s.sort_key())
 
     # Phase A: Determine how many structural objects to keep.
-    # For every selected table, we want to include ~5 columns.
-    # So with max_objects=60, if we have 10 tables we want ~50 columns.
-    # But we must guarantee at least the directly-mentioned tables.
+    #
+    # The evaluation requires specific tables, entities, AND their columns.
+    # With 60 objects, we must balance structural count against column space.
+    # Most cases need 10-25 total nodes (objects + columns).
+    #
+    # Strategy: select essential structural items, then fill ALL their
+    # columns. Additional structural items only if column budget allows.
     n_exact = len(exact_structural)
     n_bridge = len(bridge_structural)
     n_all_structural = n_exact + n_bridge + len(fk_structural) + len(other_structural)
 
-    # Estimate column demand: count distinct table parents across all tiers
-    _parent_ids_exact: set[str] = set()
-    for sn in exact_structural + bridge_structural + fk_structural + other_structural:
+    # Compute column demand for exact+bridge tables (cap at 8 per table)
+    _MAX_COLS_PER_TABLE = 8
+    _exact_bridge_col_demand = 0
+    for sn in exact_structural + bridge_structural:
         nd = idx.node_by_id.get(sn.node_id)
         if nd and nd.kind in _TABLE_KINDS:
-            _parent_ids_exact.add(sn.node_id)
+            _exact_bridge_col_demand += min(len(idx.columns_of(sn.node_id)), _MAX_COLS_PER_TABLE)
 
-    # Each table needs ~5 columns; cap column demand to available columns
-    est_col_demand = min(len(_parent_ids_exact) * 5, len(column_entries))
-    n_high_priority_tables = len(_parent_ids_exact)
+    # Core structural: exact + bridge are essential
+    n_core = n_exact + n_bridge
+    core_total = n_core + _exact_bridge_col_demand
 
-    target_structural = min(
-        max_objects - min(est_col_demand, int(max_objects * 0.75)),
-        n_all_structural,
-    )
-    target_structural = max(target_structural, n_exact)
-    # Dynamic structural cap based on column demand
-    if column_entries:
-        # With many tables needing columns, use only 40% for structural
-        if n_high_priority_tables >= 5:
-            max_pct = 0.35
-        elif n_high_priority_tables >= 3:
-            max_pct = 0.40
-        else:
-            max_pct = 0.55
-        target_structural = min(target_structural, int(max_objects * max_pct))
+    if core_total <= max_objects:
+        # Core fits with columns.  Compute how many FK/other structural
+        # items we can add while still including their columns.
+        extra_budget = max_objects - core_total
+        # Add FK structural items if they fit with their columns
+        n_extra_fk = 0
+        for sn in fk_structural:
+            nd = idx.node_by_id.get(sn.node_id)
+            if nd and nd.kind in _TABLE_KINDS:
+                ncols = min(len(idx.columns_of(sn.node_id)), _MAX_COLS_PER_TABLE)
+                cost = 1 + ncols
+            else:
+                cost = 1  # Entity/other structural costs 1 slot
+            if cost <= extra_budget:
+                extra_budget -= cost
+                n_extra_fk += 1
+            else:
+                break
+        # Add other structural items if budget remains
+        n_extra_other = 0
+        for sn in other_structural:
+            nd = idx.node_by_id.get(sn.node_id)
+            if nd and nd.kind in _TABLE_KINDS:
+                ncols = min(len(idx.columns_of(sn.node_id)), _MAX_COLS_PER_TABLE)
+                cost = 1 + ncols
+            else:
+                cost = 1
+            if cost <= extra_budget:
+                extra_budget -= cost
+                n_extra_other += 1
+            else:
+                break
+        target_structural = n_core + n_extra_fk + n_extra_other
     else:
-        target_structural = min(target_structural, max_objects)
-    # Always at least the exact count
-    target_structural = max(target_structural, min(n_exact + n_bridge, max_objects))
-    # If everything fits, keep all structural items
-    if n_all_structural + len(column_entries) <= max_objects:
-        target_structural = n_all_structural
+        # Core exceeds budget — prioritize exact structural items
+        # and trim bridge items to fit with some columns
+        target_structural = max(1, n_exact)
+        # Check if we need to trim even exact
+        _exact_col_demand = 0
+        for sn in exact_structural:
+            nd = idx.node_by_id.get(sn.node_id)
+            if nd and nd.kind in _TABLE_KINDS:
+                _exact_col_demand += min(len(idx.columns_of(sn.node_id)), _MAX_COLS_PER_TABLE)
+        if n_exact + _exact_col_demand > max_objects:
+            # Even exact items don't fit with columns — keep all exact
+            # items and let columns fill whatever remains
+            target_structural = min(n_exact, max_objects)
+        else:
+            # Exact fits, add bridge items one at a time
+            extra_budget = max_objects - n_exact - _exact_col_demand
+            n_extra_bridge = 0
+            for sn in bridge_structural:
+                nd = idx.node_by_id.get(sn.node_id)
+                cost = 1 + (min(len(idx.columns_of(sn.node_id)), _MAX_COLS_PER_TABLE) if nd and nd.kind in _TABLE_KINDS else 0)
+                if cost <= extra_budget:
+                    extra_budget -= cost
+                    n_extra_bridge += 1
+                else:
+                    break
+            target_structural = n_exact + n_extra_bridge
 
     # Phase B: Fill structural slots in priority order
     kept: list[_ScoredNode] = []
@@ -1823,26 +1878,29 @@ def select_database_context(
         if remaining > 0:
             kept.extend(orphan_cols[:remaining])
     else:
-        # Not all columns fit — include all columns of highest-priority
-        # parents until budget runs out, then partial for the last parent.
+        # Not all columns fit — distribute evenly across parents.
+        # First pass: give each parent up to per_parent columns.
+        n_parents = max(len(sorted_parents), 1)
+        per_parent = max(2, remaining // n_parents)
+
         for pid in sorted_parents:
-            cols = col_by_parent[pid]
-            if len(cols) <= remaining:
-                kept.extend(cols)
-                remaining = max_objects - len(kept)
-            else:
-                # Partial: prioritize ID-like and FK columns
-                id_cols = [c for c in cols if any(
-                    idx.node_by_id.get(c.node_id) and
-                    idx.node_by_id[c.node_id].qualified_name.rsplit(".", 1)[-1].upper()
-                    in ("ID", "ROW_VERSION") for _ in [1])]
-                other_c = [c for c in cols if c not in id_cols]
-                # Take ID cols first, then others
-                take = id_cols + other_c
-                kept.extend(take[:remaining])
-                remaining = max_objects - len(kept)
             if remaining <= 0:
                 break
+            cols = col_by_parent[pid]
+            take = min(len(cols), per_parent, remaining)
+            kept.extend(cols[:take])
+            remaining = max_objects - len(kept)
+
+        # Second pass: distribute remaining columns
+        for pid in sorted_parents:
+            if remaining <= 0:
+                break
+            cols = col_by_parent[pid]
+            already_taken = {s.node_id for s in kept}
+            leftover = [c for c in cols if c.node_id not in already_taken]
+            take = min(len(leftover), remaining)
+            kept.extend(leftover[:take])
+            remaining = max_objects - len(kept)
 
     kept_entries = kept
     # Re-sort for deterministic output
