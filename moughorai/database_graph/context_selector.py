@@ -491,6 +491,12 @@ class _GraphIndex:
                     phrase = " ".join(s.lower() for s in segments[i:i + wlen])
                     _add_alias(phrase, node.id, 75)
 
+            # Single significant segments (4+ chars, avoids noise from short
+            # segments like "PR", "PL", "AI")
+            for s in segments:
+                if len(s) >= 4:
+                    _add_alias(s.lower(), node.id, 55)
+
     def edges_to(self, node_id: str, kind: str | None = None) -> list[DatabaseGraphEdge]:
         """Return incoming edges, optionally filtered by kind."""
         edges = self.incoming.get(node_id, [])
@@ -792,13 +798,27 @@ def _score_and_match(
                     if t.lower() == pw or pw in _normalize_plural(t.lower()):
                         _alias_matched_terms.add(t)
 
-    # Single-word alias matches (lower weight, DOMAIN tier)
+    # Single-word alias matches — boost hub tables (high FK degree)
     for t in terms_lower:
         for v in _normalize_plural(t):
             hits = idx.alias_to_nodes.get(v, [])
+            if not hits:
+                continue
+            # Compute FK degree for each hit node to identify hubs
             for node_id, weight in hits:
-                _upsert(node_id, max(weight - 20, _SCORE_DOMAIN_PHRASE),
-                         _TIER_DOMAIN, f"alias1:{v}", _SUB_FK_OF_EXACT)
+                node = idx.node_by_id.get(node_id)
+                if node is None or node.kind not in _TABLE_KINDS:
+                    continue
+                fk_degree = len(idx.fk_neighbors_of(node_id))
+                # Hub boost: tables with many FK connections get promoted
+                # to PINNED tier if they have high connectivity (>= 5 FK)
+                if fk_degree >= 5:
+                    _upsert(node_id, weight,
+                             _TIER_PINNED, f"alias_hub:{v}(fk={fk_degree})",
+                             _SUB_FK_OF_EXACT)
+                else:
+                    _upsert(node_id, max(weight - 20, _SCORE_DOMAIN_PHRASE),
+                             _TIER_DOMAIN, f"alias1:{v}", _SUB_FK_OF_EXACT)
 
     for term in terms:
         found = False
@@ -1325,6 +1345,43 @@ def select_database_context(
 
     # 5. Expand FK tiers
     _expand_fk_tiers(pinned, scored, idx)
+
+    # 5b. Boost story-relevant FK expansion nodes.
+    #     If a node was matched by alias (any tier) AND is an FK/expansion
+    #     neighbor of a pinned table, promote it to PINNED tier with
+    #     FK_OF_EXACT sub-tier.  This ensures that story-mentioned objects
+    #     that are also structurally connected survive the budget cap.
+    _alias_scored_ids = {sn.node_id for sn in scored.values()
+                         if sn.reason.startswith("alias:") or sn.reason.startswith("alias1:")}
+    for node_id in list(_alias_scored_ids):
+        sn = scored.get(node_id)
+        if sn is None or sn.tier <= _TIER_PINNED:
+            continue  # Already pinned
+        # Check if this node is an FK neighbor of any pinned table
+        node = idx.node_by_id.get(node_id)
+        if node is None or node.kind not in _TABLE_KINDS:
+            continue
+        is_fk_of_pinned = False
+        for p_id in pinned:
+            p_node = idx.node_by_id.get(p_id)
+            if p_node is None or p_node.kind not in _TABLE_KINDS:
+                continue
+            for neighbor_id, _ in idx.fk_neighbors_of(p_id):
+                if neighbor_id == node_id:
+                    is_fk_of_pinned = True
+                    break
+            if is_fk_of_pinned:
+                break
+        if is_fk_of_pinned:
+            scored[node_id] = _ScoredNode(
+                node_id=node_id,
+                score=max(sn.score, _SCORE_FK_COLUMN_NEIGHBOR),
+                tier=_TIER_PINNED,
+                reason=sn.reason,
+                sub_tier=_SUB_FK_OF_EXACT,
+                kind_priority=0,
+            )
+            pinned.add(node_id)
 
     # 6. Hard cap at max_objects — two-stage selection.
     #
