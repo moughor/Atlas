@@ -1160,6 +1160,41 @@ def agent_review_command(
 
 
 # ---------------------------------------------------------------------------
+# Database graph — shared builder
+# ---------------------------------------------------------------------------
+
+def _build_full_database_graph(repo_root: Path, provenance=None):
+    """Build a fully reconciled database graph from all available producers."""
+    from moughorai.database_graph.jailer_ingest import ingest_jailer
+    from moughorai.database_graph.jpa_extractor import extract_jpa_entities
+    from moughorai.database_graph.view_sql_ingest import ingest_view_sql
+    from moughorai.database_graph.migration_ingest import ingest_migrations
+    from moughorai.database_graph.synonym_ingest import ingest_synonyms
+    from moughorai.database_graph.reconciler import reconcile_database_graph
+
+    jailer_result = None
+    try:
+        jailer_result = ingest_jailer(repo_root)
+    except FileNotFoundError:
+        pass
+
+    jpa_result = extract_jpa_entities(repo_root)
+    view_result = ingest_view_sql(repo_root)
+    migration_result = ingest_migrations(repo_root)
+    synonym_result = ingest_synonyms(repo_root)
+
+    return reconcile_database_graph(
+        repository_root=repo_root,
+        jailer_result=jailer_result,
+        jpa_result=jpa_result,
+        view_result=view_result,
+        provenance=provenance,
+        migration_result=migration_result,
+        synonym_result=synonym_result,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Database graph commands
 # ---------------------------------------------------------------------------
 
