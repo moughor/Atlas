@@ -630,10 +630,15 @@ class _ScoredNode:
     tier: int
     reason: str  # debugging breadcrumb
     sub_tier: int = _SUB_COL_OF_EXACT  # default: lowest pinned priority
+    kind_priority: int = 1  # 0 = table/view/entity, 1 = column/other
 
-    def sort_key(self) -> tuple[int, int, int, str]:
-        """Sort: tier ascending, sub_tier ascending, score descending, then id."""
-        return (self.tier, self.sub_tier, -self.score, self.node_id)
+    def sort_key(self) -> tuple[int, int, int, int, str]:
+        """Sort: tier, sub_tier, kind_priority, -score, id.
+
+        kind_priority ensures tables/views/entities survive before columns
+        when competing for the same tier+sub_tier slot.
+        """
+        return (self.tier, self.sub_tier, self.kind_priority, -self.score, self.node_id)
 
 
 def _score_and_match(
@@ -650,11 +655,14 @@ def _score_and_match(
 
     def _upsert(node_id: str, score: int, tier: int, reason: str,
                 sub_tier: int = _SUB_COL_OF_EXACT) -> None:
+        # Determine kind_priority: tables/views/entities get 0, columns/other get 1
+        node = idx.node_by_id.get(node_id)
+        kp = 0 if node and node.kind in _ANCHOR_KINDS else 1
         existing = scored.get(node_id)
         if existing is None:
             scored[node_id] = _ScoredNode(
                 node_id=node_id, score=score, tier=tier, reason=reason,
-                sub_tier=sub_tier,
+                sub_tier=sub_tier, kind_priority=kp,
             )
         elif score > existing.score or tier < existing.tier or sub_tier < existing.sub_tier:
             scored[node_id] = _ScoredNode(
@@ -663,6 +671,7 @@ def _score_and_match(
                 tier=min(tier, existing.tier),
                 reason=reason if score > existing.score else existing.reason,
                 sub_tier=min(sub_tier, existing.sub_tier),
+                kind_priority=min(kp, existing.kind_priority),
             )
 
     for term in terms:
@@ -838,6 +847,48 @@ def _score_and_match(
                     if term in unmatched_terms:
                         unmatched_terms.remove(term)
 
+    # --- Phase C: Compound phrase matching ---
+    # Generate 2-word and 3-word compounds from consecutive story terms
+    # and match against consecutive underscore segments in table/view names.
+    # E.g. ["SESSION", "INSTANCE"] → "SESSION_INSTANCE" matches
+    # "TB_RT_SESSION_INSTANCE" because "SESSION" and "INSTANCE" are
+    # consecutive segments.
+    #
+    # Also match with plural normalization: "REPORTING_PERIODS" matches
+    # "REPORTING_PERIOD" etc.
+    for window_size in (3, 2):  # prefer longer compounds
+        for i in range(len(terms) - window_size + 1):
+            compound_parts = terms[i:i + window_size]
+            compound = "_".join(compound_parts)
+            # Also generate normalized variants
+            compound_variants = {compound}
+            for j, part in enumerate(compound_parts):
+                for variant in _normalize_plural(part.lower()):
+                    alt_parts = list(compound_parts)
+                    alt_parts[j] = variant.upper()
+                    compound_variants.add("_".join(alt_parts))
+
+            for node in idx.graph.nodes:
+                if node.kind not in _TABLE_KINDS and node.kind != NodeKind.JAVA_ENTITY.value:
+                    continue
+                qn_upper = node.qualified_name.upper()
+                short_upper = qn_upper.rsplit(".", 1)[-1]
+                # Check if any compound variant appears as consecutive
+                # segments in the short name
+                for cv in compound_variants:
+                    if cv in short_upper:
+                        # Compound match — score higher than single segment
+                        compound_score = _SCORE_FK_COLUMN_NEIGHBOR + window_size * 5
+                        _upsert(node.id, compound_score, _TIER_PINNED,
+                                 f"compound_phrase:{compound}",
+                                 _SUB_ENTITY_BRIDGE)
+                        for part in compound_parts:
+                            if part not in matched_terms:
+                                matched_terms.append(part)
+                                if part in unmatched_terms:
+                                    unmatched_terms.remove(part)
+                        break
+
     return scored, matched_terms, unmatched_terms
 
 
@@ -896,6 +947,7 @@ def _pin_essential_neighbourhood(
                     tier=_TIER_PINNED,
                     reason=f"maps_to_target_of:{ent_id}" if existing is None else existing.reason,
                     sub_tier=_SUB_ENTITY_BRIDGE,
+                    kind_priority=0,  # table
                 )
             exact_table_ids.append(target_table_id)
 
@@ -912,6 +964,7 @@ def _pin_essential_neighbourhood(
                     tier=_TIER_PINNED,
                     reason=f"column_of_pinned:{tbl_id}" if existing is None else existing.reason,
                     sub_tier=_SUB_COL_OF_EXACT,
+                    kind_priority=1,  # column
                 )
 
         # FK neighbors — mark as pinned with FK_OF_EXACT sub-tier
@@ -919,12 +972,14 @@ def _pin_essential_neighbourhood(
             pinned.add(neighbor_id)
             existing = scored.get(neighbor_id)
             if existing is None or existing.tier > _TIER_PINNED or existing.sub_tier > _SUB_FK_OF_EXACT:
+                _neighbor_node = idx.node_by_id.get(neighbor_id)
                 scored[neighbor_id] = _ScoredNode(
                     node_id=neighbor_id,
                     score=max(_SCORE_FK_COLUMN_NEIGHBOR, existing.score if existing else 0),
                     tier=_TIER_PINNED,
                     reason=f"fk_neighbor_of_pinned:{tbl_id}" if existing is None else existing.reason,
                     sub_tier=_SUB_FK_OF_EXACT,
+                    kind_priority=0 if _neighbor_node and _neighbor_node.kind in _ANCHOR_KINDS else 1,
                 )
 
     return pinned
@@ -972,12 +1027,15 @@ def _expand_fk_tiers(
             if edge.kind not in _EXPANSION_EDGE_KINDS:
                 continue
             neighbor_id = edge.to_node
+            _nb = idx.node_by_id.get(neighbor_id)
+            _nbkp = 0 if _nb and _nb.kind in _ANCHOR_KINDS else 1
             if neighbor_id not in scored:
                 scored[neighbor_id] = _ScoredNode(
                     node_id=neighbor_id,
                     score=_SCORE_FK_COLUMN_NEIGHBOR,
                     tier=_TIER_FK_CONNECTED,
                     reason=f"expand_{edge.kind}_from:{node_id}",
+                    kind_priority=_nbkp,
                 )
                 tier1_table_ids.append(neighbor_id)
             elif scored[neighbor_id].tier > _TIER_FK_CONNECTED:
@@ -986,18 +1044,22 @@ def _expand_fk_tiers(
                     score=max(scored[neighbor_id].score, _SCORE_FK_COLUMN_NEIGHBOR),
                     tier=_TIER_FK_CONNECTED,
                     reason=scored[neighbor_id].reason,
+                    kind_priority=min(_nbkp, scored[neighbor_id].kind_priority),
                 )
 
         for edge in idx.edges_to(node_id):
             if edge.kind not in _EXPANSION_EDGE_KINDS:
                 continue
             neighbor_id = edge.from_node
+            _nb = idx.node_by_id.get(neighbor_id)
+            _nbkp = 0 if _nb and _nb.kind in _ANCHOR_KINDS else 1
             if neighbor_id not in scored:
                 scored[neighbor_id] = _ScoredNode(
                     node_id=neighbor_id,
                     score=_SCORE_FK_COLUMN_NEIGHBOR,
                     tier=_TIER_FK_CONNECTED,
                     reason=f"expand_{edge.kind}_to:{node_id}",
+                    kind_priority=_nbkp,
                 )
                 tier1_table_ids.append(neighbor_id)
             elif scored[neighbor_id].tier > _TIER_FK_CONNECTED:
@@ -1006,6 +1068,7 @@ def _expand_fk_tiers(
                     score=max(scored[neighbor_id].score, _SCORE_FK_COLUMN_NEIGHBOR),
                     tier=_TIER_FK_CONNECTED,
                     reason=scored[neighbor_id].reason,
+                    kind_priority=min(_nbkp, scored[neighbor_id].kind_priority),
                 )
 
     # Tier 2: columns of tier-1 tables
@@ -1017,6 +1080,7 @@ def _expand_fk_tiers(
                     score=_SCORE_FUZZY_SUBSTRING,
                     tier=_TIER_FK_COLUMNS,
                     reason=f"col_of_tier1:{tbl_id}",
+                    kind_priority=1,  # column
                 )
 
 
