@@ -931,12 +931,16 @@ def reconcile_database_graph(
     views_scanned = (jailer_result is not None and jailer_result.view_count > 0) or view_result is not None
     synonyms_scanned = False
 
+    view_sql_count = 0
+    if view_result is not None:
+        view_sql_count = view_result.view_count + view_result.mv_count
+
     coverage = DatabaseGraphCoverage(
         tables_resolved=jailer_table_count - excluded_table_count,
         tables_unresolved=0,
-        views_resolved=jailer_view_count,
+        views_resolved=jailer_view_count + view_sql_count,
         views_unresolved=0,
-        columns_resolved=jailer_col_count - excluded_col_count,
+        columns_resolved=jailer_col_count - excluded_col_count + (view_result.column_count if view_result else 0),
         columns_unresolved=0,
         constraints_resolved=jailer_constraint_count,
         constraints_unresolved=0,
