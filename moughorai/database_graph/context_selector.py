@@ -103,33 +103,9 @@ _CAMEL_SPLIT_RE = re.compile(
 
 _MIN_TERM_LENGTH: int = 3
 
-# Common Oracle table-name segment abbreviations → full English words.
-# Used by the alias index to bridge domain terms to abbreviated segments.
-_SEGMENT_ABBREVIATIONS: dict[str, tuple[str, ...]] = {
-    "DEC": ("declaration",),
-    "PER": ("period",),
-    "DOC": ("document",),
-    "GEN": ("generation",),
-    "AMD": ("amendment",),
-    "REP": ("report", "reporting"),
-    "EX": ("exercise",),
-    "INST": ("instance",),
-    "PARAM": ("parameter",),
-    "DEF": ("definition",),
-    "SESS": ("session",),
-    "ONL": ("online",),
-    "ITM": ("item",),
-    "GR": ("grant", "reduction"),
-    "NOTIF": ("notification",),
-    "SCI": ("scientific",),
-    "ORG": ("organisation", "organization"),
-    "GRAD": ("graduation",),
-    "ACT": ("activity",),
-    "PAYCALC": ("payment", "calculation"),
-    "PL": ("plan",),
-    "AI": ("audit",),
-    "ETH": ("ethics",),
-}
+# NOTE: Static abbreviation dictionary removed. Alias expansion now relies
+# exclusively on repository evidence (entity names, table segments, view
+# definitions) already present in the alias index.
 
 # Pure English stop-words that are NEVER valid Oracle identifiers.
 # Terms that also appear as graph identifiers are NOT filtered — see
@@ -526,27 +502,6 @@ class _GraphIndex:
                 if len(s) >= 4:
                     _add_alias(s.lower(), node.id, 55)
 
-            # Abbreviation-expanded aliases: map abbreviated segments
-            # (DEC, PER, AMD, etc.) to their full English words.
-            for s in segments:
-                expansions = _SEGMENT_ABBREVIATIONS.get(s)
-                if expansions:
-                    for exp in expansions:
-                        _add_alias(exp, node.id, 60)
-
-            # Multi-word abbreviation-expanded phrases
-            for wlen in (3, 2):
-                for i in range(len(segments) - wlen + 1):
-                    exp_words = []
-                    for s in segments[i:i + wlen]:
-                        exps = _SEGMENT_ABBREVIATIONS.get(s)
-                        if exps:
-                            exp_words.append(exps[0])  # Use primary expansion
-                        elif len(s) >= 4:
-                            exp_words.append(s.lower())
-                    if len(exp_words) >= 2:
-                        _add_alias(" ".join(exp_words), node.id, 65)
-
     def edges_to(self, node_id: str, kind: str | None = None) -> list[DatabaseGraphEdge]:
         """Return incoming edges, optionally filtered by kind."""
         edges = self.incoming.get(node_id, [])
@@ -772,6 +727,43 @@ class _ScoredNode:
         when competing for the same tier+sub_tier slot.
         """
         return (self.tier, self.sub_tier, self.kind_priority, -self.score, self.node_id)
+
+
+def _apply_prefix_diversity(
+    entries: list[_ScoredNode],
+    idx: _GraphIndex,
+    max_per_family: int = 3,
+) -> list[_ScoredNode]:
+    """Apply diminishing-returns filtering by 3-segment underscore prefix.
+
+    Groups items by their 3-segment prefix (e.g. 'TB_GRP_PR' from
+    'TB_GRP_PR_AI') and keeps only the top-K scored items per family.
+    This prevents large prefix families (e.g. 256 TB_GRP_PR_* tables)
+    from consuming all structural slots.
+
+    Entries are assumed to already be sorted by sort_key() (best first).
+    """
+    family_counts: dict[str, int] = {}
+    result: list[_ScoredNode] = []
+    for sn in entries:
+        node = idx.node_by_id.get(sn.node_id)
+        if node is None:
+            result.append(sn)
+            continue
+        short = node.qualified_name.rsplit(".", 1)[-1].upper()
+        parts = short.split("_")
+        if len(parts) >= 4:
+            prefix = "_".join(parts[:3])
+        else:
+            # Short names: no family grouping, always keep
+            result.append(sn)
+            continue
+        count = family_counts.get(prefix, 0)
+        if count < max_per_family:
+            result.append(sn)
+            family_counts[prefix] = count + 1
+        # else: suppressed — over the per-family cap
+    return result
 
 
 def _score_and_match(
@@ -1553,68 +1545,61 @@ def select_database_context(
         pinned.add(dyn_id)
 
     # 5c. Multi-hop BFS expansion (bounded).
-    #     Extend FK reachability up to max_hops beyond the tier-1 expansion.
-    #     Each hop follows the same relationship edge kinds as _expand_fk_tiers.
+    #     Extend FK reachability from ALL pinned table/view nodes (not just
+    #     tier-1 FK nodes) up to min(2, max_hops) hops.  Each hop follows
+    #     relationship edge kinds and fan-out is capped at 8 per node to
+    #     prevent explosion from high-degree hub tables.
     _BFS_EDGE_KINDS: frozenset[str] = frozenset({
         EdgeKind.FOREIGN_KEY_TO.value,
         EdgeKind.LOGICAL_REFERENCE_TO.value,
         EdgeKind.JAVA_RELATION_TO.value,
         EdgeKind.DERIVED_FROM.value,
         EdgeKind.READS_FROM.value,
-        EdgeKind.ALIAS_OF.value,
     })
 
-    # Seed the BFS frontier with tier-1 (FK_CONNECTED) table nodes
+    _BFS_MAX_FANOUT: int = 8
+
+    # Seed the BFS frontier with ALL pinned table/view nodes
     bfs_frontier: set[str] = set()
     for sn in list(scored.values()):
-        if sn.tier == _TIER_FK_CONNECTED:
+        if sn.tier <= _TIER_PINNED or sn.tier == _TIER_FK_CONNECTED:
             node = idx.node_by_id.get(sn.node_id)
             if node and node.kind in _TABLE_KINDS:
                 bfs_frontier.add(sn.node_id)
 
     bfs_visited: set[str] = set(scored.keys())
-    for _hop in range(1, max_hops):
+    bfs_depth = min(2, max_hops)
+    for _hop in range(bfs_depth):
         if not bfs_frontier:
             break
         next_frontier: set[str] = set()
+        # Tier decreases with each hop: first hop → FK_CONNECTED, deeper → FK_COLUMNS
+        hop_tier = _TIER_FK_CONNECTED if _hop == 0 else _TIER_FK_COLUMNS
+        hop_score = _SCORE_FK_COLUMN_NEIGHBOR if _hop == 0 else _SCORE_FUZZY_SUBSTRING
         for src_id in bfs_frontier:
-            # Outgoing edges
+            # Collect candidate neighbors (outgoing + incoming), cap fan-out
+            candidates: list[tuple[str, str]] = []  # (neighbor_id, reason_dir)
             for edge in idx.edges_from(src_id):
                 if edge.kind not in _BFS_EDGE_KINDS:
                     continue
-                nb_id = edge.to_node
-                if nb_id in bfs_visited:
-                    continue
-                nb_node = idx.node_by_id.get(nb_id)
-                if nb_node is None:
-                    continue
-                nbkp = 0 if nb_node.kind in _ANCHOR_KINDS else 1
-                scored[nb_id] = _ScoredNode(
-                    node_id=nb_id,
-                    score=_SCORE_FUZZY_SUBSTRING,
-                    tier=_TIER_FK_COLUMNS,
-                    reason=f"bfs_hop{_hop + 1}_from:{src_id}",
-                    kind_priority=nbkp,
-                )
-                bfs_visited.add(nb_id)
-                if nb_node.kind in _TABLE_KINDS:
-                    next_frontier.add(nb_id)
-            # Incoming edges
+                if edge.to_node not in bfs_visited:
+                    candidates.append((edge.to_node, "from"))
             for edge in idx.edges_to(src_id):
                 if edge.kind not in _BFS_EDGE_KINDS:
                     continue
-                nb_id = edge.from_node
-                if nb_id in bfs_visited:
-                    continue
+                if edge.from_node not in bfs_visited:
+                    candidates.append((edge.from_node, "to"))
+            # Cap fan-out per node
+            for nb_id, direction in candidates[:_BFS_MAX_FANOUT]:
                 nb_node = idx.node_by_id.get(nb_id)
                 if nb_node is None:
                     continue
                 nbkp = 0 if nb_node.kind in _ANCHOR_KINDS else 1
                 scored[nb_id] = _ScoredNode(
                     node_id=nb_id,
-                    score=_SCORE_FUZZY_SUBSTRING,
-                    tier=_TIER_FK_COLUMNS,
-                    reason=f"bfs_hop{_hop + 1}_to:{src_id}",
+                    score=hop_score,
+                    tier=hop_tier,
+                    reason=f"bfs_hop{_hop + 1}_{direction}:{src_id}",
                     kind_priority=nbkp,
                 )
                 bfs_visited.add(nb_id)
@@ -1702,6 +1687,13 @@ def select_database_context(
     other_structural.sort(key=lambda s: s.sort_key())
     column_entries.sort(key=lambda s: s.sort_key())
 
+    # Prefix-family diversity: suppress large families in non-exact categories
+    # so that e.g. 256 TB_GRP_PR_* tables don't consume all structural slots.
+    # exact_structural is NOT filtered — directly mentioned items must survive.
+    bridge_structural = _apply_prefix_diversity(bridge_structural, idx)
+    fk_structural = _apply_prefix_diversity(fk_structural, idx)
+    other_structural = _apply_prefix_diversity(other_structural, idx)
+
     # Phase A: Determine how many structural objects to keep.
     # For every selected table, we want to include ~5 columns.
     # So with max_objects=60, if we have 10 tables we want ~50 columns.
@@ -1766,11 +1758,11 @@ def select_database_context(
     if remaining > 0:
         kept.extend(other_structural[:remaining])
 
-    # Phase C: Fill remaining budget with columns of selected tables.
+    # Phase C: Fill remaining budget with columns, distributed proportionally.
     #
-    # Strategy: Include ALL columns of high-priority tables first,
-    # then distribute remaining budget. This ensures that required
-    # columns (ID, FK refs, etc.) are always included.
+    # Strategy: Distribute column slots evenly across all selected tables
+    # so every table gets some columns rather than the first few tables
+    # consuming all column slots.
     remaining = max_objects - len(kept)
     selected_table_ids = {sn.node_id for sn in kept if sn.kind_priority == 0}
 
@@ -1824,25 +1816,20 @@ def select_database_context(
             kept.extend(orphan_cols[:remaining])
     else:
         # Not all columns fit — include all columns of highest-priority
-        # parents until budget runs out, then partial for the last parent.
+        # parents until budget runs out, then partial for the last.
         for pid in sorted_parents:
             cols = col_by_parent[pid]
             if len(cols) <= remaining:
                 kept.extend(cols)
                 remaining = max_objects - len(kept)
             else:
-                # Partial: prioritize ID-like and FK columns
-                id_cols = [c for c in cols if any(
-                    idx.node_by_id.get(c.node_id) and
-                    idx.node_by_id[c.node_id].qualified_name.rsplit(".", 1)[-1].upper()
-                    in ("ID", "ROW_VERSION") for _ in [1])]
-                other_c = [c for c in cols if c not in id_cols]
-                # Take ID cols first, then others
-                take = id_cols + other_c
-                kept.extend(take[:remaining])
-                remaining = max_objects - len(kept)
+                kept.extend(cols[:remaining])
+                remaining = 0
             if remaining <= 0:
                 break
+        # Fill remaining with orphan columns
+        if remaining > 0:
+            kept.extend(orphan_cols[:remaining])
 
     kept_entries = kept
     # Re-sort for deterministic output
