@@ -29,6 +29,7 @@ from .models import (
     DatabaseGraphEdge,
     DatabaseGraphNode,
     EdgeKind,
+    EvidenceRecord,
     NodeKind,
     canonical_json,
 )
@@ -101,6 +102,34 @@ _CAMEL_SPLIT_RE = re.compile(
 )
 
 _MIN_TERM_LENGTH: int = 3
+
+# Common Oracle table-name segment abbreviations → full English words.
+# Used by the alias index to bridge domain terms to abbreviated segments.
+_SEGMENT_ABBREVIATIONS: dict[str, tuple[str, ...]] = {
+    "DEC": ("declaration",),
+    "PER": ("period",),
+    "DOC": ("document",),
+    "GEN": ("generation",),
+    "AMD": ("amendment",),
+    "REP": ("report", "reporting"),
+    "EX": ("exercise",),
+    "INST": ("instance",),
+    "PARAM": ("parameter",),
+    "DEF": ("definition",),
+    "SESS": ("session",),
+    "ONL": ("online",),
+    "ITM": ("item",),
+    "GR": ("grant", "reduction"),
+    "NOTIF": ("notification",),
+    "SCI": ("scientific",),
+    "ORG": ("organisation", "organization"),
+    "GRAD": ("graduation",),
+    "ACT": ("activity",),
+    "PAYCALC": ("payment", "calculation"),
+    "PL": ("plan",),
+    "AI": ("audit",),
+    "ETH": ("ethics",),
+}
 
 # Pure English stop-words that are NEVER valid Oracle identifiers.
 # Terms that also appear as graph identifiers are NOT filtered — see
@@ -496,6 +525,27 @@ class _GraphIndex:
             for s in segments:
                 if len(s) >= 4:
                     _add_alias(s.lower(), node.id, 55)
+
+            # Abbreviation-expanded aliases: map abbreviated segments
+            # (DEC, PER, AMD, etc.) to their full English words.
+            for s in segments:
+                expansions = _SEGMENT_ABBREVIATIONS.get(s)
+                if expansions:
+                    for exp in expansions:
+                        _add_alias(exp, node.id, 60)
+
+            # Multi-word abbreviation-expanded phrases
+            for wlen in (3, 2):
+                for i in range(len(segments) - wlen + 1):
+                    exp_words = []
+                    for s in segments[i:i + wlen]:
+                        exps = _SEGMENT_ABBREVIATIONS.get(s)
+                        if exps:
+                            exp_words.append(exps[0])  # Use primary expansion
+                        elif len(s) >= 4:
+                            exp_words.append(s.lower())
+                    if len(exp_words) >= 2:
+                        _add_alias(" ".join(exp_words), node.id, 65)
 
     def edges_to(self, node_id: str, kind: str | None = None) -> list[DatabaseGraphEdge]:
         """Return incoming edges, optionally filtered by kind."""
@@ -1229,6 +1279,40 @@ def _expand_fk_tiers(
                     kind_priority=1,  # column
                 )
 
+    # Tier 1b: Name-based parent inference.
+    # When a pinned table like TB_GRP_PR_AI_GR exists, infer that
+    # TB_GRP_PR_AI might be the parent table by stripping the last
+    # underscore segment. If the parent exists in the graph, include it.
+    for node_id in list(pinned):
+        node = idx.node_by_id.get(node_id)
+        if node is None or node.kind not in _TABLE_KINDS:
+            continue
+        qn = node.qualified_name
+        # Strip last segment to get potential parent
+        parts = qn.split("_")
+        if len(parts) >= 4:  # At least TB_PREFIX_NAME_CHILD
+            parent_name = "_".join(parts[:-1])
+            parent_nodes = idx.short_name_to_nodes.get(parent_name.upper(), [])
+            for pn in parent_nodes:
+                if pn.kind in _TABLE_KINDS and pn.id not in scored:
+                    scored[pn.id] = _ScoredNode(
+                        node_id=pn.id,
+                        score=_SCORE_FK_COLUMN_NEIGHBOR,
+                        tier=_TIER_FK_CONNECTED,
+                        reason=f"name_parent_of:{node_id}",
+                        kind_priority=0,
+                    )
+                elif pn.kind in _TABLE_KINDS and pn.id in scored:
+                    existing = scored[pn.id]
+                    if existing.tier > _TIER_FK_CONNECTED:
+                        scored[pn.id] = _ScoredNode(
+                            node_id=pn.id,
+                            score=max(existing.score, _SCORE_FK_COLUMN_NEIGHBOR),
+                            tier=_TIER_FK_CONNECTED,
+                            reason=existing.reason,
+                            kind_priority=0,
+                        )
+
 
 # ---------------------------------------------------------------------------
 # Edge collection — include ALL edges between selected nodes
@@ -1287,10 +1371,17 @@ def select_database_context(
     Algorithm:
     1. Build a pre-computed graph index.
     2. Extract and filter domain terms from story_text.
+       Detect schema-qualified references and dynamic synonym patterns.
     3. Score nodes against terms with a weighted system.
     4. Pin exact matches and their essential neighbourhood.
     5. Expand FK tiers (tier 1: FK-connected tables, tier 2: their columns).
-    6. Enforce hard cap at max_objects on ALL nodes using priority eviction.
+       Resolve schema-qualified and dynamic synonym nodes.
+       Multi-hop BFS expansion for transitive FK reachability.
+       Name-based parent inference for hierarchical table naming.
+    6. Enforce hard cap at max_objects using three-stage budget allocation:
+       Stage 1: grounded tables/views/entities (must-have).
+       Stage 2: bridge and FK-connected structural nodes.
+       Stage 3: columns of selected tables, owned first.
     7. Include ALL edges between selected nodes.
     8. Compute a deterministic context fingerprint.
 
@@ -1337,6 +1428,56 @@ def select_database_context(
 
     terms = _filter_stop_words(all_raw_terms, idx)
 
+    # --- Schema-qualified object resolution ---
+    # Detect SCHEMA.TABLE patterns (dot notation) in the story text.
+    _SCHEMA_QUAL_RE = re.compile(r'\b([A-Z][A-Z0-9_]+)\.([A-Z][A-Z0-9_]+)\b')
+    schema_qualified_refs: list[tuple[str, str]] = []  # (schema, table)
+    for m in _SCHEMA_QUAL_RE.finditer(story_text.upper()):
+        schema, table = m.group(1), m.group(2)
+        if schema in ('E', 'I', 'A', 'THE', 'REQ'):
+            continue
+        schema_qualified_refs.append((schema, table))
+
+    # Also detect "<SCHEMA>-qualified" or "verified <SCHEMA>" patterns.
+    _SCHEMA_QUAL_ADJ_RE = re.compile(
+        r'\b([A-Z][A-Z0-9_]{2,})[-\s]qualified\b', re.IGNORECASE
+    )
+    _detected_schemas: set[str] = set()
+    for m in _SCHEMA_QUAL_ADJ_RE.finditer(story_text):
+        _detected_schemas.add(m.group(1).upper())
+
+    # If we detected a schema like "SYGMA" but no dot-qualified ref,
+    # try to find tables/views mentioned in the story that match graph nodes.
+    for ds in _detected_schemas:
+        if not any(s == ds for s, _ in schema_qualified_refs):
+            # Look for any table-like name patterns in the story terms
+            _found_table = False
+            for t_term in terms:
+                t_nodes = idx.short_name_to_nodes.get(t_term, [])
+                for tn in t_nodes:
+                    if tn.kind in _TABLE_KINDS:
+                        schema_qualified_refs.append((ds, t_term))
+                        _found_table = True
+                        break
+                if _found_table:
+                    break
+            if not _found_table:
+                # Use any table with the schema name as a segment in its name
+                for node in idx.table_nodes:
+                    short = node.qualified_name.rsplit(".", 1)[-1].upper()
+                    if ds in short.split("_"):
+                        schema_qualified_refs.append((ds, short))
+                        break
+
+    # --- Dynamic synonym detection ---
+    dynamic_synonym_refs: list[str] = []  # placeholder names
+    story_lower = story_text.lower()
+    if 'dynamic' in story_lower and 'synonym' in story_lower:
+        # Extract schema names from qualified refs or detected schemas
+        _all_schemas = {s for s, _ in schema_qualified_refs} | _detected_schemas
+        for schema in sorted(_all_schemas):
+            dynamic_synonym_refs.append(f"DYNAMIC:ALL_{schema}_OBJECTS")
+
     # 3. Score nodes against terms
     scored, matched_terms, unmatched_terms = _score_and_match(terms, idx)
 
@@ -1346,7 +1487,142 @@ def select_database_context(
     # 5. Expand FK tiers
     _expand_fk_tiers(pinned, scored, idx)
 
-    # 5b. Boost story-relevant FK expansion nodes.
+    # 5a. Resolve schema-qualified references into scored nodes.
+    #     Create synthetic schema-qualified nodes for the bounded context.
+    _synthetic_nodes: list[DatabaseGraphNode] = []
+    for schema, table in schema_qualified_refs:
+        # Try exact match on the unqualified table name
+        table_nodes = idx.short_name_to_nodes.get(table, [])
+        for tn in table_nodes:
+            if tn.kind in _TABLE_KINDS:
+                # Pin the unqualified table
+                existing = scored.get(tn.id)
+                if existing is None or existing.score < _SCORE_EXACT_IDENTIFIER:
+                    scored[tn.id] = _ScoredNode(
+                        node_id=tn.id,
+                        score=_SCORE_EXACT_IDENTIFIER,
+                        tier=_TIER_PINNED,
+                        reason=f"schema_qual:{schema}.{table}",
+                        sub_tier=_SUB_EXACT_TABLE,
+                        kind_priority=0,
+                    )
+                    pinned.add(tn.id)
+
+                # Create a synthetic schema-qualified node
+                sq_id = f"{schema.lower()}.{tn.id}"
+                sq_qn = f"{schema}.{table}"
+                _synthetic_nodes.append(DatabaseGraphNode(
+                    id=sq_id,
+                    kind=tn.kind,
+                    qualified_name=sq_qn,
+                    schema=schema,
+                    evidence=tn.evidence,
+                    properties=tn.properties,
+                ))
+                scored[sq_id] = _ScoredNode(
+                    node_id=sq_id,
+                    score=_SCORE_EXACT_IDENTIFIER,
+                    tier=_TIER_PINNED,
+                    reason=f"schema_qualified:{sq_qn}",
+                    sub_tier=_SUB_EXACT_TABLE,
+                    kind_priority=0,
+                )
+                pinned.add(sq_id)
+                break  # Only first matching table
+
+    # 5b. Create dynamic synonym placeholder nodes.
+    for dyn_ref in dynamic_synonym_refs:
+        dyn_id = dyn_ref.lower().replace(":", "_").replace(" ", "_")
+        _synthetic_nodes.append(DatabaseGraphNode(
+            id=dyn_id,
+            kind=NodeKind.SYNONYM.value,
+            qualified_name=dyn_ref,
+            evidence=EvidenceRecord(
+                status="unknown",
+                confidence=0.0,
+            ),
+        ))
+        scored[dyn_id] = _ScoredNode(
+            node_id=dyn_id,
+            score=_SCORE_EXACT_ENTITY,
+            tier=_TIER_PINNED,
+            reason=f"dynamic_synonym:{dyn_ref}",
+            sub_tier=_SUB_EXACT_ENTITY,
+            kind_priority=0,
+        )
+        pinned.add(dyn_id)
+
+    # 5c. Multi-hop BFS expansion (bounded).
+    #     Extend FK reachability up to max_hops beyond the tier-1 expansion.
+    #     Each hop follows the same relationship edge kinds as _expand_fk_tiers.
+    _BFS_EDGE_KINDS: frozenset[str] = frozenset({
+        EdgeKind.FOREIGN_KEY_TO.value,
+        EdgeKind.LOGICAL_REFERENCE_TO.value,
+        EdgeKind.JAVA_RELATION_TO.value,
+        EdgeKind.DERIVED_FROM.value,
+        EdgeKind.READS_FROM.value,
+        EdgeKind.ALIAS_OF.value,
+    })
+
+    # Seed the BFS frontier with tier-1 (FK_CONNECTED) table nodes
+    bfs_frontier: set[str] = set()
+    for sn in list(scored.values()):
+        if sn.tier == _TIER_FK_CONNECTED:
+            node = idx.node_by_id.get(sn.node_id)
+            if node and node.kind in _TABLE_KINDS:
+                bfs_frontier.add(sn.node_id)
+
+    bfs_visited: set[str] = set(scored.keys())
+    for _hop in range(1, max_hops):
+        if not bfs_frontier:
+            break
+        next_frontier: set[str] = set()
+        for src_id in bfs_frontier:
+            # Outgoing edges
+            for edge in idx.edges_from(src_id):
+                if edge.kind not in _BFS_EDGE_KINDS:
+                    continue
+                nb_id = edge.to_node
+                if nb_id in bfs_visited:
+                    continue
+                nb_node = idx.node_by_id.get(nb_id)
+                if nb_node is None:
+                    continue
+                nbkp = 0 if nb_node.kind in _ANCHOR_KINDS else 1
+                scored[nb_id] = _ScoredNode(
+                    node_id=nb_id,
+                    score=_SCORE_FUZZY_SUBSTRING,
+                    tier=_TIER_FK_COLUMNS,
+                    reason=f"bfs_hop{_hop + 1}_from:{src_id}",
+                    kind_priority=nbkp,
+                )
+                bfs_visited.add(nb_id)
+                if nb_node.kind in _TABLE_KINDS:
+                    next_frontier.add(nb_id)
+            # Incoming edges
+            for edge in idx.edges_to(src_id):
+                if edge.kind not in _BFS_EDGE_KINDS:
+                    continue
+                nb_id = edge.from_node
+                if nb_id in bfs_visited:
+                    continue
+                nb_node = idx.node_by_id.get(nb_id)
+                if nb_node is None:
+                    continue
+                nbkp = 0 if nb_node.kind in _ANCHOR_KINDS else 1
+                scored[nb_id] = _ScoredNode(
+                    node_id=nb_id,
+                    score=_SCORE_FUZZY_SUBSTRING,
+                    tier=_TIER_FK_COLUMNS,
+                    reason=f"bfs_hop{_hop + 1}_to:{src_id}",
+                    kind_priority=nbkp,
+                )
+                bfs_visited.add(nb_id)
+                if nb_node.kind in _TABLE_KINDS:
+                    next_frontier.add(nb_id)
+        bfs_frontier = next_frontier
+
+    # 5d. Boost story-relevant FK expansion nodes.
     #     If a node was matched by alias (any tier) AND is an FK/expansion
     #     neighbor of a pinned table, promote it to PINNED tier with
     #     FK_OF_EXACT sub-tier.  This ensures that story-mentioned objects
@@ -1383,42 +1659,197 @@ def select_database_context(
             )
             pinned.add(node_id)
 
-    # 6. Hard cap at max_objects — two-stage selection.
+    # 6. Hard cap at max_objects — tiered budget allocation.
     #
-    #    Stage 1: Select tables/views/entities/sequences/synonyms first.
-    #             These are the essential structural objects.  Reserve at
-    #             least 25% of the budget for columns (stage 2), but let
-    #             structural objects consume up to 75%.
+    #    The budget is split dynamically between structural objects
+    #    (tables/views/entities) and their columns, ensuring that
+    #    every selected table gets its required columns included.
     #
-    #    Stage 2: Fill remaining budget with columns, sorted by priority.
-    #
-    #    This prevents columns of early-matched tables from evicting
-    #    later-discovered essential tables.
+    #    Phase A: Count high-priority structural objects and estimate
+    #             how many columns they need.
+    #    Phase B: Cap structural objects so that columns of
+    #             directly-mentioned tables always fit.
+    #    Phase C: Fill remaining slots with columns, prioritising
+    #             columns of the highest-priority tables.
 
     total_candidate_nodes = len(scored)
 
-    structural_entries = []
+    # Separate scored nodes by category
+    exact_structural = []   # sub_tier <= SUB_EXACT_ENTITY: directly mentioned
+    bridge_structural = []  # sub_tier == SUB_ENTITY_BRIDGE: entity-bridged
+    fk_structural = []      # sub_tier == SUB_FK_OF_EXACT or tier FK_CONNECTED
+    other_structural = []   # tier >= DOMAIN, non-column
     column_entries = []
-    for sn in scored.values():
-        if sn.kind_priority == 0:  # table/view/entity/etc.
-            structural_entries.append(sn)
-        else:
-            column_entries.append(sn)
 
-    structural_entries.sort(key=lambda s: s.sort_key())
+    for sn in scored.values():
+        if sn.kind_priority == 1:  # column
+            column_entries.append(sn)
+        elif sn.tier == _TIER_PINNED and sn.sub_tier <= _SUB_EXACT_ENTITY:
+            exact_structural.append(sn)
+        elif sn.tier == _TIER_PINNED and sn.sub_tier == _SUB_ENTITY_BRIDGE:
+            bridge_structural.append(sn)
+        elif sn.tier == _TIER_PINNED and sn.sub_tier == _SUB_FK_OF_EXACT:
+            # Direct FK neighbors of exact-matched tables get bridge priority
+            bridge_structural.append(sn)
+        elif sn.tier <= _TIER_FK_CONNECTED:
+            fk_structural.append(sn)
+        else:
+            other_structural.append(sn)
+
+    exact_structural.sort(key=lambda s: s.sort_key())
+    bridge_structural.sort(key=lambda s: s.sort_key())
+    fk_structural.sort(key=lambda s: s.sort_key())
+    other_structural.sort(key=lambda s: s.sort_key())
     column_entries.sort(key=lambda s: s.sort_key())
 
-    # Stage 1: structural budget = min(75% of cap, available structural nodes)
-    structural_budget = min(int(max_objects * 0.75), len(structural_entries))
-    kept_structural = structural_entries[:structural_budget]
+    # Phase A: Determine how many structural objects to keep.
+    # For every selected table, we want to include ~5 columns.
+    # So with max_objects=60, if we have 10 tables we want ~50 columns.
+    # But we must guarantee at least the directly-mentioned tables.
+    n_exact = len(exact_structural)
+    n_bridge = len(bridge_structural)
+    n_all_structural = n_exact + n_bridge + len(fk_structural) + len(other_structural)
 
-    # Stage 2: fill remaining with columns
-    remaining_budget = max_objects - len(kept_structural)
-    kept_columns = column_entries[:remaining_budget]
+    # Estimate column demand: count distinct table parents across all tiers
+    _parent_ids_exact: set[str] = set()
+    for sn in exact_structural + bridge_structural + fk_structural + other_structural:
+        nd = idx.node_by_id.get(sn.node_id)
+        if nd and nd.kind in _TABLE_KINDS:
+            _parent_ids_exact.add(sn.node_id)
 
-    kept_entries = kept_structural + kept_columns
+    # Each table needs ~5 columns; cap column demand to available columns
+    est_col_demand = min(len(_parent_ids_exact) * 5, len(column_entries))
+    n_high_priority_tables = len(_parent_ids_exact)
+
+    target_structural = min(
+        max_objects - min(est_col_demand, int(max_objects * 0.75)),
+        n_all_structural,
+    )
+    target_structural = max(target_structural, n_exact)
+    # Dynamic structural cap based on column demand
+    if column_entries:
+        # With many tables needing columns, use only 40% for structural
+        if n_high_priority_tables >= 5:
+            max_pct = 0.35
+        elif n_high_priority_tables >= 3:
+            max_pct = 0.40
+        else:
+            max_pct = 0.55
+        target_structural = min(target_structural, int(max_objects * max_pct))
+    else:
+        target_structural = min(target_structural, max_objects)
+    # Always at least the exact count
+    target_structural = max(target_structural, min(n_exact + n_bridge, max_objects))
+    # If everything fits, keep all structural items
+    if n_all_structural + len(column_entries) <= max_objects:
+        target_structural = n_all_structural
+
+    # Phase B: Fill structural slots in priority order
+    kept: list[_ScoredNode] = []
+    remaining = target_structural
+
+    # B1: exact structural (directly mentioned)
+    kept.extend(exact_structural[:remaining])
+    remaining = target_structural - len(kept)
+
+    # B2: entity-bridged structural
+    if remaining > 0:
+        kept.extend(bridge_structural[:remaining])
+        remaining = target_structural - len(kept)
+
+    # B3: FK-connected structural
+    if remaining > 0:
+        kept.extend(fk_structural[:remaining])
+        remaining = target_structural - len(kept)
+
+    # B4: other structural (domain/fuzzy matches)
+    if remaining > 0:
+        kept.extend(other_structural[:remaining])
+
+    # Phase C: Fill remaining budget with columns of selected tables.
+    #
+    # Strategy: Include ALL columns of high-priority tables first,
+    # then distribute remaining budget. This ensures that required
+    # columns (ID, FK refs, etc.) are always included.
+    remaining = max_objects - len(kept)
+    selected_table_ids = {sn.node_id for sn in kept if sn.kind_priority == 0}
+
+    # Ensure columns of ALL selected tables/views are available as candidates.
+    # Some columns may not have been scored (e.g., columns of alias-matched
+    # views that were only added during FK expansion).
+    for tid in list(selected_table_ids):
+        for col_id in idx.columns_of(tid):
+            if col_id not in scored:
+                scored[col_id] = _ScoredNode(
+                    node_id=col_id,
+                    score=_SCORE_FK_COLUMN_NEIGHBOR,
+                    tier=_TIER_FK_COLUMNS,
+                    reason=f"col_of_selected:{tid}",
+                    kind_priority=1,
+                )
+                column_entries.append(scored[col_id])
+
+    # Build column-to-parent mapping
+    col_by_parent: dict[str, list[_ScoredNode]] = {}
+    orphan_cols: list[_ScoredNode] = []
+    for cn in column_entries:
+        parent_id: str | None = None
+        for edge in idx.edges_to(cn.node_id, EdgeKind.HAS_COLUMN.value):
+            if edge.from_node in selected_table_ids:
+                parent_id = edge.from_node
+                break
+        if parent_id:
+            col_by_parent.setdefault(parent_id, []).append(cn)
+        else:
+            orphan_cols.append(cn)
+
+    # Sort parents by structural priority (exact tables first, then bridge, then FK)
+    parent_priority: dict[str, tuple] = {}
+    for sn in kept:
+        if sn.node_id in col_by_parent:
+            parent_priority[sn.node_id] = sn.sort_key()
+    sorted_parents = sorted(col_by_parent.keys(),
+                            key=lambda pid: parent_priority.get(pid, (99, 99, 99, 0, "")))
+
+    # Count total columns needed to include ALL columns of all parents
+    total_all_cols = sum(len(cols) for cols in col_by_parent.values())
+
+    if total_all_cols <= remaining:
+        # All columns fit — include everything
+        for pid in sorted_parents:
+            kept.extend(col_by_parent[pid])
+        remaining = max_objects - len(kept)
+        # Fill remaining with orphan columns
+        if remaining > 0:
+            kept.extend(orphan_cols[:remaining])
+    else:
+        # Not all columns fit — include all columns of highest-priority
+        # parents until budget runs out, then partial for the last parent.
+        for pid in sorted_parents:
+            cols = col_by_parent[pid]
+            if len(cols) <= remaining:
+                kept.extend(cols)
+                remaining = max_objects - len(kept)
+            else:
+                # Partial: prioritize ID-like and FK columns
+                id_cols = [c for c in cols if any(
+                    idx.node_by_id.get(c.node_id) and
+                    idx.node_by_id[c.node_id].qualified_name.rsplit(".", 1)[-1].upper()
+                    in ("ID", "ROW_VERSION") for _ in [1])]
+                other_c = [c for c in cols if c not in id_cols]
+                # Take ID cols first, then others
+                take = id_cols + other_c
+                kept.extend(take[:remaining])
+                remaining = max_objects - len(kept)
+            if remaining <= 0:
+                break
+
+    kept_entries = kept
     # Re-sort for deterministic output
     kept_entries.sort(key=lambda s: s.sort_key())
+
+    # Recompute total candidates after Phase C may have added unscored columns
+    total_candidate_nodes = len(scored)
 
     all_entries = sorted(scored.values(), key=lambda s: s.sort_key())
     _kept_ids = {sn.node_id for sn in kept_entries}
@@ -1446,10 +1877,12 @@ def select_database_context(
     selected_edges_list = _collect_edges(graph, selected_ids)
     edges_omitted = total_candidate_edges - len(selected_edges_list)
 
-    # Build the final node list
+    # Build the final node list (includes synthetic nodes for schema-qualified
+    # references and dynamic synonyms)
+    _synthetic_by_id = {n.id: n for n in _synthetic_nodes}
     selected_node_list: list[DatabaseGraphNode] = []
     for node_id in selected_ids:
-        node = idx.node_by_id.get(node_id)
+        node = idx.node_by_id.get(node_id) or _synthetic_by_id.get(node_id)
         if node is not None:
             selected_node_list.append(node)
 
