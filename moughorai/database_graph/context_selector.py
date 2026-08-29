@@ -1200,14 +1200,46 @@ def select_database_context(
     # 5. Expand FK tiers
     _expand_fk_tiers(pinned, scored, idx)
 
-    # 6. Hard cap at max_objects — applies to ALL nodes including pinned.
-    #    Sort every candidate by (tier, sub_tier, -score, node_id) and
-    #    keep the first max_objects entries.
+    # 6. Hard cap at max_objects — two-stage selection.
+    #
+    #    Stage 1: Select tables/views/entities/sequences/synonyms first.
+    #             These are the essential structural objects.  Reserve at
+    #             least 25% of the budget for columns (stage 2), but let
+    #             structural objects consume up to 75%.
+    #
+    #    Stage 2: Fill remaining budget with columns, sorted by priority.
+    #
+    #    This prevents columns of early-matched tables from evicting
+    #    later-discovered essential tables.
+
     total_candidate_nodes = len(scored)
 
+    structural_entries = []
+    column_entries = []
+    for sn in scored.values():
+        if sn.kind_priority == 0:  # table/view/entity/etc.
+            structural_entries.append(sn)
+        else:
+            column_entries.append(sn)
+
+    structural_entries.sort(key=lambda s: s.sort_key())
+    column_entries.sort(key=lambda s: s.sort_key())
+
+    # Stage 1: structural budget = min(75% of cap, available structural nodes)
+    structural_budget = min(int(max_objects * 0.75), len(structural_entries))
+    kept_structural = structural_entries[:structural_budget]
+
+    # Stage 2: fill remaining with columns
+    remaining_budget = max_objects - len(kept_structural)
+    kept_columns = column_entries[:remaining_budget]
+
+    kept_entries = kept_structural + kept_columns
+    # Re-sort for deterministic output
+    kept_entries.sort(key=lambda s: s.sort_key())
+
     all_entries = sorted(scored.values(), key=lambda s: s.sort_key())
-    kept_entries = all_entries[:max_objects]
-    evicted_entries = all_entries[max_objects:]
+    _kept_ids = {sn.node_id for sn in kept_entries}
+    evicted_entries = [sn for sn in all_entries if sn.node_id not in _kept_ids]
 
     # Track per-tier statistics
     tier_candidates: dict[int, int] = {}
