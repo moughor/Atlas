@@ -359,6 +359,7 @@ class _GraphIndex:
                 if (
                     node.get_property("dynamic") is True
                     or node.get_property("generated") is True
+                    or node.get_property("runtime_dependent") in (True, "true", "True")
                 ):
                     self._dynamic_synonyms.add(qname)
                     if "." in qname:
@@ -544,6 +545,10 @@ class _GraphIndex:
     def is_dynamic_synonym(self, name: str) -> bool:
         """Check if a name is a dynamic/generated synonym."""
         return name.upper() in self._dynamic_synonyms
+
+    def has_any_dynamic_synonym(self) -> bool:
+        """Check if any dynamic/generated synonym exists in the graph."""
+        return len(self._dynamic_synonyms) > 0
 
     def is_read_only(self, name: str) -> bool:
         """Check if a node has the read_only property set."""
@@ -1246,6 +1251,28 @@ def _validate_statement(
             # Table exists — track canonical name for column/join resolution
             qname_upper = node.qualified_name.upper()
             resolved_canonical[tname.upper()] = qname_upper
+
+            # Fix D: Check for dynamic synonym resolution
+            # If the table was resolved via schema fallback (e.g., CONSUMER.TB_GRP_PF
+            # → TB_GRP_PF) and the schema prefix is not the native schema, check
+            # whether a dynamic synonym generator exists. If so, the resolution
+            # is unproven — the synonym may or may not have been created at runtime.
+            if resolution_method == "short" and "." in tname:
+                _schema_prefix = tname.upper().rsplit(".", 1)[0]
+                _NATIVE_SCHEMAS = {"SYGMA", ""}
+                if _schema_prefix not in _NATIVE_SCHEMAS:
+                    # Check for dynamic synonym nodes in the index
+                    if index.has_any_dynamic_synonym():
+                        issues.append(SqlValidationIssue(
+                            issue_type=ISSUE_DYNAMIC_SYNONYM,
+                            object_name=tname,
+                            detail=(
+                                f"Table '{tname}' resolved via schema fallback but "
+                                f"the '{_schema_prefix}' schema synonym requires a "
+                                f"dynamic runtime generator whose execution is unproven"
+                            ),
+                            severity="warning",
+                        ))
 
             # CB2-6: historical_object is an error and counts as structurally_invalid
             if index.is_historical(qname_upper):
