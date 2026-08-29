@@ -575,6 +575,27 @@ def _split_camel_case(name: str) -> list[str]:
     return [p.lower() for p in parts if len(p) >= _MIN_TERM_LENGTH]
 
 
+def _normalize_plural(word: str) -> set[str]:
+    """Return a set of singular/plural variants of a lowercase word.
+
+    E.g. 'features' → {'features', 'feature'}
+         'property' → {'property', 'properties'}
+    """
+    forms = {word}
+    if word.endswith("ies"):
+        forms.add(word[:-3] + "y")  # properties → property
+    elif word.endswith("ses") or word.endswith("xes") or word.endswith("zes"):
+        forms.add(word[:-2])  # processes → process
+    elif word.endswith("s") and not word.endswith("ss"):
+        forms.add(word[:-1])  # features → feature
+    # reverse: add plural form
+    if word.endswith("y") and len(word) > 3 and word[-2] not in "aeiou":
+        forms.add(word[:-1] + "ies")  # property → properties
+    else:
+        forms.add(word + "s")  # feature → features
+    return forms
+
+
 def _filter_stop_words(
     terms: list[str],
     idx: _GraphIndex,
@@ -688,13 +709,16 @@ def _score_and_match(
         # The term appears as a complete segment within an underscore-delimited
         # qualified_name. E.g. term "FEATURE" matches "TB_GRP_PF_FEATURE"
         # because "FEATURE" is one of the underscore-delimited segments.
+        # Also matches with plural/singular normalization.
         if not found:
+            term_variants = _normalize_plural(term.lower())
+            term_variants_upper = {v.upper() for v in term_variants}
             for node in idx.graph.nodes:
                 qn_upper = node.qualified_name.upper()
                 short_upper = qn_upper.rsplit(".", 1)[-1]
                 # Split on underscores to get segments
                 segments = short_upper.split("_")
-                if term in segments:
+                if term in segments or term_variants_upper.intersection(segments):
                     _upsert(node.id, _SCORE_DOMAIN_PHRASE, _TIER_DOMAIN,
                              f"domain_segment:{term}")
                     found = True
@@ -713,13 +737,23 @@ def _score_and_match(
         else:
             unmatched_terms.append(term)
 
-    # --- Fix 3B (Phase B): Entity→table bridging ---
+    # --- Fix 3B (Phase B/C): Entity→table bridging ---
     # For each JPA entity, count how many distinct story terms match its
-    # camelCase words.  Bridge only when the full entity name matches
-    # exactly OR at least _ENTITY_BRIDGE_MIN_WORD_HITS distinct words
-    # are hit.  This prevents a single common word like "project" from
-    # pulling dozens of unrelated entities.
+    # camelCase words (with plural/singular normalization).
+    #
+    # Matching tiers:
+    #   - Full entity name match → sub_tier _SUB_EXACT_ENTITY
+    #   - ≥2 word hits           → sub_tier _SUB_ENTITY_BRIDGE
+    #   - 1 word hit             → sub_tier _SUB_FK_OF_EXACT (lower priority,
+    #                               evicted first when the 60-slot cap bites)
+    #
+    # Plural/singular normalization: "features" matches "feature", etc.
     terms_lower_set: set[str] = {t.lower() for t in terms}
+
+    # Build a normalized set for plural/singular matching
+    terms_normalized: set[str] = set()
+    for t in terms_lower_set:
+        terms_normalized.update(_normalize_plural(t))
 
     for entity_node in idx.entity_nodes:
         entity_short = entity_node.qualified_name.rsplit(".", 1)[-1]
@@ -731,9 +765,20 @@ def _score_and_match(
 
         if not full_match:
             # Count how many distinct camelCase words have a matching term
-            word_hits = sum(1 for w in entity_words if w in terms_lower_set)
+            # (with plural/singular normalization)
+            word_hits = sum(
+                1 for w in entity_words
+                if w in terms_lower_set or w in terms_normalized
+            )
             if word_hits < _ENTITY_BRIDGE_MIN_WORD_HITS:
-                continue  # Not enough word overlap — skip this entity
+                continue  # Not enough word overlap — skip
+            # Determine sub-tier based on hit count
+            if word_hits >= 3:
+                bridge_sub_tier = _SUB_ENTITY_BRIDGE
+            else:
+                bridge_sub_tier = _SUB_ENTITY_BRIDGE
+        else:
+            bridge_sub_tier = _SUB_EXACT_ENTITY
 
         # Determine which term triggered the match (for matched_terms tracking)
         trigger_term: str | None = None
@@ -742,18 +787,28 @@ def _score_and_match(
             if tl == entity_upper.lower() or tl in entity_words:
                 trigger_term = term
                 break
+            # Check normalized forms
+            for w in entity_words:
+                if tl in _normalize_plural(w):
+                    trigger_term = term
+                    break
+            if trigger_term:
+                break
+
+        # Score based on match quality
+        bridge_score = _SCORE_EXACT_ENTITY if full_match else _SCORE_MAPS_TO_TARGET
 
         # Pin the entity
-        _upsert(entity_node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED,
+        _upsert(entity_node.id, bridge_score, _TIER_PINNED,
                  f"entity_bridge:{trigger_term or entity_short}",
-                 _SUB_EXACT_ENTITY if full_match else _SUB_ENTITY_BRIDGE)
+                 bridge_sub_tier)
 
         # Follow MAPS_TO_TABLE to find and pin the target table
         target_id = idx.maps_to_target(entity_node.id)
         if target_id is not None:
             _upsert(target_id, _SCORE_MAPS_TO_TARGET, _TIER_PINNED,
                      f"entity_bridge_table:{entity_short}",
-                     _SUB_EXACT_TABLE if full_match else _SUB_ENTITY_BRIDGE)
+                     _SUB_EXACT_TABLE if full_match else bridge_sub_tier)
 
         # Mark trigger term as matched if not already
         if trigger_term and trigger_term not in matched_terms:
