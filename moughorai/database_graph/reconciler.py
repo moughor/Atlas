@@ -578,6 +578,9 @@ def reconcile_database_graph(
                 NodeKind.MATERIALIZED_VIEW.value,
             ):
                 jailer_tables[qname_upper] = node
+                # Also index schema-qualified form (SYGMA.TABLE_NAME)
+                if "." not in qname_upper:
+                    jailer_tables[f"SYGMA.{qname_upper}"] = node
                 if node.get_property("historical") is True:
                     historical_table_names.add(qname_upper)
             elif kind_val == NodeKind.COLUMN.value:
