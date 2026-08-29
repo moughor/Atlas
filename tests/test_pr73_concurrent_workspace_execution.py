@@ -33,20 +33,25 @@ def make_service(tmp_path: Path) -> WorkspaceService:
 
 
 def test_parallel_execution_runs_independent_projects_together(tmp_path: Path) -> None:
+    """Independent projects (core, docs, tools) must be scheduled concurrently.
+
+    The Barrier(3) proves all three arrive before any of them continues.
+    If the orchestrator serialised them, the barrier would time out.
+    """
     barrier = Barrier(3)
-    seen: list[str] = []
-    lock = Lock()
+    arrived: list[str] = []
+    arrived_lock = Lock()
 
     def analyze(project, dependencies):
         if project.name in {"core", "docs", "tools"}:
+            with arrived_lock:
+                arrived.append(project.name)
             barrier.wait(timeout=2)
-        with lock:
-            seen.append(project.name)
         return project.name
 
     report = WorkspaceAnalysisOrchestrator(make_service(tmp_path)).execute(analyze, max_workers=3)
     assert report.succeeded
-    assert set(seen[:3]) == {"core", "docs", "tools"}
+    assert set(arrived) == {"core", "docs", "tools"}
 
 
 def test_report_order_remains_topological_and_deterministic(tmp_path: Path) -> None:
