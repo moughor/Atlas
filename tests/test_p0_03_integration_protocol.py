@@ -194,15 +194,14 @@ class TestDatabaseContextSelection:
     def test_project_feature_story_selects_relevant_tables(self, reconciled_graph):
         """A story referencing TB_GRP_PF_FEATURE should find that table.
 
-        Uses max_objects=1000 because underscore-splitting produces
-        'grp' which partial-matches ~14K nodes, pushing specific results
-        past the default 60-node cap in alphabetical order.
+        Phase B enforces a hard max_objects=60 cap.  Exact table matches
+        are pinned with the highest sub-tier priority and survive the cap.
         """
         from moughorai.database_graph.context_selector import select_database_context
 
         story = "TB_GRP_PF_FEATURE"
         result = select_database_context(
-            reconciled_graph, story, max_hops=1, max_objects=1000,
+            reconciled_graph, story, max_hops=1,
         )
 
         selected_names = {n.qualified_name for n in result.selected_nodes}
@@ -216,7 +215,7 @@ class TestDatabaseContextSelection:
         assert len(result.selected_nodes) > 1
 
     def test_context_is_bounded(self, reconciled_graph):
-        """max_objects caps non-pinned nodes; pinned exact matches survive."""
+        """max_objects hard cap is enforced; directly mentioned tables survive."""
         from moughorai.database_graph.context_selector import select_database_context
 
         story = (
@@ -226,18 +225,20 @@ class TestDatabaseContextSelection:
         result = select_database_context(
             reconciled_graph, story, max_hops=2, max_objects=5,
         )
-        # Pinned exact matches + their essential neighborhood survive the cap.
-        # The 3 exact tables and their columns/FK edges are pinned, so total
-        # exceeds max_objects=5. This is CORRECT behavior — pinned nodes are
-        # never removed.
-        assert len(result.selected_nodes) >= 3, (
-            f"Expected at least the 3 exact tables, got {len(result.selected_nodes)}"
+        # Hard cap: total nodes must not exceed max_objects
+        assert len(result.selected_nodes) <= 5, (
+            f"Hard cap violated: {len(result.selected_nodes)} nodes > max_objects=5"
         )
+        # The 3 exact tables should survive (highest priority)
         selected_names = {n.qualified_name for n in result.selected_nodes}
         assert "TB_GRP_PF" in selected_names
         assert "TB_GRP_PF_FEATURE" in selected_names
         assert "TB_GRP_PF_FEATURE_P" in selected_names
         assert result.max_objects == 5
+        # Truncation metadata must report the eviction
+        assert result.truncation.was_truncated is True
+        assert result.truncation.hard_cap == 5
+        assert result.truncation.total_candidates > 5
 
     def test_context_carries_graph_fingerprint(self, reconciled_graph):
         """The context result is bound to the full graph fingerprint."""

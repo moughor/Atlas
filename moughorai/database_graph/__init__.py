@@ -21,6 +21,8 @@ from .models import (
 from .context_selector import (
     DatabaseContextResult,
     OmittedCounts,
+    SelectionDetail,
+    TruncationMetadata,
     render_database_context_markdown,
     render_database_context_mermaid,
     select_database_context,
@@ -53,6 +55,8 @@ __all__ = [
     # context_selector
     "DatabaseContextResult",
     "OmittedCounts",
+    "SelectionDetail",
+    "TruncationMetadata",
     "render_database_context_markdown",
     "render_database_context_mermaid",
     "select_database_context",

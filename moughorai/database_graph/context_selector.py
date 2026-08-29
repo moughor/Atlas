@@ -4,7 +4,13 @@ Phase C3 — selects a relevant subgraph from a reconciled DatabaseGraph
 by extracting domain terms from story text, matching them against graph
 nodes with a weighted scoring system, pinning exact matches and their
 essential neighbourhood, expanding via FK connectivity, and capping the
-result at a bounded size while preserving pinned nodes.
+result at a bounded size.
+
+Phase B hardens the cap: the total number of selected objects (nodes)
+never exceeds ``max_objects`` even when pinned nodes are present.  When
+the pinned neighbourhood alone would exceed the cap, a deterministic
+priority eviction keeps directly-mentioned tables and their required
+relationships while trimming lower-priority FK expansions and columns.
 
 All outputs are frozen dataclasses with deterministic fingerprints and
 full round-trip serialisation (to_dict / from_dict).
@@ -44,12 +50,24 @@ _SCORE_DOMAIN_PHRASE: int = 50        # Normalized domain phrase match
 _SCORE_FUZZY_SUBSTRING: int = 20      # Fuzzy/substring match (5+ chars)
 _MIN_SUBSTRING_LENGTH: int = 5        # Minimum chars for a substring match to score
 
-# Tier constants for ranking
+# Entity bridge matching: require this many camelCase word hits (from distinct
+# story terms) to bridge a single entity.  A full-name exact match always
+# passes regardless of this threshold.
+_ENTITY_BRIDGE_MIN_WORD_HITS: int = 2
+
+# Tier constants for ranking — lower tier = higher priority.
 _TIER_PINNED: int = 0         # Pinned nodes (exact match + essential neighborhood)
 _TIER_FK_CONNECTED: int = 1   # FK-connected tables of pinned nodes
 _TIER_FK_COLUMNS: int = 2     # Columns of tier-1 tables
 _TIER_DOMAIN: int = 3         # Domain phrase matches
 _TIER_FUZZY: int = 4          # Fuzzy/substring matches
+
+# Sub-tier constants within TIER_PINNED for priority eviction.
+_SUB_EXACT_TABLE: int = 0     # Directly mentioned table (score 100)
+_SUB_EXACT_ENTITY: int = 1    # Directly mentioned entity (score 90)
+_SUB_ENTITY_BRIDGE: int = 2   # Entity-bridged table (score 85)
+_SUB_FK_OF_EXACT: int = 3     # FK neighbor of an exact-matched table
+_SUB_COL_OF_EXACT: int = 4    # Column of a pinned table
 
 # Node kinds that are structural anchors
 _ANCHOR_KINDS: frozenset[str] = frozenset({
@@ -109,6 +127,106 @@ def _sha256(payload: object) -> str:
     return hashlib.sha256(
         canonical_json(payload).encode("utf-8")
     ).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# SelectionDetail — per-tier breakdown of selected / omitted nodes
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class SelectionDetail:
+    """Per-tier breakdown of how many nodes were selected and omitted.
+
+    Attributes:
+        tier: Tier constant (_TIER_PINNED .. _TIER_FUZZY).
+        tier_label: Human-readable tier name.
+        selected: Number of nodes selected in this tier.
+        omitted: Number of candidate nodes in this tier that were trimmed.
+    """
+
+    tier: int
+    tier_label: str
+    selected: int = 0
+    omitted: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tier": self.tier,
+            "tier_label": self.tier_label,
+            "selected": self.selected,
+            "omitted": self.omitted,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SelectionDetail:
+        if not isinstance(data, dict):
+            raise ValueError("selection detail must be an object")
+        return cls(
+            tier=int(data.get("tier", 0)),
+            tier_label=str(data.get("tier_label", "")),
+            selected=int(data.get("selected", 0)),
+            omitted=int(data.get("omitted", 0)),
+        )
+
+
+_TIER_LABELS: dict[int, str] = {
+    _TIER_PINNED: "pinned",
+    _TIER_FK_CONNECTED: "fk_connected",
+    _TIER_FK_COLUMNS: "fk_columns",
+    _TIER_DOMAIN: "domain",
+    _TIER_FUZZY: "fuzzy",
+}
+
+
+# ---------------------------------------------------------------------------
+# TruncationMetadata
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class TruncationMetadata:
+    """Records whether and how the bounded context was truncated.
+
+    Attributes:
+        was_truncated: True if any candidate nodes were removed.
+        hard_cap: The max_objects cap that was enforced.
+        total_candidates: Total scored nodes before capping.
+        total_selected: Total nodes in the final result.
+        tier_details: Per-tier selection/omission breakdown.
+        pinned_evicted: Number of pinned-tier nodes evicted to meet the hard cap.
+    """
+
+    was_truncated: bool = False
+    hard_cap: int = _DEFAULT_MAX_OBJECTS
+    total_candidates: int = 0
+    total_selected: int = 0
+    tier_details: tuple[SelectionDetail, ...] = ()
+    pinned_evicted: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "was_truncated": self.was_truncated,
+            "hard_cap": self.hard_cap,
+            "total_candidates": self.total_candidates,
+            "total_selected": self.total_selected,
+            "tier_details": [d.to_dict() for d in self.tier_details],
+            "pinned_evicted": self.pinned_evicted,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TruncationMetadata:
+        if not isinstance(data, dict):
+            raise ValueError("truncation metadata must be an object")
+        return cls(
+            was_truncated=bool(data.get("was_truncated", False)),
+            hard_cap=int(data.get("hard_cap", _DEFAULT_MAX_OBJECTS)),
+            total_candidates=int(data.get("total_candidates", 0)),
+            total_selected=int(data.get("total_selected", 0)),
+            tier_details=tuple(
+                SelectionDetail.from_dict(d)
+                for d in data.get("tier_details", ())
+            ),
+            pinned_evicted=int(data.get("pinned_evicted", 0)),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +290,7 @@ class DatabaseContextResult:
         context_fingerprint: SHA-256 fingerprint of this bounded context payload.
         max_hops: Maximum hop depth used for expansion.
         max_objects: Maximum node cap used.
+        truncation: Detailed truncation metadata (Phase B).
     """
 
     selected_nodes: tuple[DatabaseGraphNode, ...]
@@ -183,6 +302,7 @@ class DatabaseContextResult:
     context_fingerprint: str
     max_hops: int
     max_objects: int
+    truncation: TruncationMetadata = field(default_factory=TruncationMetadata)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_nodes", tuple(self.selected_nodes))
@@ -205,12 +325,15 @@ class DatabaseContextResult:
             "context_fingerprint": self.context_fingerprint,
             "max_hops": self.max_hops,
             "max_objects": self.max_objects,
+            "truncation": self.truncation.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DatabaseContextResult:
         if not isinstance(data, dict):
             raise ValueError("database context result must be an object")
+        trunc_raw = data.get("truncation")
+        trunc = TruncationMetadata.from_dict(trunc_raw) if isinstance(trunc_raw, dict) else TruncationMetadata()
         return cls(
             selected_nodes=tuple(
                 DatabaseGraphNode.from_dict(n)
@@ -229,6 +352,7 @@ class DatabaseContextResult:
             context_fingerprint=data["context_fingerprint"],
             max_hops=int(data.get("max_hops", _DEFAULT_MAX_HOPS)),
             max_objects=int(data.get("max_objects", _DEFAULT_MAX_OBJECTS)),
+            truncation=trunc,
         )
 
 
@@ -484,10 +608,11 @@ class _ScoredNode:
     score: int
     tier: int
     reason: str  # debugging breadcrumb
+    sub_tier: int = _SUB_COL_OF_EXACT  # default: lowest pinned priority
 
-    def sort_key(self) -> tuple[int, int, str]:
-        """Sort: tier ascending, score descending, then name for determinism."""
-        return (self.tier, -self.score, self.node_id)
+    def sort_key(self) -> tuple[int, int, int, str]:
+        """Sort: tier ascending, sub_tier ascending, score descending, then id."""
+        return (self.tier, self.sub_tier, -self.score, self.node_id)
 
 
 def _score_and_match(
@@ -502,16 +627,21 @@ def _score_and_match(
     matched_terms: list[str] = []
     unmatched_terms: list[str] = []
 
-    def _upsert(node_id: str, score: int, tier: int, reason: str) -> None:
+    def _upsert(node_id: str, score: int, tier: int, reason: str,
+                sub_tier: int = _SUB_COL_OF_EXACT) -> None:
         existing = scored.get(node_id)
-        if existing is None or score > existing.score:
+        if existing is None:
             scored[node_id] = _ScoredNode(
-                node_id=node_id, score=score, tier=min(tier, existing.tier) if existing else tier, reason=reason,
+                node_id=node_id, score=score, tier=tier, reason=reason,
+                sub_tier=sub_tier,
             )
-        elif existing is not None and tier < existing.tier:
-            # Promote tier if new tier is better, keep higher score
+        elif score > existing.score or tier < existing.tier or sub_tier < existing.sub_tier:
             scored[node_id] = _ScoredNode(
-                node_id=node_id, score=existing.score, tier=tier, reason=existing.reason,
+                node_id=node_id,
+                score=max(score, existing.score),
+                tier=min(tier, existing.tier),
+                reason=reason if score > existing.score else existing.reason,
+                sub_tier=min(sub_tier, existing.sub_tier),
             )
 
     for term in terms:
@@ -522,29 +652,36 @@ def _score_and_match(
         exact_nodes = idx.short_name_to_nodes.get(term, [])
         for node in exact_nodes:
             if node.kind in _TABLE_KINDS:
-                _upsert(node.id, _SCORE_EXACT_IDENTIFIER, _TIER_PINNED, f"exact_table:{term}")
+                _upsert(node.id, _SCORE_EXACT_IDENTIFIER, _TIER_PINNED,
+                         f"exact_table:{term}", _SUB_EXACT_TABLE)
                 found = True
             elif node.kind in _ENTITY_KINDS:
-                _upsert(node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED, f"exact_entity:{term}")
+                _upsert(node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED,
+                         f"exact_entity:{term}", _SUB_EXACT_ENTITY)
                 found = True
             elif node.kind == NodeKind.COLUMN.value:
                 # Column exact match — scored as FK/column neighbor level
-                _upsert(node.id, _SCORE_FK_COLUMN_NEIGHBOR, _TIER_PINNED, f"exact_column:{term}")
+                _upsert(node.id, _SCORE_FK_COLUMN_NEIGHBOR, _TIER_PINNED,
+                         f"exact_column:{term}", _SUB_COL_OF_EXACT)
                 found = True
             else:
                 # Other node kinds (sequence, synonym, etc.)
-                _upsert(node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED, f"exact_other:{term}")
+                _upsert(node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED,
+                         f"exact_other:{term}", _SUB_EXACT_ENTITY)
                 found = True
 
         # Also check full qualified name exact match
         qn_node = idx.qname_upper_to_nodes.get(term)
         if qn_node is not None:
             if qn_node.kind in _TABLE_KINDS:
-                _upsert(qn_node.id, _SCORE_EXACT_IDENTIFIER, _TIER_PINNED, f"exact_qname_table:{term}")
+                _upsert(qn_node.id, _SCORE_EXACT_IDENTIFIER, _TIER_PINNED,
+                         f"exact_qname_table:{term}", _SUB_EXACT_TABLE)
             elif qn_node.kind in _ENTITY_KINDS:
-                _upsert(qn_node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED, f"exact_qname_entity:{term}")
+                _upsert(qn_node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED,
+                         f"exact_qname_entity:{term}", _SUB_EXACT_ENTITY)
             else:
-                _upsert(qn_node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED, f"exact_qname_other:{term}")
+                _upsert(qn_node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED,
+                         f"exact_qname_other:{term}", _SUB_EXACT_ENTITY)
             found = True
 
         # --- 2. Normalized domain phrase match (score 50) ---
@@ -558,7 +695,8 @@ def _score_and_match(
                 # Split on underscores to get segments
                 segments = short_upper.split("_")
                 if term in segments:
-                    _upsert(node.id, _SCORE_DOMAIN_PHRASE, _TIER_DOMAIN, f"domain_segment:{term}")
+                    _upsert(node.id, _SCORE_DOMAIN_PHRASE, _TIER_DOMAIN,
+                             f"domain_segment:{term}")
                     found = True
 
         # --- 3. Fuzzy/substring match (score 20, min 5 chars) ---
@@ -566,7 +704,8 @@ def _score_and_match(
             for node in idx.graph.nodes:
                 qn_upper = node.qualified_name.upper()
                 if term in qn_upper:
-                    _upsert(node.id, _SCORE_FUZZY_SUBSTRING, _TIER_FUZZY, f"substring:{term}")
+                    _upsert(node.id, _SCORE_FUZZY_SUBSTRING, _TIER_FUZZY,
+                             f"substring:{term}")
                     found = True
 
         if found:
@@ -574,33 +713,53 @@ def _score_and_match(
         else:
             unmatched_terms.append(term)
 
-    # --- Fix 3B: Entity→table bridging ---
-    # For each JPA entity, check if any extracted term matches the entity's
-    # class name (case-insensitive camelCase split). If yes, follow
-    # MAPS_TO_TABLE edges to find the target table and pin it.
+    # --- Fix 3B (Phase B): Entity→table bridging ---
+    # For each JPA entity, count how many distinct story terms match its
+    # camelCase words.  Bridge only when the full entity name matches
+    # exactly OR at least _ENTITY_BRIDGE_MIN_WORD_HITS distinct words
+    # are hit.  This prevents a single common word like "project" from
+    # pulling dozens of unrelated entities.
+    terms_lower_set: set[str] = {t.lower() for t in terms}
+
     for entity_node in idx.entity_nodes:
         entity_short = entity_node.qualified_name.rsplit(".", 1)[-1]
-        entity_words = _split_camel_case(entity_short)
         entity_upper = entity_short.upper()
+        entity_words = _split_camel_case(entity_short)
 
+        # Check full-name exact match first
+        full_match = entity_upper.lower() in terms_lower_set
+
+        if not full_match:
+            # Count how many distinct camelCase words have a matching term
+            word_hits = sum(1 for w in entity_words if w in terms_lower_set)
+            if word_hits < _ENTITY_BRIDGE_MIN_WORD_HITS:
+                continue  # Not enough word overlap — skip this entity
+
+        # Determine which term triggered the match (for matched_terms tracking)
+        trigger_term: str | None = None
         for term in terms:
-            term_lower = term.lower()
-            # Match if the term matches the full entity name or any camelCase word
-            if term_lower == entity_upper.lower() or term_lower in entity_words:
-                # Pin the entity
-                _upsert(entity_node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED,
-                         f"entity_bridge:{term}")
-                # Follow MAPS_TO_TABLE to find and pin the target table
-                target_id = idx.maps_to_target(entity_node.id)
-                if target_id is not None:
-                    _upsert(target_id, _SCORE_MAPS_TO_TARGET, _TIER_PINNED,
-                             f"entity_bridge_table:{entity_short}")
-                # Mark term as matched if not already
-                if term not in matched_terms:
-                    matched_terms.append(term)
-                    if term in unmatched_terms:
-                        unmatched_terms.remove(term)
-                break  # Only need one term to match per entity
+            tl = term.lower()
+            if tl == entity_upper.lower() or tl in entity_words:
+                trigger_term = term
+                break
+
+        # Pin the entity
+        _upsert(entity_node.id, _SCORE_EXACT_ENTITY, _TIER_PINNED,
+                 f"entity_bridge:{trigger_term or entity_short}",
+                 _SUB_EXACT_ENTITY if full_match else _SUB_ENTITY_BRIDGE)
+
+        # Follow MAPS_TO_TABLE to find and pin the target table
+        target_id = idx.maps_to_target(entity_node.id)
+        if target_id is not None:
+            _upsert(target_id, _SCORE_MAPS_TO_TARGET, _TIER_PINNED,
+                     f"entity_bridge_table:{entity_short}",
+                     _SUB_EXACT_TABLE if full_match else _SUB_ENTITY_BRIDGE)
+
+        # Mark trigger term as matched if not already
+        if trigger_term and trigger_term not in matched_terms:
+            matched_terms.append(trigger_term)
+            if trigger_term in unmatched_terms:
+                unmatched_terms.remove(trigger_term)
 
     # --- Fix 3B (cont): Column-name matching ---
     # For each term, check if it matches a column name; if so, include the
@@ -645,7 +804,9 @@ def _pin_essential_neighbourhood(
       - Include its MAPS_TO_TABLE target table
       - Include that table's columns and FK edges
 
-    Returns the set of pinned node IDs. These are NEVER removed by the cap.
+    Returns the set of pinned node IDs. These are high priority during
+    the hard-cap eviction but can be trimmed if the total exceeds
+    max_objects.
     """
     pinned: set[str] = set()
 
@@ -672,12 +833,14 @@ def _pin_essential_neighbourhood(
         target_table_id = idx.maps_to_target(ent_id)
         if target_table_id is not None:
             pinned.add(target_table_id)
-            if target_table_id not in scored:
+            existing = scored.get(target_table_id)
+            if existing is None or existing.tier > _TIER_PINNED or existing.sub_tier > _SUB_ENTITY_BRIDGE:
                 scored[target_table_id] = _ScoredNode(
                     node_id=target_table_id,
-                    score=_SCORE_MAPS_TO_TARGET,
+                    score=max(_SCORE_MAPS_TO_TARGET, existing.score if existing else 0),
                     tier=_TIER_PINNED,
-                    reason=f"maps_to_target_of:{ent_id}",
+                    reason=f"maps_to_target_of:{ent_id}" if existing is None else existing.reason,
+                    sub_tier=_SUB_ENTITY_BRIDGE,
                 )
             exact_table_ids.append(target_table_id)
 
@@ -686,23 +849,27 @@ def _pin_essential_neighbourhood(
         # Columns
         for col_id in idx.columns_of(tbl_id):
             pinned.add(col_id)
-            if col_id not in scored:
+            existing = scored.get(col_id)
+            if existing is None or existing.tier > _TIER_PINNED or existing.sub_tier > _SUB_COL_OF_EXACT:
                 scored[col_id] = _ScoredNode(
                     node_id=col_id,
-                    score=_SCORE_FK_COLUMN_NEIGHBOR,
+                    score=max(_SCORE_FK_COLUMN_NEIGHBOR, existing.score if existing else 0),
                     tier=_TIER_PINNED,
-                    reason=f"column_of_pinned:{tbl_id}",
+                    reason=f"column_of_pinned:{tbl_id}" if existing is None else existing.reason,
+                    sub_tier=_SUB_COL_OF_EXACT,
                 )
 
-        # FK neighbors — just mark the neighboring table IDs
+        # FK neighbors — mark as pinned with FK_OF_EXACT sub-tier
         for neighbor_id, _fk_edge in idx.fk_neighbors_of(tbl_id):
             pinned.add(neighbor_id)
-            if neighbor_id not in scored:
+            existing = scored.get(neighbor_id)
+            if existing is None or existing.tier > _TIER_PINNED or existing.sub_tier > _SUB_FK_OF_EXACT:
                 scored[neighbor_id] = _ScoredNode(
                     node_id=neighbor_id,
-                    score=_SCORE_FK_COLUMN_NEIGHBOR,
+                    score=max(_SCORE_FK_COLUMN_NEIGHBOR, existing.score if existing else 0),
                     tier=_TIER_PINNED,
-                    reason=f"fk_neighbor_of_pinned:{tbl_id}",
+                    reason=f"fk_neighbor_of_pinned:{tbl_id}" if existing is None else existing.reason,
+                    sub_tier=_SUB_FK_OF_EXACT,
                 )
 
     return pinned
@@ -858,9 +1025,15 @@ def select_database_context(
     3. Score nodes against terms with a weighted system.
     4. Pin exact matches and their essential neighbourhood.
     5. Expand FK tiers (tier 1: FK-connected tables, tier 2: their columns).
-    6. Cap at max_objects — pinned nodes (tier 0) are never removed.
+    6. Enforce hard cap at max_objects on ALL nodes using priority eviction.
     7. Include ALL edges between selected nodes.
     8. Compute a deterministic context fingerprint.
+
+    The hard cap is enforced on the total selected set.  When pinned
+    nodes alone exceed max_objects, deterministic priority eviction
+    removes the lowest-priority pinned nodes first (columns of pinned
+    tables, then FK neighbors, then entity-bridged tables) while
+    preserving directly-mentioned tables and entities.
 
     Args:
         graph: The full reconciled DatabaseGraph.
@@ -908,32 +1081,28 @@ def select_database_context(
     # 5. Expand FK tiers
     _expand_fk_tiers(pinned, scored, idx)
 
-    # 6. Cap at max_objects — pinned nodes are never removed
+    # 6. Hard cap at max_objects — applies to ALL nodes including pinned.
+    #    Sort every candidate by (tier, sub_tier, -score, node_id) and
+    #    keep the first max_objects entries.
     total_candidate_nodes = len(scored)
 
-    # Separate pinned from cappable
-    pinned_entries = []
-    cappable_entries = []
-    for node_id, sn in scored.items():
-        if node_id in pinned:
-            pinned_entries.append(sn)
-        else:
-            cappable_entries.append(sn)
+    all_entries = sorted(scored.values(), key=lambda s: s.sort_key())
+    kept_entries = all_entries[:max_objects]
+    evicted_entries = all_entries[max_objects:]
 
-    # Sort cappable by tier ascending, score descending, id for determinism
-    cappable_entries.sort(key=lambda s: s.sort_key())
+    # Track per-tier statistics
+    tier_candidates: dict[int, int] = {}
+    tier_selected: dict[int, int] = {}
+    for sn in all_entries:
+        tier_candidates[sn.tier] = tier_candidates.get(sn.tier, 0) + 1
+    for sn in kept_entries:
+        tier_selected[sn.tier] = tier_selected.get(sn.tier, 0) + 1
 
-    # How many cappable slots remain after pinned nodes?
-    remaining_slots = max(0, max_objects - len(pinned_entries))
-    kept_cappable = cappable_entries[:remaining_slots]
+    # Count how many pinned-tier entries were evicted
+    pinned_evicted = sum(1 for sn in evicted_entries if sn.node_id in pinned)
 
     # Final selected set
-    selected_ids: set[str] = set()
-    for sn in pinned_entries:
-        selected_ids.add(sn.node_id)
-    for sn in kept_cappable:
-        selected_ids.add(sn.node_id)
-
+    selected_ids: set[str] = {sn.node_id for sn in kept_entries}
     nodes_omitted = total_candidate_nodes - len(selected_ids)
 
     # 7. Include ALL edges between selected nodes
@@ -965,6 +1134,28 @@ def select_database_context(
         total_candidate_edges=total_candidate_edges,
     )
 
+    # Build per-tier selection details
+    tier_details: list[SelectionDetail] = []
+    all_tiers = sorted(set(tier_candidates) | set(tier_selected))
+    for t in all_tiers:
+        sel = tier_selected.get(t, 0)
+        cand = tier_candidates.get(t, 0)
+        tier_details.append(SelectionDetail(
+            tier=t,
+            tier_label=_TIER_LABELS.get(t, f"tier_{t}"),
+            selected=sel,
+            omitted=cand - sel,
+        ))
+
+    truncation = TruncationMetadata(
+        was_truncated=nodes_omitted > 0,
+        hard_cap=max_objects,
+        total_candidates=total_candidate_nodes,
+        total_selected=len(selected_ids),
+        tier_details=tuple(tier_details),
+        pinned_evicted=pinned_evicted,
+    )
+
     ctx_fp = _context_fingerprint(
         selected_nodes=selected_nodes,
         selected_edges=selected_edges,
@@ -985,6 +1176,7 @@ def select_database_context(
         context_fingerprint=ctx_fp,
         max_hops=max_hops,
         max_objects=max_objects,
+        truncation=truncation,
     )
 
 
@@ -1034,6 +1226,16 @@ def render_database_context_markdown(result: DatabaseContextResult) -> str:
             f"{result.omitted_counts.edges_omitted} edges omitted "
             f"(cap: {result.max_objects} nodes, {result.max_hops} hops)."
         )
+        if result.truncation.was_truncated:
+            lines.append(
+                f"> Selected {result.truncation.total_selected} of "
+                f"{result.truncation.total_candidates} candidates."
+            )
+            if result.truncation.pinned_evicted > 0:
+                lines.append(
+                    f"> {result.truncation.pinned_evicted} pinned-tier nodes "
+                    f"evicted to meet the hard cap."
+                )
         lines.append("")
 
     # --- Matched terms ---

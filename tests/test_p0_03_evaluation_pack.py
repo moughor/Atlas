@@ -305,7 +305,7 @@ class TestContextCases:
     ):
         from moughorai.database_graph.context_selector import select_database_context
 
-        ctx = select_database_context(reconciled_graph, story_text, max_objects=500)
+        ctx = select_database_context(reconciled_graph, story_text, max_objects=60)
 
         # Build selected lookups
         selected_table_names = {
@@ -377,7 +377,7 @@ class TestContextCases:
         ctx = select_database_context(
             reconciled_graph,
             "Migrate backup table BCK_TB_GRP_PF to new archive format.",
-            max_objects=500,
+            max_objects=60,
         )
         bck_tables = [
             n.qualified_name
