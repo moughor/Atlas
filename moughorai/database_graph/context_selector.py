@@ -373,6 +373,7 @@ class _GraphIndex:
         "entity_nodes",
         "outgoing",
         "incoming",
+        "alias_to_nodes",
     )
 
     def __init__(self, graph: DatabaseGraph) -> None:
@@ -407,12 +408,88 @@ class _GraphIndex:
             self.outgoing.setdefault(edge.from_node, []).append(edge)
             self.incoming.setdefault(edge.to_node, []).append(edge)
 
+        # --- Semantic alias index ---
+        # Maps normalized multi-word phrases to table/view node IDs.
+        # Built from entity class names, table name segments, and
+        # view/FK relationship evidence.
+        self.alias_to_nodes: dict[str, list[tuple[str, int]]] = {}  # phrase → [(node_id, weight)]
+        self._build_alias_index(graph)
+
     def edges_from(self, node_id: str, kind: str | None = None) -> list[DatabaseGraphEdge]:
         """Return outgoing edges, optionally filtered by kind."""
         edges = self.outgoing.get(node_id, [])
         if kind is not None:
             return [e for e in edges if e.kind == kind]
         return edges
+
+    def _build_alias_index(self, graph: DatabaseGraph) -> None:
+        """Build a semantic alias index from repository evidence.
+
+        Sources:
+        1. Entity class names → MAPS_TO table (weight 90)
+        2. Table/view name segments after prefix stripping (weight 70)
+        3. Multi-word compounds from table names (weight 80)
+
+        Each alias is a lowercase multi-word phrase. The index maps
+        phrases to (node_id, weight) pairs for weighted retrieval.
+        """
+        def _add_alias(phrase: str, node_id: str, weight: int) -> None:
+            phrase = phrase.lower().strip()
+            if len(phrase) < 3:
+                return
+            self.alias_to_nodes.setdefault(phrase, []).append((node_id, weight))
+
+        # Common table name prefixes to strip
+        _PREFIXES = [
+            "TB_RT_", "TB_APP_", "TB_GRP_", "TB_MDL_", "TB_LOG_",
+            "TB_GRP_PR_", "TB_GRP_PL_", "TB_GRP_C_",
+            "VW_HD_", "VW_", "MV_A_", "MV_", "TB_",
+        ]
+
+        # 1. Entity MAPS_TO aliases
+        for edge in graph.edges:
+            if edge.kind != EdgeKind.MAPS_TO_TABLE.value:
+                continue
+            ent_node = self.node_by_id.get(edge.from_node)
+            tbl_node = self.node_by_id.get(edge.to_node)
+            if not ent_node or not tbl_node:
+                continue
+            ent_short = ent_node.qualified_name.rsplit(".", 1)[-1]
+            words = _split_camel_case(ent_short)
+            # Full entity name as alias
+            _add_alias(" ".join(words), tbl_node.id, 90)
+            # Consecutive 2-word and 3-word sub-phrases
+            for wlen in (3, 2):
+                for i in range(len(words) - wlen + 1):
+                    _add_alias(" ".join(words[i:i + wlen]), tbl_node.id, 85)
+
+        # 2. Table/view name segment aliases
+        for node in graph.nodes:
+            if node.kind not in _TABLE_KINDS:
+                continue
+            qn = node.qualified_name.upper()
+            short = qn.rsplit(".", 1)[-1]
+
+            # Strip known prefixes
+            stripped = short
+            for prefix in _PREFIXES:
+                if stripped.startswith(prefix):
+                    stripped = stripped[len(prefix):]
+                    break
+
+            segments = [s for s in stripped.split("_") if len(s) >= 2]
+            if not segments:
+                continue
+
+            # Full stripped name as one phrase
+            full_phrase = " ".join(s.lower() for s in segments)
+            _add_alias(full_phrase, node.id, 70)
+
+            # Consecutive 2-segment and 3-segment sub-phrases
+            for wlen in (3, 2):
+                for i in range(len(segments) - wlen + 1):
+                    phrase = " ".join(s.lower() for s in segments[i:i + wlen])
+                    _add_alias(phrase, node.id, 75)
 
     def edges_to(self, node_id: str, kind: str | None = None) -> list[DatabaseGraphEdge]:
         """Return incoming edges, optionally filtered by kind."""
@@ -673,6 +750,55 @@ def _score_and_match(
                 sub_tier=min(sub_tier, existing.sub_tier),
                 kind_priority=min(kp, existing.kind_priority),
             )
+
+    # --- Phase 0: Alias-based multi-word retrieval ---
+    # For each alias phrase in the index, check if ALL its words appear
+    # in the story terms (unordered).  This handles stories where related
+    # words are separated by other terms, e.g., "rule ... exception"
+    # matching the alias "rule exception".
+    terms_lower = [t.lower() for t in terms]
+    terms_lower_set: set[str] = set(terms_lower)
+
+    # Build normalized term set (including plural/singular variants)
+    terms_normalized_set: set[str] = set()
+    for t in terms_lower_set:
+        terms_normalized_set.update(_normalize_plural(t))
+
+    _alias_matched_terms: set[str] = set()
+
+    # Score each alias phrase by checking word containment
+    for phrase, hits in idx.alias_to_nodes.items():
+        phrase_words = phrase.split()
+        if len(phrase_words) < 2:
+            continue  # Single-word aliases handled separately below
+
+        # Check if all phrase words appear in story terms (with normalization)
+        all_present = all(
+            w in terms_lower_set or w in terms_normalized_set
+            for w in phrase_words
+        )
+        if not all_present:
+            continue
+
+        # Multi-word alias match — score the corresponding nodes
+        for node_id, weight in hits:
+            # Boost weight by number of matching words
+            boosted = weight + len(phrase_words) * 3
+            _upsert(node_id, boosted, _TIER_PINNED,
+                     f"alias:{phrase}", _SUB_ENTITY_BRIDGE)
+            # Track which terms were used
+            for pw in phrase_words:
+                for t in terms:
+                    if t.lower() == pw or pw in _normalize_plural(t.lower()):
+                        _alias_matched_terms.add(t)
+
+    # Single-word alias matches (lower weight, DOMAIN tier)
+    for t in terms_lower:
+        for v in _normalize_plural(t):
+            hits = idx.alias_to_nodes.get(v, [])
+            for node_id, weight in hits:
+                _upsert(node_id, max(weight - 20, _SCORE_DOMAIN_PHRASE),
+                         _TIER_DOMAIN, f"alias1:{v}", _SUB_FK_OF_EXACT)
 
     for term in terms:
         found = False
