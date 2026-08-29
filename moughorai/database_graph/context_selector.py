@@ -752,8 +752,8 @@ def _apply_prefix_diversity(
             continue
         short = node.qualified_name.rsplit(".", 1)[-1].upper()
         parts = short.split("_")
-        if len(parts) >= 4:
-            prefix = "_".join(parts[:3])
+        if len(parts) >= 5:
+            prefix = "_".join(parts[:4])
         else:
             # Short names: no family grouping, always keep
             result.append(sn)
