@@ -64,6 +64,43 @@ ISSUE_MV_MUTATION: str = "materialized_view_mutation"
 # Denormalized reference detection patterns
 _DENORM_FK_SUFFIX = re.compile(r"_ID$|_INSTANCES$|_FK$|_REF$", re.IGNORECASE)
 
+
+def _is_denormalized_ref(column_name: str, target_table: str) -> bool:
+    """Check if a column name suggests a denormalized reference to a target table.
+
+    Returns True when the column has an FK-like suffix (_ID, _INSTANCES, _FK, _REF)
+    AND the column's base name shares significant segments with the target table name.
+
+    E.g. column 'SESSION_INSTANCES' with target 'TB_RT_SESSION_INSTANCE':
+    - suffix '_INSTANCES' matches
+    - base 'SESSION' matches table segment 'SESSION'
+    → True (denormalized reference)
+    """
+    cu = column_name.upper()
+    if not _DENORM_FK_SUFFIX.search(cu):
+        return False
+
+    # Strip the suffix to get the reference base
+    base = _DENORM_FK_SUFFIX.sub("", cu).rstrip("_")
+    if not base:
+        return False
+
+    # Get meaningful segments from the target table name
+    # Strip common prefixes: TB_, VW_, MV_, MV_A_, T_, RT_, APP_, GRP_, MDL_
+    tgt = target_table.upper()
+    for prefix in ("TB_RT_", "TB_APP_", "TB_GRP_", "TB_MDL_", "TB_", "VW_", "MV_A_", "MV_", "T_"):
+        if tgt.startswith(prefix):
+            tgt = tgt[len(prefix):]
+            break
+
+    tgt_segments = set(tgt.split("_"))
+    base_segments = set(base.split("_"))
+
+    # Check if the column base shares at least one meaningful segment
+    # (ignoring very short segments like single letters)
+    shared = {s for s in base_segments.intersection(tgt_segments) if len(s) >= 3}
+    return len(shared) >= 1
+
 # Backup / historical detection — mirrors reconciler logic
 _BCK_PREFIX = re.compile(r"^BCK", re.IGNORECASE)
 _BACKUP_TOKEN = re.compile(r"BACK_UP", re.IGNORECASE)
@@ -1426,26 +1463,18 @@ def _validate_statement(
                     f"Join between '{left_t}' and '{right_t}' is not supported "
                     f"by FK or inferred relationship evidence"
                 )
+                # Check if any join column suggests a denormalized reference
+                # by matching the other table's name segments
                 for lt, lc, rt, rc in col_pairs:
-                    if _DENORM_FK_SUFFIX.search(lc):
-                        # Check if the column name matches the other table's short name
-                        rt_short = rt.rsplit(".", 1)[-1] if "." in rt else rt
-                        if lc.upper().startswith(rt_short.upper().replace("TB_", "").replace("T_", "")):
-                            _issue_type = ISSUE_DENORMALIZED_REFERENCE
-                            _detail = (
-                                f"Join column '{lt}.{lc}' references '{rt}' by naming "
-                                f"convention but no declared FK exists"
-                            )
-                            break
-                    if _DENORM_FK_SUFFIX.search(rc):
-                        lt_short = lt.rsplit(".", 1)[-1] if "." in lt else lt
-                        if rc.upper().startswith(lt_short.upper().replace("TB_", "").replace("T_", "")):
-                            _issue_type = ISSUE_DENORMALIZED_REFERENCE
-                            _detail = (
-                                f"Join column '{rt}.{rc}' references '{lt}' by naming "
-                                f"convention but no declared FK exists"
-                            )
-                            break
+                    if _is_denormalized_ref(lc, rt) or _is_denormalized_ref(rc, lt):
+                        _issue_type = ISSUE_DENORMALIZED_REFERENCE
+                        _ref_col = lc if _is_denormalized_ref(lc, rt) else rc
+                        _ref_tbl = rt if _is_denormalized_ref(lc, rt) else lt
+                        _detail = (
+                            f"Join column '{_ref_col}' references '{_ref_tbl}' "
+                            f"by naming convention but no declared FK exists"
+                        )
+                        break
                 issues.append(SqlValidationIssue(
                     issue_type=_issue_type,
                     object_name=f"{left_t} ↔ {right_t}",
