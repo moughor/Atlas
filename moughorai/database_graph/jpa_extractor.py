@@ -119,11 +119,26 @@ class UnresolvedConstant:
 
 
 @dataclass
+class NativeQueryRelation:
+    """A table relationship extracted from a Java native query."""
+
+    source_table: str
+    source_columns: list[str]
+    target_table: str
+    target_columns: list[str]
+    method_name: str
+    source_path: str
+    start_line: int
+    end_line: int
+
+
+@dataclass
 class JpaExtractionResult:
     """Complete result of JPA extraction across a repository tree."""
 
     entities: list[JpaEntity] = field(default_factory=list)
     unresolved_constants: list[UnresolvedConstant] = field(default_factory=list)
+    native_query_relations: list[NativeQueryRelation] = field(default_factory=list)
     files_scanned: int = 0
     files_with_entities: int = 0
     errors: list[str] = field(default_factory=list)
@@ -825,6 +840,119 @@ def _extract_entity_from_file(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Native query relation extraction
+# ---------------------------------------------------------------------------
+
+_RE_METHOD_WITH_NATIVE_QUERY = re.compile(
+    r"(?:public|private|protected)\s+\S+(?:<[^>]*>)?\s+(\w+)\s*\([^)]*\)\s*\{",
+    re.MULTILINE,
+)
+
+_RE_APPEND_STRING = re.compile(
+    r'\.append\s*\(\s*"([^"]+)"\s*\)',
+)
+
+_RE_JOIN_CLAUSE = re.compile(
+    r"\bJOIN\s+(\S+)\s+(\w+)\s+ON\s+([^)]+?)(?=\s+(?:JOIN|WHERE|AND\s+\w+\.\w+\s*=\s*\(|ORDER|GROUP|$))",
+    re.IGNORECASE,
+)
+
+_RE_ON_PAIR = re.compile(
+    r"(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)",
+)
+
+
+def _extract_native_query_relations(
+    content: str, rel_path: str,
+) -> list[NativeQueryRelation]:
+    """Extract table relationships from StringBuilder-based native queries.
+
+    Scans for methods containing createNativeQuery, reassembles SQL from
+    .append("...") calls, and parses JOIN clauses to extract relationships.
+    """
+    results: list[NativeQueryRelation] = []
+    lines = content.split("\n")
+
+    # Find methods containing createNativeQuery
+    for m in _RE_METHOD_WITH_NATIVE_QUERY.finditer(content):
+        method_name = m.group(1)
+        method_start = content.count("\n", 0, m.start()) + 1
+
+        # Find the method body (track braces)
+        body_start = content.index("{", m.start())
+        depth = 1
+        pos = body_start + 1
+        while pos < len(content) and depth > 0:
+            if content[pos] == "{":
+                depth += 1
+            elif content[pos] == "}":
+                depth -= 1
+            pos += 1
+        body = content[body_start:pos]
+        method_end = content.count("\n", 0, body_start + len(body)) + 1
+
+        if "createNativeQuery" not in body:
+            continue
+
+        # Reassemble SQL from .append("...") calls
+        sql_parts = _RE_APPEND_STRING.findall(body)
+        if not sql_parts:
+            continue
+        full_sql = " ".join(sql_parts)
+
+        # Extract table names from FROM clause
+        from_match = re.search(r"\bFROM\s+(\S+)\s+(\w+)", full_sql, re.IGNORECASE)
+        if not from_match:
+            continue
+
+        # Build alias → table mapping
+        alias_map: dict[str, str] = {}
+        base_table = from_match.group(1).upper()
+        base_alias = from_match.group(2).upper()
+        alias_map[base_alias] = base_table
+
+        # Parse JOIN clauses
+        for jm in _RE_JOIN_CLAUSE.finditer(full_sql):
+            join_table = jm.group(1).upper()
+            join_alias = jm.group(2).upper()
+            on_clause = jm.group(3)
+            alias_map[join_alias] = join_table
+
+            # Parse ON clause column pairs
+            for pm in _RE_ON_PAIR.finditer(on_clause):
+                left_alias = pm.group(1).upper()
+                left_col = pm.group(2).upper()
+                right_alias = pm.group(3).upper()
+                right_col = pm.group(4).upper()
+
+                left_table = alias_map.get(left_alias, left_alias)
+                right_table = alias_map.get(right_alias, right_alias)
+
+                # Record the relationship (both directions for determinism)
+                if left_table != right_table:
+                    results.append(NativeQueryRelation(
+                        source_table=left_table,
+                        source_columns=[left_col],
+                        target_table=right_table,
+                        target_columns=[right_col],
+                        method_name=method_name,
+                        source_path=rel_path,
+                        start_line=method_start,
+                        end_line=method_end,
+                    ))
+
+    # Deduplicate
+    seen: set[tuple[str, ...]] = set()
+    deduped: list[NativeQueryRelation] = []
+    for r in results:
+        key = (r.source_table, tuple(r.source_columns), r.target_table, tuple(r.target_columns))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    return deduped
+
+
 def extract_jpa_entities(
     root_path: str | Path,
     *,
@@ -900,6 +1028,37 @@ def extract_jpa_entities(
 
     # Sort entities by qualified name for deterministic output
     result.entities.sort(key=lambda e: e.qualified_name)
+
+    # --- Native query relation extraction ---
+    # Second pass: scan all Java files for createNativeQuery patterns
+    # to extract table relationship evidence from StringBuilder-based SQL.
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d for d in dirnames
+            if not any(excl.strip("/") == d for excl in exclude_patterns)
+        ]
+        for fname in filenames:
+            if not fname.endswith(".java"):
+                continue
+            fpath = Path(dirpath) / fname
+            rel_path_nq = str(fpath.relative_to(root)).replace("\\", "/")
+            if any(excl in f"/{rel_path_nq}" for excl in exclude_patterns):
+                continue
+            try:
+                content = fpath.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "createNativeQuery" not in content:
+                continue
+            try:
+                nq_rels = _extract_native_query_relations(content, rel_path_nq)
+                result.native_query_relations.extend(nq_rels)
+            except Exception as exc:
+                logger.debug("native query extraction error in %s: %s", rel_path_nq, exc)
+
+    result.native_query_relations.sort(
+        key=lambda r: (r.source_table, r.target_table, r.method_name)
+    )
 
     logger.info(
         "JPA extraction complete: %d entities from %d/%d files, "

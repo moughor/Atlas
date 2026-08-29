@@ -721,6 +721,56 @@ def reconcile_database_graph(
             all_edges.extend(rel_edges)
 
     # -----------------------------------------------------------------------
+    # Phase 2b: Native query relationship evidence → LOGICAL_REFERENCE_TO
+    # -----------------------------------------------------------------------
+    if jpa_result is not None and hasattr(jpa_result, 'native_query_relations'):
+        for nqr in jpa_result.native_query_relations:
+            src_upper = nqr.source_table.upper()
+            tgt_upper = nqr.target_table.upper()
+            # Resolve to canonical table nodes
+            src_short = src_upper.rsplit(".", 1)[-1] if "." in src_upper else src_upper
+            tgt_short = tgt_upper.rsplit(".", 1)[-1] if "." in tgt_upper else tgt_upper
+            src_node = jailer_tables.get(src_short) or jailer_tables.get(src_upper)
+            tgt_node = jailer_tables.get(tgt_short) or jailer_tables.get(tgt_upper)
+            if src_node is None or tgt_node is None:
+                continue
+            # Create LOGICAL_REFERENCE_TO edge with column-level evidence
+            nq_edge_id = _stable_id(
+                "reconciler", "native_query_ref",
+                nqr.source_table, ",".join(nqr.source_columns),
+                nqr.target_table, ",".join(nqr.target_columns),
+            )
+            nq_evidence = EvidenceRecord.verified(
+                confidence=0.9,
+                repository_revision=repo_revision,
+                workspace_fingerprint=ws_fp,
+                sources=(
+                    EvidenceSource(
+                        kind="java_native_query",
+                        path=nqr.source_path,
+                        start_line=nqr.start_line,
+                        end_line=nqr.end_line,
+                    ),
+                ),
+            )
+            nq_edge = DatabaseGraphEdge(
+                id=nq_edge_id,
+                kind=EdgeKind.LOGICAL_REFERENCE_TO.value,
+                from_node=src_node.id,
+                to_node=tgt_node.id,
+                properties=(
+                    ("source_table", nqr.source_table),
+                    ("source_column", ",".join(nqr.source_columns)),
+                    ("target_table", nqr.target_table),
+                    ("target_column", ",".join(nqr.target_columns)),
+                    ("evidence_kind", "java_native_query"),
+                    ("method", nqr.method_name),
+                ),
+                evidence=nq_evidence,
+            )
+            all_edges.append(nq_edge)
+
+    # -----------------------------------------------------------------------
     # Phase 3: Match JPA entities to Jailer tables — MAPS_TO edges
     # -----------------------------------------------------------------------
     if jpa_result is not None and jailer_result is not None:
