@@ -517,6 +517,7 @@ def reconcile_database_graph(
     workspace_fingerprint: str = "",
     exclude_backup: bool = True,
     migration_result: MigrationIngestResult | None = None,
+    synonym_result: "SynonymIngestResult | None" = None,
 ) -> DatabaseGraph:
     """Reconcile Jailer and JPA evidence into a single DatabaseGraph.
 
@@ -647,6 +648,15 @@ def reconcile_database_graph(
                 # Column or other node kind — just add
                 all_nodes.append(node)
         for edge in migration_result.edges:
+            all_edges.append(edge)
+
+    # -----------------------------------------------------------------------
+    # Phase 1d: Synonym nodes and edges
+    # -----------------------------------------------------------------------
+    if synonym_result is not None:
+        for node in synonym_result.nodes:
+            all_nodes.append(node)
+        for edge in synonym_result.edges:
             all_edges.append(edge)
 
     # -----------------------------------------------------------------------
@@ -929,7 +939,9 @@ def reconcile_database_graph(
     # so report honestly as not scanned.
     migrations_scanned = migration_result is not None
     views_scanned = (jailer_result is not None and jailer_result.view_count > 0) or view_result is not None
-    synonyms_scanned = False
+    synonyms_scanned = synonym_result is not None and (
+        synonym_result.static_count > 0 or synonym_result.dynamic_generator_count > 0
+    )
 
     # Add view/MV counts from view_result
     view_sql_view_count = view_result.view_count if view_result is not None else 0
