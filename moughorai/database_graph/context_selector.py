@@ -1689,6 +1689,9 @@ def select_database_context(
     selected_ids: set[str] = set()
     for bundle in bundle_result.selected_bundles:
         selected_ids.add(bundle.table_id)
+        # Include entity node if present (for MAPS_TO_TABLE edge preservation)
+        if bundle.entity_id:
+            selected_ids.add(bundle.entity_id)
         for col in bundle.columns:
             selected_ids.add(col.column_id)
 

@@ -567,6 +567,7 @@ def _build_candidate_bundles(
         )
         
         entity_name = None
+        entity_id = match.entity_id  # Store entity ID for MAPS_TO_TABLE edge
         if match.entity_id:
             ent_node = idx.node_by_id.get(match.entity_id)
             if ent_node:
@@ -576,6 +577,7 @@ def _build_candidate_bundles(
             table_id=table_id,
             table_name=match.table_name,
             kind=kind,
+            entity_id=entity_id,
             entity_evidence=entity_name,
             story_terms_matched=tuple(set(match.matched_terms)),
             concept_count=match.concept_count,
@@ -709,6 +711,36 @@ def _build_candidate_bundles(
 # Bundle Selection with Family Suppression and Budget
 # ---------------------------------------------------------------------------
 
+def _core_cost(bundle: SelectionBundle) -> int:
+    """Cost of the bundle core: table + entity (if present)."""
+    cost = 1  # Table
+    if bundle.entity_id:
+        cost += 1  # Entity node for MAPS_TO_TABLE edge
+    return cost
+
+
+def _create_trimmed_bundle(
+    bundle: SelectionBundle,
+    columns_to_keep: tuple[ColumnEvidence, ...],
+) -> SelectionBundle:
+    """Create a new bundle with only specified columns."""
+    return SelectionBundle(
+        table_id=bundle.table_id,
+        table_name=bundle.table_name,
+        kind=bundle.kind,
+        entity_id=bundle.entity_id,
+        entity_evidence=bundle.entity_evidence,
+        story_terms_matched=bundle.story_terms_matched,
+        concept_count=bundle.concept_count,
+        confidence=bundle.confidence,
+        columns=columns_to_keep,
+        relationships=bundle.relationships,
+        marginal_benefit=bundle.marginal_benefit,
+        match_reason=bundle.match_reason,
+        family_prefix=bundle.family_prefix,
+    )
+
+
 def select_bundles(
     bundles: list[SelectionBundle],
     max_objects: int = 60,
@@ -716,25 +748,36 @@ def select_bundles(
 ) -> BundleSelectionResult:
     """Select bundles under budget with family suppression.
     
-    Algorithm:
+    Algorithm (tiered cost model):
     1. Sort bundles by sort_key (anchors first, then by benefit)
-    2. Select anchors (ANCHOR_* kinds) with family limits
-    3. Select bridges only if they connect selected anchors
-    4. Fill remaining budget with weak matches
-    5. Evict lowest-marginal-benefit bundles if over budget
+    2. Pass 1: Select anchor cores (table + entity, no columns)
+    3. Pass 2: Select bridge/weak cores if budget allows
+    4. Pass 3: Enrich selected bundles with columns (most important first)
+    5. Evict bundles that couldn't fit
+    
+    The tiered approach ensures that under tight budgets, more tables
+    are selected with fewer columns, rather than fewer tables with all columns.
     """
+    if max_objects <= 0:
+        return BundleSelectionResult(
+            selected_bundles=(),
+            evicted_bundles=tuple(bundles),
+            total_objects=0,
+            budget_used=0.0,
+            family_suppressions=0,
+        )
     
     # Sort by quality (best first)
     sorted_bundles = sorted(bundles, key=lambda b: b.sort_key())
     
-    selected: list[SelectionBundle] = []
+    selected_cores: list[SelectionBundle] = []  # Bundles selected for their cores
     evicted: list[SelectionBundle] = []
     family_counts: dict[str, int] = {}
     family_suppressions = 0
-    total_objects = 0
+    core_objects = 0  # Cost of table+entity nodes only
     selected_table_ids: set[str] = set()
     
-    # --- Pass 1: Select anchors ---
+    # --- Pass 1: Select anchor cores ---
     anchors: list[SelectionBundle] = []
     non_anchors: list[SelectionBundle] = []
     
@@ -753,19 +796,20 @@ def select_bundles(
                 family_suppressions += 1
                 continue
         
-        # Check budget
-        if total_objects + bundle.object_cost > max_objects:
+        # Check budget for core only
+        core_cost = _core_cost(bundle)
+        if core_objects + core_cost > max_objects:
             evicted.append(bundle)
             continue
         
-        # Select this anchor
-        selected.append(bundle)
+        # Select this anchor's core
+        selected_cores.append(bundle)
         selected_table_ids.add(bundle.table_id)
-        total_objects += bundle.object_cost
+        core_objects += core_cost
         if bundle.family_prefix:
             family_counts[bundle.family_prefix] = family_counts.get(bundle.family_prefix, 0) + 1
     
-    # --- Pass 2: Select bridges that connect selected anchors ---
+    # --- Pass 2: Select bridge and weak cores if budget allows ---
     bridges_to_consider: list[SelectionBundle] = []
     weak_matches: list[SelectionBundle] = []
     
@@ -794,18 +838,18 @@ def select_bundles(
                 family_suppressions += 1
                 continue
         
-        # Check budget
-        if total_objects + bundle.object_cost > max_objects:
+        # Check budget for core
+        core_cost = _core_cost(bundle)
+        if core_objects + core_cost > max_objects:
             evicted.append(bundle)
             continue
         
-        selected.append(bundle)
+        selected_cores.append(bundle)
         selected_table_ids.add(bundle.table_id)
-        total_objects += bundle.object_cost
+        core_objects += core_cost
         if bundle.family_prefix:
             family_counts[bundle.family_prefix] = family_counts.get(bundle.family_prefix, 0) + 1
     
-    # --- Pass 3: Fill with weak matches if budget allows ---
     for bundle in weak_matches:
         # Check family limit
         if bundle.family_prefix:
@@ -815,16 +859,56 @@ def select_bundles(
                 family_suppressions += 1
                 continue
         
-        # Check budget
-        if total_objects + bundle.object_cost > max_objects:
+        # Check budget for core
+        core_cost = _core_cost(bundle)
+        if core_objects + core_cost > max_objects:
             evicted.append(bundle)
             continue
         
-        selected.append(bundle)
+        selected_cores.append(bundle)
         selected_table_ids.add(bundle.table_id)
-        total_objects += bundle.object_cost
+        core_objects += core_cost
         if bundle.family_prefix:
             family_counts[bundle.family_prefix] = family_counts.get(bundle.family_prefix, 0) + 1
+    
+    # --- Pass 3: Enrich with columns if budget allows ---
+    remaining_budget = max_objects - core_objects
+    
+    # Collect all candidate columns with their bundle index, prioritized
+    # Priority: PK > FK > story_matched
+    column_candidates: list[tuple[int, ColumnEvidence, int]] = []  # (bundle_idx, col, priority)
+    for i, bundle in enumerate(selected_cores):
+        for col in bundle.columns:
+            if col.reason == "pk_column":
+                priority = 0  # Highest
+            elif col.reason == "fk_column":
+                priority = 1
+            elif col.reason == "story_matched":
+                priority = 2
+            else:
+                priority = 3
+            column_candidates.append((i, col, priority))
+    
+    # Sort by priority, then by column name for determinism
+    column_candidates.sort(key=lambda x: (x[2], x[1].column_name))
+    
+    # Allocate columns to bundles
+    columns_by_bundle: dict[int, list[ColumnEvidence]] = {i: [] for i in range(len(selected_cores))}
+    columns_added = 0
+    
+    for bundle_idx, col, _priority in column_candidates:
+        if columns_added >= remaining_budget:
+            break
+        columns_by_bundle[bundle_idx].append(col)
+        columns_added += 1
+    
+    # Create final bundles with selected columns
+    selected: list[SelectionBundle] = []
+    total_objects = core_objects + columns_added
+    
+    for i, bundle in enumerate(selected_cores):
+        trimmed = _create_trimmed_bundle(bundle, tuple(columns_by_bundle[i]))
+        selected.append(trimmed)
     
     return BundleSelectionResult(
         selected_bundles=tuple(selected),

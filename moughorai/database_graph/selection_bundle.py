@@ -142,6 +142,7 @@ class SelectionBundle:
     kind: BundleKind
     
     # Evidence
+    entity_id: str | None = None  # Node ID of the entity (for MAPS_TO_TABLE edge)
     entity_evidence: str | None = None  # Entity qualified name
     story_terms_matched: tuple[str, ...] = ()
     concept_count: int = 0
@@ -177,6 +178,7 @@ class SelectionBundle:
             "table_id": self.table_id,
             "table_name": self.table_name,
             "kind": self.kind.value,
+            "entity_id": self.entity_id,
             "entity_evidence": self.entity_evidence,
             "story_terms_matched": list(self.story_terms_matched),
             "concept_count": self.concept_count,
@@ -195,6 +197,7 @@ class SelectionBundle:
             table_id=str(data["table_id"]),
             table_name=str(data["table_name"]),
             kind=BundleKind(data["kind"]),
+            entity_id=data.get("entity_id"),
             entity_evidence=data.get("entity_evidence"),
             story_terms_matched=tuple(data.get("story_terms_matched", ())),
             concept_count=int(data.get("concept_count", 0)),

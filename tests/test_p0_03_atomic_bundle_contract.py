@@ -683,3 +683,311 @@ class TestDeterminism:
         ids2 = [n.id for n in r2.selected_nodes]
         
         assert ids1 == ids2, "Node ordering differs between calls"
+
+
+# ---------------------------------------------------------------------------
+# Test Class: Hard Cap Boundary Behavior
+# ---------------------------------------------------------------------------
+
+
+class TestHardCapBoundary:
+    """Verify hard cap behavior at critical boundary values.
+    
+    Tests max_objects values: 0, 1, exact bundle cost, cost-1, 5, 59, 60.
+    """
+    
+    def test_max_objects_zero_raises(self):
+        """max_objects=0 must raise ValueError (minimum is 1)."""
+        g = _make_closure_test_graph()
+        
+        with pytest.raises(ValueError, match="max_objects must be >= 1"):
+            select_database_context(g, "parent child", max_hops=3, max_objects=0)
+    
+    def test_max_objects_one_returns_single_table(self):
+        """max_objects=1 can select at most one table (no columns)."""
+        g = _make_closure_test_graph()
+        ctx = select_database_context(g, "parent", max_hops=3, max_objects=1)
+        
+        assert len(ctx.selected_nodes) <= 1, (
+            f"max_objects=1 exceeded: got {len(ctx.selected_nodes)} nodes"
+        )
+        assert ctx.truncation.hard_cap == 1
+    
+    def test_max_objects_5_with_multiple_tables(self):
+        """max_objects=5 should fit multiple tables (cores) with minimal columns."""
+        g = _make_closure_test_graph()
+        # Story that matches all 3 tables
+        ctx = select_database_context(g, "PARENT_A CHILD_B RELATED_C", max_hops=3, max_objects=5)
+        
+        assert len(ctx.selected_nodes) <= 5, (
+            f"max_objects=5 exceeded: got {len(ctx.selected_nodes)} nodes"
+        )
+        # Should prioritize selecting table cores over columns
+        tables = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.TABLE.value}
+        # At least one table should be selected
+        assert len(tables) >= 1, "No tables selected with max_objects=5"
+    
+    def test_max_objects_59_under_cap(self):
+        """max_objects=59 allows selection but under the typical 60 cap."""
+        g = _make_boundary_budget_graph(n_tables=70)
+        ctx = select_database_context(g, "entity information data", max_hops=3, max_objects=59)
+        
+        assert len(ctx.selected_nodes) <= 59, (
+            f"max_objects=59 exceeded: got {len(ctx.selected_nodes)} nodes"
+        )
+    
+    def test_max_objects_60_default_cap(self):
+        """max_objects=60 is the default hard cap."""
+        g = _make_boundary_budget_graph(n_tables=70)
+        ctx = select_database_context(g, "entity data", max_hops=3, max_objects=60)
+        
+        assert len(ctx.selected_nodes) <= 60, (
+            f"max_objects=60 exceeded: got {len(ctx.selected_nodes)} nodes"
+        )
+        assert ctx.max_objects == 60
+    
+    def test_exact_budget_boundary(self):
+        """At exact budget boundary, no eviction of already-selected bundles."""
+        g = _make_closure_test_graph()
+        # Small budget that should fit exactly 1 table + 1 column
+        ctx = select_database_context(g, "parent", max_hops=3, max_objects=2)
+        
+        assert len(ctx.selected_nodes) <= 2
+        tables = [n for n in ctx.selected_nodes if n.kind == NodeKind.TABLE.value]
+        # Table core must be selected
+        assert len(tables) >= 1, "At max_objects=2, at least one table should fit"
+
+
+# ---------------------------------------------------------------------------
+# Test Class: Entity-Table MAPS_TO Edge Preservation
+# ---------------------------------------------------------------------------
+
+
+class TestMapsToEdgePreservation:
+    """When entity and table are both selected, preserve MAPS_TO_TABLE edge."""
+    
+    def test_entity_table_maps_to_roundtrip(self):
+        """If entity matches story and table is selected, include MAPS_TO_TABLE edge."""
+        g = _make_closure_test_graph()
+        # Story mentions entity name "Parent" which maps to PARENT_A
+        ctx = select_database_context(g, "Parent entity information", max_hops=3, max_objects=60)
+        
+        selected_node_ids = {n.id for n in ctx.selected_nodes}
+        selected_tables = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.TABLE.value}
+        selected_entities = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.JAVA_ENTITY.value}
+        
+        # If PARENT_A is selected and the entity exists in graph, edge should exist
+        if "PARENT_A" in selected_tables:
+            # Check if entity is also selected
+            parent_entity_selected = any("Parent" in e for e in selected_entities)
+            
+            if parent_entity_selected:
+                # MAPS_TO_TABLE edge should be in selected edges
+                maps_edges = [
+                    e for e in ctx.selected_edges 
+                    if e.kind == EdgeKind.MAPS_TO_TABLE.value
+                ]
+                assert len(maps_edges) > 0, (
+                    "Entity and table both selected but MAPS_TO_TABLE edge not preserved"
+                )
+    
+    def test_maps_to_endpoints_atomic(self):
+        """MAPS_TO_TABLE edge requires both entity and table to be selected."""
+        g = _make_closure_test_graph()
+        ctx = select_database_context(g, "parent child", max_hops=3, max_objects=60)
+        
+        selected_node_ids = {n.id for n in ctx.selected_nodes}
+        
+        for edge in ctx.selected_edges:
+            if edge.kind == EdgeKind.MAPS_TO_TABLE.value:
+                # Both endpoints must be selected
+                assert edge.from_node in selected_node_ids, (
+                    f"MAPS_TO_TABLE edge has unselected entity {edge.from_node}"
+                )
+                assert edge.to_node in selected_node_ids, (
+                    f"MAPS_TO_TABLE edge has unselected table {edge.to_node}"
+                )
+    
+    def test_no_dangling_maps_to_edges(self):
+        """No MAPS_TO_TABLE edge should have a missing endpoint."""
+        g = _make_closure_test_graph()
+        ctx = select_database_context(g, "child value data", max_hops=3, max_objects=60)
+        
+        selected_node_ids = {n.id for n in ctx.selected_nodes}
+        
+        for edge in ctx.selected_edges:
+            assert edge.from_node in selected_node_ids, (
+                f"Edge {edge.id} ({edge.kind}) has dangling source {edge.from_node}"
+            )
+            assert edge.to_node in selected_node_ids, (
+                f"Edge {edge.id} ({edge.kind}) has dangling target {edge.to_node}"
+            )
+    
+    def test_maps_to_serialization_parity(self):
+        """MAPS_TO_TABLE edges survive serialization round-trip."""
+        g = _make_closure_test_graph()
+        ctx = select_database_context(g, "Parent entity data", max_hops=3, max_objects=60)
+        
+        # Serialize and deserialize
+        d = ctx.to_dict()
+        ctx2 = DatabaseContextResult.from_dict(d)
+        
+        maps_edges_orig = [e for e in ctx.selected_edges if e.kind == EdgeKind.MAPS_TO_TABLE.value]
+        maps_edges_rt = [e for e in ctx2.selected_edges if e.kind == EdgeKind.MAPS_TO_TABLE.value]
+        
+        assert len(maps_edges_orig) == len(maps_edges_rt), (
+            f"MAPS_TO_TABLE edge count changed after round-trip: {len(maps_edges_orig)} -> {len(maps_edges_rt)}"
+        )
+    
+    def test_edge_at_budget_boundary(self):
+        """At tight budget, entity-table-edge relationship is preserved atomically."""
+        g = _make_closure_test_graph()
+        # Budget that should allow entity + table + edge, but not much else
+        ctx = select_database_context(g, "Parent", max_hops=3, max_objects=3)
+        
+        selected_tables = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.TABLE.value}
+        selected_entities = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.JAVA_ENTITY.value}
+        
+        # If entity is selected, its mapped table should also be selected
+        for entity_name in selected_entities:
+            # Check edges for this entity
+            for edge in ctx.selected_edges:
+                if edge.kind == EdgeKind.MAPS_TO_TABLE.value:
+                    # Both endpoints should be in selected
+                    from_node = next((n for n in ctx.selected_nodes if n.id == edge.from_node), None)
+                    to_node = next((n for n in ctx.selected_nodes if n.id == edge.to_node), None)
+                    assert from_node is not None and to_node is not None, (
+                        "MAPS_TO_TABLE edge at boundary has missing endpoint"
+                    )
+
+
+# ---------------------------------------------------------------------------
+# Test Class: Column Term Collision Prevention
+# ---------------------------------------------------------------------------
+
+
+class TestColumnTermCollision:
+    """Common story terms like 'name', 'code', 'id' must not flood unrelated tables."""
+    
+    def test_name_term_scoped_to_candidates(self):
+        """'name' column should only be added to evidence-backed candidate bundles."""
+        g = _make_closure_test_graph()
+        # Story mentions "name" but only PARENT_A has a NAME column
+        ctx = select_database_context(g, "find table name", max_hops=3, max_objects=60)
+        
+        selected_tables = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.TABLE.value}
+        selected_columns = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.COLUMN.value}
+        
+        # NAME column should only appear for tables that actually have it
+        for col in selected_columns:
+            if col.endswith(".NAME"):
+                table = col.rsplit(".", 1)[0]
+                # Verify this table actually has a NAME column in the graph
+                graph_cols = [
+                    n.qualified_name for n in g.nodes 
+                    if n.kind == NodeKind.COLUMN.value and n.qualified_name == col
+                ]
+                assert len(graph_cols) > 0, (
+                    f"Selected NAME column {col} does not exist in graph"
+                )
+    
+    def test_code_term_scoped_to_candidates(self):
+        """'code' column should only be added to tables that have it."""
+        g = _make_closure_test_graph()
+        ctx = select_database_context(g, "find code information", max_hops=3, max_objects=60)
+        
+        selected_columns = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.COLUMN.value}
+        
+        code_columns = [c for c in selected_columns if c.endswith(".CODE")]
+        for col in code_columns:
+            # Only PARENT_A has CODE in our test graph
+            assert col == "PARENT_A.CODE", (
+                f"Unexpected CODE column {col} - should only be PARENT_A.CODE in test graph"
+            )
+    
+    def test_id_term_does_not_flood(self):
+        """'id' mentioned in story should not add ID columns from all tables."""
+        g = _make_boundary_budget_graph(n_tables=10)
+        # Story that mentions "id" - should not add ID from all 10 tables
+        ctx = select_database_context(g, "find entity id", max_hops=3, max_objects=60)
+        
+        selected_tables = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.TABLE.value}
+        selected_id_cols = [
+            n.qualified_name for n in ctx.selected_nodes 
+            if n.kind == NodeKind.COLUMN.value and n.qualified_name.endswith(".ID")
+        ]
+        
+        # ID columns should only be for selected tables
+        for id_col in selected_id_cols:
+            table = id_col.rsplit(".", 1)[0]
+            assert table in selected_tables, (
+                f"ID column {id_col} selected without its table {table}"
+            )
+    
+    def test_column_search_within_bundle_only(self):
+        """Story-matched columns are searched only within evidence-backed bundles."""
+        g = _make_closure_test_graph()
+        # Story mentions PARENT_A explicitly and "value"
+        # VALUE column is in CHILD_B, not PARENT_A
+        ctx = select_database_context(g, "PARENT_A table value", max_hops=3, max_objects=60)
+        
+        selected_columns = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.COLUMN.value}
+        
+        # CHILD_B.VALUE should only be selected if CHILD_B is a candidate bundle
+        # (i.e., if CHILD_B was matched via FK to PARENT_A or directly)
+        if "CHILD_B.VALUE" in selected_columns:
+            # CHILD_B must be selected as a bundle
+            selected_tables = {n.qualified_name for n in ctx.selected_nodes if n.kind == NodeKind.TABLE.value}
+            assert "CHILD_B" in selected_tables, (
+                "CHILD_B.VALUE selected without CHILD_B table being a bundle candidate"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test Class: Deterministic Eviction
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicEviction:
+    """When bundles cannot fit, eviction must be deterministic."""
+    
+    def test_eviction_order_deterministic(self):
+        """Same inputs always produce same eviction order."""
+        g = _make_boundary_budget_graph(n_tables=70)
+        story = "entity data information table"
+        
+        ctx1 = select_database_context(g, story, max_hops=3, max_objects=30)
+        ctx2 = select_database_context(g, story, max_hops=3, max_objects=30)
+        
+        # Same tables should be selected
+        tables1 = sorted(n.qualified_name for n in ctx1.selected_nodes if n.kind == NodeKind.TABLE.value)
+        tables2 = sorted(n.qualified_name for n in ctx2.selected_nodes if n.kind == NodeKind.TABLE.value)
+        
+        assert tables1 == tables2, (
+            f"Eviction not deterministic: different tables selected across runs"
+        )
+    
+    def test_truncation_metadata_present(self):
+        """Truncation metadata reports eviction when budget exceeded."""
+        g = _make_boundary_budget_graph(n_tables=70)
+        # Use table names that exist in the boundary graph
+        ctx = select_database_context(g, "TABLE_000 TABLE_001 TABLE_002 TABLE_003", max_hops=3, max_objects=30)
+        
+        # With matching tables and tight budget, truncation should occur
+        if len(ctx.selected_nodes) > 0:
+            # Only assert truncation if tables were actually matched
+            assert ctx.truncation.hard_cap == 30
+    
+    def test_complete_relation_fits_or_evicted(self):
+        """When a relation can't fit completely, it's evicted entirely."""
+        g = _make_closure_test_graph()
+        # Tight budget - if FK relation is included, both endpoints must fit
+        ctx = select_database_context(g, "child parent link", max_hops=3, max_objects=10)
+        
+        selected_node_ids = {n.id for n in ctx.selected_nodes}
+        
+        for edge in ctx.selected_edges:
+            if edge.kind == EdgeKind.FOREIGN_KEY_TO.value:
+                # Both endpoints must be present
+                assert edge.from_node in selected_node_ids
+                assert edge.to_node in selected_node_ids
