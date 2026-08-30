@@ -299,6 +299,73 @@ def _normalize_plural(word: str) -> set[str]:
     return forms
 
 
+# Minimum abbreviation length for prefix matching
+_MIN_ABBREV_LEN: int = 3
+# Maximum abbreviation length (longer segments are unlikely to be abbreviations)
+_MAX_ABBREV_LEN: int = 4
+
+
+def _is_likely_abbreviation(short: str, long: str) -> bool:
+    """Check if short is a likely abbreviation of long using generic corpus rules.
+
+    A short segment is considered a likely abbreviation if:
+    1. short is 3-4 characters (typical abbreviation length)
+    2. short is a prefix of long
+    3. long is significantly longer than short (at least 2+ more chars)
+
+    This is a generic, corpus-derived rule—not a static abbreviation dictionary.
+
+    Examples:
+        DOC → DOCUMENT (prefix match, length ratio good)
+        GEN → GENERATION (prefix match, length ratio good)
+        APP → APPLICATION (prefix match)
+        HD → HELPDESK (too short, not matched)
+        FAILED → FAILED (exact match, handled elsewhere)
+    """
+    short_upper = short.upper()
+    long_upper = long.upper()
+
+    # Length constraints
+    if len(short_upper) < _MIN_ABBREV_LEN:
+        return False
+    if len(short_upper) > _MAX_ABBREV_LEN:
+        return False
+    if len(long_upper) <= len(short_upper) + 1:
+        # Long must be at least 2 chars longer
+        return False
+
+    # Prefix match
+    return long_upper.startswith(short_upper)
+
+
+def _expand_abbreviations(segments: list[str], terms: list[str]) -> dict[str, str]:
+    """Find abbreviation expansions from segments to story terms.
+
+    Returns a dict mapping segment -> expanded term for matched abbreviations.
+    Only includes unambiguous matches (segment matches exactly one term).
+    """
+    terms_upper = {t.upper() for t in terms}
+    expansions: dict[str, str] = {}
+
+    for seg in segments:
+        seg_upper = seg.upper()
+        # Skip segments that are already exact matches
+        if seg_upper in terms_upper:
+            continue
+
+        # Find potential expansions
+        matches: list[str] = []
+        for term in terms:
+            if _is_likely_abbreviation(seg, term):
+                matches.append(term.upper())
+
+        # Only use unambiguous single matches
+        if len(matches) == 1:
+            expansions[seg_upper] = matches[0]
+
+    return expansions
+
+
 def _extract_terms(text: str) -> list[str]:
     """Extract domain terms from story text."""
     raw_tokens = _SPLIT_RE.split(text)
@@ -464,27 +531,53 @@ def _build_candidate_bundles(
                 candidates[table_id].confidence = confidence
                 candidates[table_id].matched_terms.extend(matched_terms)
     
-    # --- Phase 3: Domain segment matches ---
-    for term in terms:
-        term_variants = _normalize_plural(term.lower())
-        term_variants_upper = {v.upper() for v in term_variants}
-        
-        for table_nodes in idx.table_by_short_name.values():
-            for node in table_nodes:
-                if node.id in candidates:
-                    continue  # Already matched
+    # --- Phase 3: Domain segment matches (with abbreviation expansion) ---
+    # For each table, check if any segment matches a story term directly OR
+    # via abbreviation expansion (e.g., DOC→DOCUMENT, GEN→GENERATION)
+    
+    for table_nodes in idx.table_by_short_name.values():
+        for node in table_nodes:
+            if node.id in candidates:
+                continue  # Already matched via exact or entity
+            
+            short = node.qualified_name.rsplit(".", 1)[-1].upper()
+            segments = short.split("_")
+            
+            # Find all matching terms: direct segment match OR abbreviation
+            matched: list[str] = []
+            abbrev_expansions = _expand_abbreviations(segments, terms)
+            
+            for term in terms:
+                term_upper = term.upper()
+                term_variants = _normalize_plural(term.lower())
+                term_variants_upper = {v.upper() for v in term_variants}
                 
-                short = node.qualified_name.rsplit(".", 1)[-1].upper()
-                segments = short.split("_")
+                # Direct segment match
+                if term_upper in segments or term_variants_upper.intersection(segments):
+                    matched.append(term_upper)
+                    continue
                 
-                if term in segments or term_variants_upper.intersection(segments):
-                    candidates[node.id] = _CandidateMatch(
-                        table_id=node.id,
-                        table_name=node.qualified_name,
-                        match_type="domain",
-                        matched_terms=[term],
-                        confidence=0.5,
-                    )
+                # Abbreviation match: a segment is an abbreviation of this term
+                for seg, expanded in abbrev_expansions.items():
+                    if expanded == term_upper:
+                        matched.append(term_upper)
+                        break
+            
+            if matched:
+                # Confidence scales with number of matched concepts
+                # 1 term = 0.5, 2 terms = 0.65, 3+ terms = 0.75+
+                base_conf = 0.5
+                if len(matched) >= 2:
+                    base_conf = 0.65 + 0.05 * (len(matched) - 2)
+                base_conf = min(base_conf, 0.85)
+                
+                candidates[node.id] = _CandidateMatch(
+                    table_id=node.id,
+                    table_name=node.qualified_name,
+                    match_type="domain",
+                    matched_terms=matched,
+                    confidence=base_conf,
+                )
     
     # --- Phase 4: Compute concept counts using IDF ---
     _IDF_THRESHOLD = 1.5  # Only count terms with IDF >= 1.5 as distinct concepts
@@ -1154,6 +1247,113 @@ def select_bundles(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _expand_view_dependencies(
+    selected_bundles: list[SelectionBundle],
+    idx: _BundleGraphIndex,
+    max_view_deps_primary: int = 15,
+    max_view_deps_other: int = 3,
+) -> list[SelectionBundle]:
+    """Expand view/MV bundles to include their source table dependencies.
+
+    For each selected view or materialized view, find its READS_FROM edges
+    and create bundles for the source tables. This materializes the view's
+    evidence closure.
+
+    Primary views (those with 2+ matched story terms) get more dependency
+    expansion than secondary views.
+
+    Args:
+        selected_bundles: Already-selected bundles
+        idx: Graph index
+        max_view_deps_primary: Max dependencies for primary views (2+ terms)
+        max_view_deps_other: Max dependencies for secondary views
+
+    Returns:
+        List of dependency bundles to add
+    """
+    from .models import EdgeKind, NodeKind
+
+    dependency_bundles: list[SelectionBundle] = []
+    selected_table_ids = {b.table_id for b in selected_bundles}
+
+    # Sort bundles to process primary (multi-term) views first
+    sorted_bundles = sorted(
+        selected_bundles,
+        key=lambda b: (-len(b.story_terms_matched), -b.confidence),
+    )
+
+    for bundle in sorted_bundles:
+        table_node = idx.node_by_id.get(bundle.table_id)
+        if table_node is None:
+            continue
+
+        # Only expand views and materialized views
+        if table_node.kind not in (NodeKind.VIEW.value, NodeKind.MATERIALIZED_VIEW.value):
+            continue
+
+        # Determine max deps based on term match quality
+        is_primary = len(bundle.story_terms_matched) >= 2
+        max_deps = max_view_deps_primary if is_primary else max_view_deps_other
+
+        # Find READS_FROM edges from this view
+        outgoing = idx.outgoing_edges.get(bundle.table_id, [])
+        
+        # Sort edges deterministically by source table name
+        reads_from_edges = [
+            e for e in outgoing if e.kind == EdgeKind.READS_FROM.value
+        ]
+        reads_from_edges.sort(
+            key=lambda e: dict(e.properties).get("source_table", "")
+        )
+        
+        dep_count = 0
+        for edge in reads_from_edges:
+            if dep_count >= max_deps:
+                break
+
+            # Get source table name from edge properties
+            props = dict(edge.properties)
+            source_table = props.get("source_table")
+            if not source_table:
+                continue
+
+            # Find the actual table node by name
+            source_upper = source_table.upper()
+            source_nodes = idx.table_by_short_name.get(source_upper, [])
+            if not source_nodes:
+                continue
+
+            source_node = source_nodes[0]
+
+            # Skip if already selected
+            if source_node.id in selected_table_ids:
+                continue
+
+            # Create a dependency bundle for this source table
+            dep_bundle = SelectionBundle(
+                table_id=source_node.id,
+                table_name=source_node.qualified_name,
+                kind=BundleKind.BRIDGE_VIEW,
+                entity_id=None,
+                entity_evidence=None,
+                story_terms_matched=bundle.story_terms_matched,  # Inherit from parent view
+                concept_count=0,
+                confidence=0.8,  # High confidence - it's a verified view dependency
+                columns=(),  # Columns will be added later
+                relationships=(),
+                object_cost=1,
+                marginal_benefit=bundle.marginal_benefit * 0.9,  # Slightly lower than parent
+                match_reason=f"source_table_of:{bundle.table_name}",
+                family_prefix=compute_family_prefix(source_node.qualified_name),
+            )
+
+            dependency_bundles.append(dep_bundle)
+            selected_table_ids.add(source_node.id)
+            dep_count += 1
+
+    return dependency_bundles
+
+
 def build_and_select_bundles(
     graph: DatabaseGraph,
     story_text: str,
@@ -1164,6 +1364,9 @@ def build_and_select_bundles(
     """Build and select evidence-backed bundles for a story.
     
     This is the main entry point for bundle-based selection.
+    
+    When views are selected, their source table dependencies are automatically
+    included to materialize the view's evidence closure.
     
     Args:
         graph: The reconciled DatabaseGraph
@@ -1178,4 +1381,19 @@ def build_and_select_bundles(
     terms = _extract_terms(story_text)
     idf = _compute_idf(terms, idx)
     bundles = _build_candidate_bundles(terms, idx, idf)
-    return select_bundles(bundles, max_objects, max_per_family)
+    result = select_bundles(bundles, max_objects, max_per_family)
+
+    # Expand view dependencies
+    dep_bundles = _expand_view_dependencies(list(result.selected_bundles), idx)
+    if dep_bundles:
+        # Add dependency bundles to selected list
+        all_selected = list(result.selected_bundles) + dep_bundles
+        return BundleSelectionResult(
+            selected_bundles=tuple(all_selected),
+            evicted_bundles=result.evicted_bundles,
+            total_objects=result.total_objects + len(dep_bundles),
+            budget_used=result.budget_used,
+            family_suppressions=result.family_suppressions,
+        )
+
+    return result
