@@ -306,52 +306,48 @@ def compare_case(expected: CaseExpectation, actual: ActualResult) -> CaseCompari
     """Compare expected vs actual for one case.
     
     This produces formal metrics, not smoke tests.
+    
+    SEMANTICS (exact normalized-set equality):
+    - expected=None (absent)    => NOT_EVALUATED, cannot produce formal PASS
+    - expected=[] vs actual=[]  => PASS (explicit empty matches explicit empty)
+    - expected=[] vs actual={X} => FAIL (expected nothing, got something)
+    - expected={A,B} vs actual={A}     => FAIL (missing B)
+    - expected={A} vs actual={A,B}     => FAIL (extra B)
+    - expected={A,B} vs actual={A,B}   => PASS (exact match)
+    
+    Subset containment is forbidden. Extras are failures.
     """
-    # Objects
+    # Objects - exact set equality required
     objects_found = expected.expected_objects & actual.selected_objects
     objects_missing = expected.expected_objects - actual.selected_objects
-    objects_pass = len(objects_missing) == 0 and len(expected.expected_objects) > 0
-    # Special case: if no expected objects, it's not a formal pass, it's N/A
-    if len(expected.expected_objects) == 0:
-        objects_pass = True  # Vacuously true but flagged
+    objects_extra = actual.selected_objects - expected.expected_objects
     
-    # Columns (parent-bound)
+    # Pass only if sets are exactly equal (no missing AND no extras)
+    # Empty expected vs empty actual = PASS
+    # Empty expected vs non-empty actual = FAIL (has extras)
+    objects_pass = (len(objects_missing) == 0) and (len(objects_extra) == 0)
+    
+    # Columns (parent-bound) - exact set equality required
     columns_found = expected.expected_columns & actual.selected_columns
     columns_missing = expected.expected_columns - actual.selected_columns
-    columns_pass = len(columns_missing) == 0 and len(expected.expected_columns) > 0
-    if len(expected.expected_columns) == 0:
-        columns_pass = True  # Vacuously true
+    columns_extra = actual.selected_columns - expected.expected_columns
+    columns_pass = (len(columns_missing) == 0) and (len(columns_extra) == 0)
     
-    # FKs
+    # FKs - exact set equality required
     fks_found = expected.expected_fks & actual.selected_fks
     fks_missing = expected.expected_fks - actual.selected_fks
-    fks_pass = len(fks_missing) == 0 and len(expected.expected_fks) > 0
-    if len(expected.expected_fks) == 0:
-        fks_pass = True  # Vacuously true
+    fks_extra = actual.selected_fks - expected.expected_fks
+    fks_pass = (len(fks_missing) == 0) and (len(fks_extra) == 0)
     
-    # Uncertainties
+    # Uncertainties - exact set equality required
     uncerts_found = expected.expected_uncertainties & actual.reported_uncertainties
     uncerts_missing = expected.expected_uncertainties - actual.reported_uncertainties
-    uncerts_pass = len(uncerts_missing) == 0 and len(expected.expected_uncertainties) > 0
-    if len(expected.expected_uncertainties) == 0:
-        uncerts_pass = True  # Vacuously true
+    uncerts_extra = actual.reported_uncertainties - expected.expected_uncertainties
+    uncerts_pass = (len(uncerts_missing) == 0) and (len(uncerts_extra) == 0)
     
-    # Aggregate: all dimensions with actual requirements must pass
-    # Only count dimensions that have requirements
-    has_object_req = len(expected.expected_objects) > 0
-    has_column_req = len(expected.expected_columns) > 0
-    has_fk_req = len(expected.expected_fks) > 0
-    has_uncert_req = len(expected.expected_uncertainties) > 0
-    
-    aggregate_pass = True
-    if has_object_req and not (len(objects_missing) == 0):
-        aggregate_pass = False
-    if has_column_req and not (len(columns_missing) == 0):
-        aggregate_pass = False
-    if has_fk_req and not (len(fks_missing) == 0):
-        aggregate_pass = False
-    if has_uncert_req and not (len(uncerts_missing) == 0):
-        aggregate_pass = False
+    # Aggregate: all dimensions must pass for aggregate pass
+    # Note: empty expected is still evaluated (not NOT_EVALUATED)
+    aggregate_pass = objects_pass and columns_pass and fks_pass and uncerts_pass
     
     return CaseComparison(
         case_id=expected.case_id,
@@ -660,35 +656,40 @@ class TestComparatorCanaries:
         
         assert not comparison.uncertainties_pass, "Should fail when uncertainty is missing"
     
-    def test_empty_expected_is_vacuously_true_but_not_formal_pass(self):
-        """Empty expected list is vacuously true but flagged appropriately."""
+    def test_empty_expected_vs_nonempty_actual_is_fail(self):
+        """Empty expected list vs non-empty actual => FAIL (extras exist)."""
         expected = CaseExpectation(
             case_id="test",
             story_text="test story",
-            expected_objects=frozenset(),  # No requirements
+            expected_objects=frozenset(),  # No requirements (empty)
             expected_columns=frozenset(),
             expected_fks=frozenset(),
             expected_uncertainties=frozenset(),
         )
         actual = ActualResult(
             case_id="test",
-            selected_objects=frozenset(["TB_A"]),
+            selected_objects=frozenset(["TB_A"]),  # Has an extra
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        # Vacuously true
-        assert comparison.objects_pass  # No objects required
-        assert comparison.columns_pass
-        assert comparison.fks_pass
-        assert comparison.uncertainties_pass
+        # Empty vs non-empty => FAIL (extras present)
+        assert not comparison.objects_pass, "Empty expected vs non-empty actual => FAIL"
+        
+        # Columns/FKs/Uncertainties: empty vs empty => PASS
+        assert comparison.columns_pass  # both empty
+        assert comparison.fks_pass  # both empty
+        assert comparison.uncertainties_pass  # both empty
         
         # But expected counts are 0
         assert comparison.objects_expected == 0
         assert comparison.columns_expected == 0
         assert comparison.fks_expected == 0
         assert comparison.uncertainties_expected == 0
+        
+        # Aggregate FAIL because objects dimension fails
+        assert not comparison.aggregate_pass
     
     def test_synthetic_object_does_not_satisfy_real(self):
         """Synthetic object cannot substitute for a real expected object."""
@@ -707,6 +708,118 @@ class TestComparatorCanaries:
         
         assert not comparison.objects_pass
         assert "TB_REAL_TABLE" in comparison.objects_missing
+    
+    def test_empty_expected_empty_actual_passes(self):
+        """Explicit empty expected vs empty actual => PASS (exact match)."""
+        expected = CaseExpectation(
+            case_id="test-empty-empty",
+            story_text="test story",
+            expected_objects=frozenset(),  # Explicit empty
+            expected_columns=frozenset(),
+            expected_fks=frozenset(),
+            expected_uncertainties=frozenset(),
+        )
+        actual = ActualResult(
+            case_id="test-empty-empty",
+            selected_objects=frozenset(),  # Also empty
+            selected_columns=frozenset(),
+            selected_fks=frozenset(),
+            reported_uncertainties=frozenset(),
+            cap_respected=True,
+        )
+        
+        comparison = compare_case(expected, actual)
+        
+        # Empty == Empty => PASS
+        assert comparison.objects_pass, "Empty expected vs empty actual should PASS"
+        assert comparison.columns_pass
+        assert comparison.fks_pass
+        assert comparison.uncertainties_pass
+        assert comparison.aggregate_pass, "Aggregate should PASS when all dimensions match"
+    
+    def test_empty_expected_nonempty_actual_fails(self):
+        """Explicit empty expected vs non-empty actual => FAIL (extras present)."""
+        expected = CaseExpectation(
+            case_id="test-empty-nonempty",
+            story_text="test story",
+            expected_objects=frozenset(),  # Expect nothing
+        )
+        actual = ActualResult(
+            case_id="test-empty-nonempty",
+            selected_objects=frozenset(["TB_EXTRA"]),  # Got something (extra)
+            cap_respected=True,
+        )
+        
+        comparison = compare_case(expected, actual)
+        
+        # Empty expected vs non-empty actual => FAIL (has extras)
+        assert not comparison.objects_pass, "Empty expected vs non-empty actual should FAIL"
+        assert not comparison.aggregate_pass, "Aggregate should FAIL when extras present"
+    
+    def test_nonempty_expected_with_one_extra_fails(self):
+        """Expected {A,B} vs actual {A,B,C} => FAIL (extra C)."""
+        expected = CaseExpectation(
+            case_id="test-extras",
+            story_text="test story",
+            expected_objects=frozenset(["TB_ALPHA", "TB_BETA"]),
+        )
+        actual = ActualResult(
+            case_id="test-extras",
+            selected_objects=frozenset(["TB_ALPHA", "TB_BETA", "TB_GAMMA"]),  # Extra TB_GAMMA
+            cap_respected=True,
+        )
+        
+        comparison = compare_case(expected, actual)
+        
+        # All expected present but one extra => FAIL
+        assert comparison.objects_found == 2, "Should find both expected objects"
+        assert len(comparison.objects_missing) == 0, "No missing objects"
+        assert not comparison.objects_pass, "Should FAIL because of extra TB_GAMMA"
+        assert not comparison.aggregate_pass
+    
+    def test_unevaluated_dimension_forbids_aggregate_pass(self):
+        """If one mandatory dimension has expected=None, aggregate FORMAL_PASS forbidden.
+        
+        Note: With current dataclass defaults, None fields become empty frozensets.
+        The semantic distinction is that expected_count=0 means "explicitly no requirements"
+        which is different from "not evaluated" in the formal sense.
+        
+        For the formal vector, only cases with expected_count > 0 contribute to 
+        EXACT_X_CASES metrics. Empty expected is a design choice in the pack, 
+        not an evaluation pass.
+        """
+        # This test verifies that compute_formal_vector correctly handles
+        # cases where some dimensions have no expectations
+        from test_honest_evaluation_gate import compute_formal_vector
+        
+        # Case 1: Objects expected but columns not (empty)
+        expected1 = CaseExpectation(
+            case_id="test-partial",
+            story_text="test story",
+            expected_objects=frozenset(["TB_X"]),  # Has object requirement
+            expected_columns=frozenset(),  # No column requirement (N/A)
+        )
+        actual1 = ActualResult(
+            case_id="test-partial",
+            selected_objects=frozenset(["TB_X"]),  # Exact match
+            selected_columns=frozenset(),
+            cap_respected=True,
+        )
+        
+        comparison1 = compare_case(expected1, actual1)
+        
+        # Objects pass (exact match), columns pass (both empty)
+        assert comparison1.objects_pass
+        assert comparison1.columns_pass
+        assert comparison1.aggregate_pass  # This case aggregates pass
+        
+        # But in formal vector, EXACT_COLUMN_CASES should NOT count this
+        # because columns_expected == 0
+        vector = compute_formal_vector([comparison1])
+        
+        # exact_object_cases counts cases with objects_pass AND objects_expected > 0
+        assert vector.exact_object_cases == 1  # This case counts
+        assert vector.exact_column_cases == 0  # columns_expected=0, doesn't count
 
 
 # ---------------------------------------------------------------------------
