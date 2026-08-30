@@ -520,12 +520,18 @@ def _build_candidate_bundles(
                     reason="fk_column",
                 ))
         
-        # Story-matched columns
-        for term in match.matched_terms:
+        # Story-matched columns: search ALL story terms, not just the terms
+        # that matched the table name/entity. This ensures columns like CODE
+        # and NAME are included when the story mentions them, even if the table
+        # was matched via entity bridging (e.g., "Parent" -> PARENT_A).
+        seen_col_ids: set[str] = set(pk_cols) | set(fk_cols)
+        for term in terms:  # Use all story terms, not match.matched_terms
             col_ids = idx.column_by_name.get(term.upper(), [])
             for col_id in col_ids:
+                if col_id in seen_col_ids:
+                    continue
                 col_node = idx.node_by_id.get(col_id)
-                if col_node and col_id not in pk_cols and col_id not in fk_cols:
+                if col_node:
                     # Check if this column belongs to this table
                     table_cols = idx.columns_by_table.get(table_id, [])
                     if col_id in table_cols:
@@ -535,6 +541,7 @@ def _build_candidate_bundles(
                             reason="story_matched",
                             story_term=term,
                         ))
+                        seen_col_ids.add(col_id)
         
         # Build relationship evidence
         relationships: list[RelationshipEvidence] = []
