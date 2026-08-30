@@ -158,6 +158,7 @@ class _BundleGraphIndex:
         "fk_columns",
         "native_query_clusters",  # method_name -> set of table_ids
         "table_to_native_methods",  # table_id -> set of method_names
+        "entity_abbreviations",  # table_segment -> entity_word (repo-derived)
     )
     
     def __init__(self, graph: DatabaseGraph) -> None:
@@ -176,6 +177,7 @@ class _BundleGraphIndex:
         self.fk_columns: dict[str, set[str]] = {}  # table_id -> {fk_column_ids}
         self.native_query_clusters: dict[str, set[str]] = {}  # method_name -> {table_ids}
         self.table_to_native_methods: dict[str, set[str]] = {}  # table_id -> {method_names}
+        self.entity_abbreviations: dict[str, str] = {}  # segment -> word (repo-derived)
         
         self._build_indexes(graph)
     
@@ -237,6 +239,9 @@ class _BundleGraphIndex:
         # These represent tables that are referenced together in Java native queries
         self._build_native_query_clusters(graph)
         
+        # Build repository-derived abbreviations from entity class names
+        self._build_entity_abbreviations(graph)
+        
         # Build evidence term documents for each table
         self._build_evidence_terms(graph)
     
@@ -283,6 +288,60 @@ class _BundleGraphIndex:
             cluster_members.update(self.native_query_clusters.get(method, set()))
         cluster_members.discard(table_id)  # Remove self
         return cluster_members
+    
+    def _build_entity_abbreviations(self, graph: DatabaseGraph) -> None:
+        """Build abbreviation mappings derived from entity-to-table mappings.
+        
+        For each entity class that maps to a table, analyze the relationship
+        between class name words and table name segments to derive abbreviations.
+        
+        Example: PrimaryMobilityDeclarationMscaPf -> TB_GRP_PR_MD_DEC_P_MCPF
+        yields: DEC -> DECLARATION, PER -> PERIOD (from similar patterns)
+        
+        This is repository-evidence-derived, not a static dictionary.
+        """
+        from collections import defaultdict
+        
+        # Collect word-to-segment mapping statistics
+        word_to_segment: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        
+        for entity_id, table_id in self.entity_to_table.items():
+            entity_node = self.node_by_id.get(entity_id)
+            table_node = self.node_by_id.get(table_id)
+            if entity_node is None or table_node is None:
+                continue
+            
+            # Get entity class name and split into words
+            props = dict(entity_node.properties)
+            class_name = props.get('class_name', '')
+            if not class_name:
+                continue
+            
+            class_words = [w.upper() for w in _split_camel_case(class_name) if len(w) >= 3]
+            
+            # Get table name segments
+            table_name = table_node.qualified_name.rsplit('.', 1)[-1].upper()
+            table_segments = [s for s in table_name.split('_') if len(s) >= 2]
+            
+            # For each class word, check if any segment is a likely abbreviation
+            for word in class_words:
+                for seg in table_segments:
+                    # Abbreviation: segment is 2-4 chars, word is significantly longer
+                    if len(seg) >= 2 and len(seg) <= 4 and len(word) > len(seg) + 1:
+                        # Check if segment is prefix of word
+                        if word.startswith(seg):
+                            word_to_segment[seg][word] += 1
+        
+        # Select unambiguous mappings (dominant word for each segment)
+        for seg, word_counts in word_to_segment.items():
+            if not word_counts:
+                continue
+            total = sum(word_counts.values())
+            top_word, top_count = max(word_counts.items(), key=lambda x: x[1])
+            
+            # Require: at least 2 occurrences, >70% dominance
+            if top_count >= 2 and top_count > total * 0.7:
+                self.entity_abbreviations[seg] = top_word
     
     def _build_evidence_terms(self, graph: DatabaseGraph) -> None:
         """Build semantic evidence documents for IDF computation."""
@@ -351,33 +410,6 @@ def _normalize_plural(word: str) -> set[str]:
     return forms
 
 
-# Static domain abbreviation dictionary
-# Maps common database table abbreviations to their expanded forms
-# Derived from corpus analysis of enterprise database naming conventions
-_DOMAIN_ABBREVIATIONS: dict[str, str] = {
-    # Module/functional area abbreviations
-    "MD": "MOBILITY",
-    "AI": "AUDIT",
-    "PR": "PERIODIC",
-    "RT": "RUNTIME",
-    "GRP": "GROUP",
-    "PL": "PROJECT",
-    "PF": "FEATURE",
-    "EX": "EXERCISE",
-    "ED": "DOCUMENT",
-    "AMD": "AMENDMENT",
-    # Type/status abbreviations
-    "DEC": "DECLARATION",
-    "PER": "PERIOD",
-    "SES": "SESSION",
-    "REP": "REPORT",
-    "ITM": "ITEM",
-    "OPT": "OPTION",
-    "CFG": "CONFIG",
-    "LOG": "LOG",
-}
-
-
 # Minimum abbreviation length for prefix matching
 _MIN_ABBREV_LEN: int = 3
 # Maximum abbreviation length (longer segments are unlikely to be abbreviations)
@@ -417,16 +449,28 @@ def _is_likely_abbreviation(short: str, long: str) -> bool:
     return long_upper.startswith(short_upper)
 
 
-def _expand_abbreviations(segments: list[str], terms: list[str]) -> dict[str, str]:
+def _expand_abbreviations(
+    segments: list[str],
+    terms: list[str],
+    entity_abbreviations: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Find abbreviation expansions from segments to story terms.
 
     Returns a dict mapping segment -> expanded term for matched abbreviations.
     
-    First checks the static domain dictionary, then falls back to prefix matching.
-    Only includes matches where the expanded form exists in the story terms.
+    First checks repository-derived entity abbreviations, then falls back to 
+    prefix matching. Only includes matches where the expanded form exists in 
+    the story terms.
+    
+    Args:
+        segments: Table name segments to expand
+        terms: Story terms to match against
+        entity_abbreviations: Repository-derived segment->word mappings from
+            entity class names (e.g., DEC -> DECLARATION from entity mappings)
     """
     terms_upper = {t.upper() for t in terms}
     expansions: dict[str, str] = {}
+    entity_abbrevs = entity_abbreviations or {}
 
     for seg in segments:
         seg_upper = seg.upper()
@@ -434,10 +478,10 @@ def _expand_abbreviations(segments: list[str], terms: list[str]) -> dict[str, st
         if seg_upper in terms_upper:
             continue
 
-        # First: Check static domain dictionary
-        dict_expansion = _DOMAIN_ABBREVIATIONS.get(seg_upper)
-        if dict_expansion and dict_expansion in terms_upper:
-            expansions[seg_upper] = dict_expansion
+        # First: Check repository-derived entity abbreviations
+        repo_expansion = entity_abbrevs.get(seg_upper)
+        if repo_expansion and repo_expansion in terms_upper:
+            expansions[seg_upper] = repo_expansion
             continue
 
         # Second: Find potential expansions via prefix matching
@@ -632,7 +676,7 @@ def _build_candidate_bundles(
             
             # Find all matching terms: direct segment match OR abbreviation
             matched: list[str] = []
-            abbrev_expansions = _expand_abbreviations(segments, terms)
+            abbrev_expansions = _expand_abbreviations(segments, terms, idx.entity_abbreviations)
             
             for term in terms:
                 term_upper = term.upper()
@@ -689,7 +733,7 @@ def _build_candidate_bundles(
         if table_node:
             short = table_node.qualified_name.rsplit(".", 1)[-1].upper()
             segments = short.split("_")
-        abbrev_expansions = _expand_abbreviations(segments, terms)
+        abbrev_expansions = _expand_abbreviations(segments, terms, idx.entity_abbreviations)
         
         for term in terms:
             t_lower = term.lower()
