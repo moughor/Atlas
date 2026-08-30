@@ -297,3 +297,64 @@ class TestMarkdownRendering:
         md = render_database_context_markdown(ctx)
         assert "# Database Context" in md
         assert "nodes selected" in md
+
+
+# ---------------------------------------------------------------------------
+# Tests: Public path uses bundle selector (STEP 2 verification)
+# ---------------------------------------------------------------------------
+
+
+class TestPublicPathBundleSelector:
+    """Public select_database_context uses evidence_bundles_v1 strategy.
+    
+    This test FAILS if the old selector path is invoked. The strategy
+    identifier is the machine-readable proof of which implementation ran.
+    """
+
+    def test_selection_strategy_is_evidence_bundles_v1(self):
+        """Public path MUST use evidence_bundles_v1, not legacy_neighbourhood."""
+        from moughorai.database_graph.context_selector import (
+            SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1,
+            SELECTION_STRATEGY_LEGACY,
+        )
+        g = _make_enterprise_graph()
+        ctx = select_database_context(g, "order details", max_hops=3, max_objects=60)
+        
+        # This assertion FAILS if the old selector is still wired
+        assert ctx.selection_strategy == SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1, (
+            f"Expected strategy '{SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1}', "
+            f"got '{ctx.selection_strategy}'. The old selector is still active!"
+        )
+        assert ctx.selection_strategy != SELECTION_STRATEGY_LEGACY
+
+    def test_selection_strategy_in_serialization(self):
+        """selection_strategy must be serialized in to_dict output."""
+        g = _make_enterprise_graph()
+        ctx = select_database_context(g, "customer name", max_hops=3, max_objects=60)
+        d = ctx.to_dict()
+        
+        assert "selection_strategy" in d
+        assert d["selection_strategy"] == "evidence_bundles_v1"
+
+    def test_uncertainties_field_always_present(self):
+        """uncertainties field MUST be present in output, even if empty."""
+        g = _make_enterprise_graph()
+        ctx = select_database_context(g, "product sku", max_hops=3, max_objects=60)
+        d = ctx.to_dict()
+        
+        assert "uncertainties" in d
+        assert isinstance(d["uncertainties"], list)
+
+    def test_round_trip_with_new_fields(self):
+        """selection_strategy and uncertainties survive serialization round-trip."""
+        from moughorai.database_graph.context_selector import (
+            SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1,
+        )
+        g = _make_enterprise_graph()
+        ctx = select_database_context(g, "order item product", max_hops=3, max_objects=60)
+        d = ctx.to_dict()
+        ctx2 = DatabaseContextResult.from_dict(d)
+        
+        assert ctx2.selection_strategy == ctx.selection_strategy
+        assert ctx2.selection_strategy == SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1
+        assert ctx2.uncertainties == ctx.uncertainties

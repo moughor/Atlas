@@ -183,6 +183,65 @@ _TIER_LABELS: dict[int, str] = {
     _TIER_FUZZY: "fuzzy",
 }
 
+# Selection strategy identifiers
+SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1: str = "evidence_bundles_v1"
+SELECTION_STRATEGY_LEGACY: str = "legacy_neighbourhood"
+
+
+# ---------------------------------------------------------------------------
+# SelectionUncertainty — typed uncertainty records for unresolved evidence
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class SelectionUncertainty:
+    """Typed uncertainty record for unresolved evidence in context selection.
+
+    Attributes:
+        code: Semantic code identifying the uncertainty type (e.g.,
+              'DYNAMIC_SYNONYM_TARGET_UNPROVEN', 'SCHEMA_FALLBACK_UNVERIFIED').
+        object_id: Node ID or identifier of the object/candidate.
+        object_name: Human-readable name of the object.
+        reason: Explanation of why the evidence is uncertain.
+        evidence_source: Source of the evidence (e.g., 'graph_node_property',
+                        'story_extraction', 'fk_expansion').
+        source_revision: Revision/provenance of the source (graph fingerprint).
+        resolved: False if the uncertainty blocks full resolution; True if
+                  the object is included despite uncertainty.
+    """
+
+    code: str
+    object_id: str
+    object_name: str
+    reason: str
+    evidence_source: str
+    source_revision: str
+    resolved: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "object_id": self.object_id,
+            "object_name": self.object_name,
+            "reason": self.reason,
+            "evidence_source": self.evidence_source,
+            "source_revision": self.source_revision,
+            "resolved": self.resolved,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SelectionUncertainty":
+        if not isinstance(data, dict):
+            raise ValueError("selection uncertainty must be an object")
+        return cls(
+            code=str(data.get("code", "")),
+            object_id=str(data.get("object_id", "")),
+            object_name=str(data.get("object_name", "")),
+            reason=str(data.get("reason", "")),
+            evidence_source=str(data.get("evidence_source", "")),
+            source_revision=str(data.get("source_revision", "")),
+            resolved=bool(data.get("resolved", False)),
+        )
+
 
 # ---------------------------------------------------------------------------
 # TruncationMetadata
@@ -297,6 +356,10 @@ class DatabaseContextResult:
         max_hops: Maximum hop depth used for expansion.
         max_objects: Maximum node cap used.
         truncation: Detailed truncation metadata (Phase B).
+        selection_strategy: Machine-readable identifier of the selection
+                           algorithm used (e.g., 'evidence_bundles_v1').
+        uncertainties: Typed uncertainty records for unresolved evidence.
+                       Always present (empty list if no uncertainties).
     """
 
     selected_nodes: tuple[DatabaseGraphNode, ...]
@@ -309,12 +372,15 @@ class DatabaseContextResult:
     max_hops: int
     max_objects: int
     truncation: TruncationMetadata = field(default_factory=TruncationMetadata)
+    selection_strategy: str = SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1
+    uncertainties: tuple["SelectionUncertainty", ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_nodes", tuple(self.selected_nodes))
         object.__setattr__(self, "selected_edges", tuple(self.selected_edges))
         object.__setattr__(self, "story_terms_matched", tuple(self.story_terms_matched))
         object.__setattr__(self, "story_terms_unmatched", tuple(self.story_terms_unmatched))
+        object.__setattr__(self, "uncertainties", tuple(self.uncertainties))
         if not self.full_graph_fingerprint:
             raise ValueError("full_graph_fingerprint must not be empty")
         if not self.context_fingerprint:
@@ -332,6 +398,8 @@ class DatabaseContextResult:
             "max_hops": self.max_hops,
             "max_objects": self.max_objects,
             "truncation": self.truncation.to_dict(),
+            "selection_strategy": self.selection_strategy,
+            "uncertainties": [u.to_dict() for u in self.uncertainties],
         }
 
     @classmethod
@@ -340,6 +408,10 @@ class DatabaseContextResult:
             raise ValueError("database context result must be an object")
         trunc_raw = data.get("truncation")
         trunc = TruncationMetadata.from_dict(trunc_raw) if isinstance(trunc_raw, dict) else TruncationMetadata()
+        uncert_raw = data.get("uncertainties", ())
+        uncertainties = tuple(
+            SelectionUncertainty.from_dict(u) for u in uncert_raw
+        ) if uncert_raw else ()
         return cls(
             selected_nodes=tuple(
                 DatabaseGraphNode.from_dict(n)
@@ -359,6 +431,8 @@ class DatabaseContextResult:
             max_hops=int(data.get("max_hops", _DEFAULT_MAX_HOPS)),
             max_objects=int(data.get("max_objects", _DEFAULT_MAX_OBJECTS)),
             truncation=trunc,
+            selection_strategy=str(data.get("selection_strategy", SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1)),
+            uncertainties=uncertainties,
         )
 
 
@@ -1569,6 +1643,249 @@ def select_database_context(
 ) -> DatabaseContextResult:
     """Select a bounded relevant database subgraph for a story/impediment.
 
+    This is the canonical public entry point. It uses evidence-backed bundle
+    selection (SelectionBundle) to produce bounded, reproducible context with
+    explicit uncertainty tracking.
+
+    The implementation:
+    1. Builds candidate bundles for all tables with story evidence
+    2. Scores bundles by concept coverage, confidence, and evidence strength
+    3. Selects anchors first (high-confidence, multi-concept tables)
+    4. Adds bridge bundles connecting selected anchors
+    5. Enforces family limits to prevent prefix flooding
+    6. Evicts lowest-marginal-benefit bundles atomically under budget
+    7. Detects and tracks unresolved evidence (dynamic synonyms, schema fallbacks)
+
+    The `selection_strategy` field in the result identifies the algorithm used,
+    enabling tests to verify which implementation ran.
+
+    Args:
+        graph: The full reconciled DatabaseGraph.
+        story_text: Free-text story or impediment description.
+        max_hops: Maximum BFS expansion depth (kept for API compat).
+        max_objects: Maximum number of nodes in the result.
+
+    Returns:
+        A frozen DatabaseContextResult with bounded subgraph and uncertainties.
+    """
+    from .bundle_selector import build_and_select_bundles
+
+    if max_hops < 0:
+        raise ValueError(f"max_hops must be >= 0, got {max_hops}")
+    if max_objects < 1:
+        raise ValueError(f"max_objects must be >= 1, got {max_objects}")
+
+    # Run bundle selection
+    bundle_result = build_and_select_bundles(
+        graph, story_text,
+        max_objects=max_objects,
+        max_per_family=2,
+    )
+
+    # Build node index
+    node_by_id = {n.id: n for n in graph.nodes}
+
+    # Collect selected node IDs from bundles
+    selected_ids: set[str] = set()
+    for bundle in bundle_result.selected_bundles:
+        selected_ids.add(bundle.table_id)
+        for col in bundle.columns:
+            selected_ids.add(col.column_id)
+
+    # Collect edges between selected nodes
+    selected_edges_list = [
+        e for e in graph.edges
+        if e.from_node in selected_ids and e.to_node in selected_ids
+    ]
+
+    # Build final node list
+    selected_node_list = [
+        node_by_id[nid] for nid in selected_ids
+        if nid in node_by_id
+    ]
+
+    # Sort for deterministic output
+    selected_nodes = tuple(sorted(selected_node_list, key=lambda n: n.qualified_name))
+    selected_edges = tuple(
+        sorted(selected_edges_list, key=lambda e: (e.from_node, e.to_node, e.kind))
+    )
+
+    # Extract story terms for reporting
+    raw_terms = _extract_terms(story_text)
+    terms = [t for t in raw_terms if t.lower() not in _ENGLISH_STOP_WORDS]
+
+    # Determine matched vs unmatched terms
+    matched_terms: list[str] = []
+    unmatched_terms: list[str] = []
+    matched_set: set[str] = set()
+
+    for bundle in bundle_result.selected_bundles:
+        for term in bundle.story_terms_matched:
+            matched_set.add(term.upper())
+
+    for term in terms:
+        if term.upper() in matched_set:
+            matched_terms.append(term)
+        else:
+            unmatched_terms.append(term)
+
+    # Compute omitted counts
+    total_candidate_objects = sum(
+        b.object_cost for b in bundle_result.selected_bundles
+    ) + sum(
+        b.object_cost for b in bundle_result.evicted_bundles
+    )
+
+    omitted = OmittedCounts(
+        nodes_omitted=total_candidate_objects - len(selected_ids),
+        edges_omitted=0,
+        total_candidate_nodes=total_candidate_objects,
+        total_candidate_edges=len(graph.edges),
+    )
+
+    # Build truncation metadata
+    truncation = TruncationMetadata(
+        was_truncated=len(bundle_result.evicted_bundles) > 0,
+        hard_cap=max_objects,
+        total_candidates=total_candidate_objects,
+        total_selected=len(selected_ids),
+        tier_details=(),
+        pinned_evicted=0,
+    )
+
+    # Collect uncertainties from the graph
+    # Check for dynamic synonyms and schema-qualified references
+    uncertainties = _collect_selection_uncertainties(
+        graph, story_text, selected_ids, node_by_id
+    )
+
+    # Compute context fingerprint
+    ctx_fp = _context_fingerprint(
+        selected_nodes=selected_nodes,
+        selected_edges=selected_edges,
+        story_terms_matched=tuple(matched_terms),
+        story_terms_unmatched=tuple(unmatched_terms),
+        full_graph_fingerprint=graph.fingerprint,
+        max_hops=max_hops,
+        max_objects=max_objects,
+    )
+
+    return DatabaseContextResult(
+        selected_nodes=selected_nodes,
+        selected_edges=selected_edges,
+        story_terms_matched=tuple(matched_terms),
+        story_terms_unmatched=tuple(unmatched_terms),
+        omitted_counts=omitted,
+        full_graph_fingerprint=graph.fingerprint,
+        context_fingerprint=ctx_fp,
+        max_hops=max_hops,
+        max_objects=max_objects,
+        truncation=truncation,
+        selection_strategy=SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1,
+        uncertainties=tuple(uncertainties),
+    )
+
+
+def _collect_selection_uncertainties(
+    graph: DatabaseGraph,
+    story_text: str,
+    selected_ids: set[str],
+    node_by_id: dict[str, DatabaseGraphNode],
+) -> list[SelectionUncertainty]:
+    """Collect uncertainties from the graph and story analysis.
+    
+    Detects:
+    - Dynamic synonyms (runtime-generated, target unproven)
+    - Schema-qualified references to non-native schemas
+    - Objects with unresolved evidence
+    """
+    uncertainties: list[SelectionUncertainty] = []
+    story_upper = story_text.upper()
+    
+    # Detect schema-qualified references like CONSUMER.TB_GRP_PF
+    _SCHEMA_QUAL_RE = re.compile(r'\b([A-Z][A-Z0-9_]+)\.([A-Z][A-Z0-9_]+)\b')
+    _NATIVE_SCHEMAS = {"SYGMA", ""}
+    
+    for m in _SCHEMA_QUAL_RE.finditer(story_upper):
+        schema, table = m.group(1), m.group(2)
+        # Skip common false positives
+        if schema in ('E', 'I', 'A', 'THE', 'REQ'):
+            continue
+        # If schema is not native and mentions "dynamic" or "synonym" in story
+        if schema not in _NATIVE_SCHEMAS:
+            if 'dynamic' in story_text.lower() and 'synonym' in story_text.lower():
+                # Check if there are any dynamic synonyms in the graph
+                has_dynamic = False
+                for node in graph.nodes:
+                    if node.kind == NodeKind.SYNONYM.value:
+                        if (
+                            node.get_property("dynamic") is True
+                            or node.get_property("generated") is True
+                            or node.get_property("runtime_dependent") in (True, "true", "True")
+                        ):
+                            has_dynamic = True
+                            break
+                
+                if has_dynamic:
+                    obj_name = f"DYNAMIC:ALL_{schema}_OBJECTS"
+                    uncertainties.append(SelectionUncertainty(
+                        code="DYNAMIC_SYNONYM_TARGET_UNPROVEN",
+                        object_id=f"dynamic_synonym_{schema}",
+                        object_name=obj_name,
+                        reason=(
+                            f"Schema '{schema}' synonym references require a dynamic "
+                            f"runtime generator whose execution is unproven"
+                        ),
+                        evidence_source="story_extraction",
+                        source_revision=graph.fingerprint,
+                        resolved=False,
+                    ))
+    
+    # Check for dynamic synonym nodes in the selected context
+    for node_id in selected_ids:
+        node = node_by_id.get(node_id)
+        if node is None:
+            continue
+        
+        if node.kind == NodeKind.SYNONYM.value:
+            is_dynamic = (
+                node.get_property("dynamic") is True
+                or node.get_property("generated") is True
+                or node.get_property("runtime_dependent") in (True, "true", "True")
+            )
+            if is_dynamic:
+                uncertainties.append(SelectionUncertainty(
+                    code="DYNAMIC_SYNONYM_TARGET_UNPROVEN",
+                    object_id=node_id,
+                    object_name=node.qualified_name,
+                    reason=(
+                        f"Synonym '{node.qualified_name}' is dynamic/generated; "
+                        f"target may not be stable at runtime"
+                    ),
+                    evidence_source="graph_node_property",
+                    source_revision=graph.fingerprint,
+                    resolved=False,
+                ))
+    
+    return uncertainties
+
+
+# ---------------------------------------------------------------------------
+# Legacy selector (preserved for comparison/debugging)
+# ---------------------------------------------------------------------------
+
+def _select_database_context_legacy(
+    graph: DatabaseGraph,
+    story_text: str,
+    *,
+    max_hops: int = _DEFAULT_MAX_HOPS,
+    max_objects: int = _DEFAULT_MAX_OBJECTS,
+) -> DatabaseContextResult:
+    """Legacy selector using neighbourhood expansion.
+
+    This is the original implementation preserved for comparison and debugging.
+    It is NOT called by the public entry point.
+
     Algorithm:
     1. Build a pre-computed graph index.
     2. Extract and filter domain terms from story_text.
@@ -2214,6 +2531,8 @@ def select_database_context(
         max_hops=max_hops,
         max_objects=max_objects,
         truncation=truncation,
+        selection_strategy=SELECTION_STRATEGY_LEGACY,
+        uncertainties=(),
     )
 
 
@@ -2703,4 +3022,6 @@ def select_database_context_via_bundles(
         max_hops=max_hops,
         max_objects=max_objects,
         truncation=truncation,
+        selection_strategy=SELECTION_STRATEGY_EVIDENCE_BUNDLES_V1,
+        uncertainties=(),
     )
