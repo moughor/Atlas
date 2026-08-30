@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 import re
+import sys
 
 from .canonical import normalize_decimal, normalize_text
+
+# Python 3.11+ has StrEnum; provide compatibility for 3.10
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    class StrEnum(str, Enum):
+        pass
 
 
 _SOURCE_ID = re.compile(r"^source:[a-z0-9][a-z0-9-]*$")

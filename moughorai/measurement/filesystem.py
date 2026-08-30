@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from enum import StrEnum
+from enum import Enum
 import hashlib
 import os
 from os import PathLike
+import sys
 from threading import RLock
 
 from .models import (
@@ -16,6 +17,13 @@ from .models import (
     FilesystemLedgerSnapshot,
     stable_identifier,
 )
+
+# Python 3.11+ has StrEnum; provide compatibility for 3.10
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    class StrEnum(str, Enum):
+        pass
 
 
 class FilesystemOperation(StrEnum):

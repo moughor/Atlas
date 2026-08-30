@@ -10,11 +10,25 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 import json
 import math
 import re
-from typing import Any, Self
+import sys
+from typing import Any, TYPE_CHECKING
+
+# Python 3.11+ has Self in typing; provide compatibility for 3.10
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
+
+# Python 3.11+ has StrEnum; provide compatibility for 3.10
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    class StrEnum(str, Enum):
+        pass
 
 
 MEASUREMENT_SCHEMA_VERSION = 1

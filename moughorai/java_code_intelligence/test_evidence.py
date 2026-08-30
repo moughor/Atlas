@@ -422,14 +422,15 @@ def _record_evidence_id(
     annotations: tuple[str, ...],
     limitations: tuple[str, ...],
 ) -> str:
-    return f'evidence:{_digest({
+    data = {
         "producer": JAVA_TEST_EVIDENCE_PRODUCER,
         "callable_index_fingerprint": binding,
         "subject_id": subject_id,
         "root_kind": kind.value,
         "annotation_identities": list(sorted(set(annotations))),
         "limitations": list(sorted(set(limitations))),
-    })}'
+    }
+    return f'evidence:{_digest(data)}'
 
 
 def _projection(

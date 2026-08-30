@@ -3,8 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-import tomllib
+import sys
 import xml.etree.ElementTree as ET
+
+# Python 3.11+ has tomllib; use tomli for 3.10
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 from moughorai.measurement import MeasurementPhase, MeasurementSession
 
