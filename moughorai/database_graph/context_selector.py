@@ -1481,7 +1481,8 @@ def _expand_fk_tiers(
     # Tier 1b: Name-based parent inference.
     # When a pinned table like TB_GRP_PR_AI_GR exists, infer that
     # TB_GRP_PR_AI might be the parent table by stripping the last
-    # underscore segment. If the parent exists in the graph, include it.
+    # underscore segment. If the parent exists in the graph, promote it
+    # to PINNED tier with FK_OF_EXACT sub-tier so it survives the budget.
     for node_id in list(pinned):
         node = idx.node_by_id.get(node_id)
         if node is None or node.kind not in _TABLE_KINDS:
@@ -1493,24 +1494,25 @@ def _expand_fk_tiers(
             parent_name = "_".join(parts[:-1])
             parent_nodes = idx.short_name_to_nodes.get(parent_name.upper(), [])
             for pn in parent_nodes:
-                if pn.kind in _TABLE_KINDS and pn.id not in scored:
+                if pn.kind not in _TABLE_KINDS:
+                    continue
+                existing = scored.get(pn.id)
+                # Promote to PINNED/FK_OF_EXACT — parent of a pinned child
+                # is structurally important
+                new_score = max(_SCORE_FK_COLUMN_NEIGHBOR,
+                                existing.score if existing else 0)
+                if existing is None or existing.tier > _TIER_PINNED or (
+                    existing.tier == _TIER_PINNED and existing.sub_tier > _SUB_FK_OF_EXACT
+                ):
                     scored[pn.id] = _ScoredNode(
                         node_id=pn.id,
-                        score=_SCORE_FK_COLUMN_NEIGHBOR,
-                        tier=_TIER_FK_CONNECTED,
+                        score=new_score,
+                        tier=_TIER_PINNED,
                         reason=f"name_parent_of:{node_id}",
+                        sub_tier=_SUB_FK_OF_EXACT,
                         kind_priority=0,
                     )
-                elif pn.kind in _TABLE_KINDS and pn.id in scored:
-                    existing = scored[pn.id]
-                    if existing.tier > _TIER_FK_CONNECTED:
-                        scored[pn.id] = _ScoredNode(
-                            node_id=pn.id,
-                            score=max(existing.score, _SCORE_FK_COLUMN_NEIGHBOR),
-                            tier=_TIER_FK_CONNECTED,
-                            reason=existing.reason,
-                            kind_priority=0,
-                        )
+                    pinned.add(pn.id)
 
 
 # ---------------------------------------------------------------------------
