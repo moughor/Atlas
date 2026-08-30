@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -379,6 +380,7 @@ class _GraphIndex:
         "outgoing",
         "incoming",
         "alias_to_nodes",
+        "table_evidence_terms",
     )
 
     def __init__(self, graph: DatabaseGraph) -> None:
@@ -419,6 +421,16 @@ class _GraphIndex:
         # view/FK relationship evidence.
         self.alias_to_nodes: dict[str, list[tuple[str, int]]] = {}  # phrase → [(node_id, weight)]
         self._build_alias_index(graph)
+
+        # Build per-table semantic evidence term documents.
+        # Each table gets a set of lowercase terms derived from:
+        #   - Entity class name words (via MAPS_TO_TABLE edges)
+        #   - Field names (via qualified name hierarchy of java_field nodes)
+        #   - Table name segments
+        #   - Column names
+        # These documents power corpus-frequency scoring.
+        self.table_evidence_terms: dict[str, set[str]] = {}
+        self._build_evidence_terms(graph)
 
     def edges_from(self, node_id: str, kind: str | None = None) -> list[DatabaseGraphEdge]:
         """Return outgoing edges, optionally filtered by kind."""
@@ -508,6 +520,87 @@ class _GraphIndex:
         if kind is not None:
             return [e for e in edges if e.kind == kind]
         return edges
+
+    def _build_evidence_terms(self, graph: DatabaseGraph) -> None:
+        """Build per-table semantic evidence term documents.
+
+        For each table/view/MV node, collects lowercase terms from:
+        1. Table name segments (after stripping TB_/VW_/MV_ prefix)
+        2. Entity class name words (from MAPS_TO_TABLE incoming edges)
+        3. Java field names (from java_field nodes whose qname starts
+           with the entity qname)
+        4. Column names (from HAS_COLUMN edges)
+
+        Stores ``self.table_evidence_terms[node_id] = {set of terms}``.
+        """
+        _PREFIXES = (
+            "TB_RT_", "TB_APP_", "TB_GRP_", "TB_MDL_", "TB_LOG_",
+            "TB_GRP_PR_", "TB_GRP_PL_", "TB_GRP_C_",
+            "VW_HD_", "VW_", "MV_A_", "MV_", "TB_",
+        )
+
+        # Pre-build entity→table mapping from MAPS_TO_TABLE edges
+        entity_to_table: dict[str, str] = {}  # entity_id → table_id
+        table_to_entities: dict[str, list[str]] = {}  # table_id → [entity_ids]
+        for edge in graph.edges:
+            if edge.kind == EdgeKind.MAPS_TO_TABLE.value:
+                entity_to_table[edge.from_node] = edge.to_node
+                table_to_entities.setdefault(edge.to_node, []).append(edge.from_node)
+
+        # Pre-build entity qname set for field lookup
+        entity_qnames: dict[str, str] = {}  # entity_id → qname
+        for node in graph.nodes:
+            if node.kind in _ENTITY_KINDS:
+                entity_qnames[node.id] = node.qualified_name
+
+        # Collect java_field nodes indexed by their qname prefix (entity qname)
+        field_names_by_entity: dict[str, list[str]] = {}
+        for node in graph.nodes:
+            if node.kind == "java_field":
+                # Field qname is typically "pkg.EntityName.fieldName"
+                qn = node.qualified_name
+                for ent_id, ent_qn in entity_qnames.items():
+                    if qn.startswith(ent_qn + "."):
+                        field_short = qn[len(ent_qn) + 1:].rsplit(".", 1)[-1]
+                        field_names_by_entity.setdefault(ent_id, []).append(field_short)
+
+        for node in graph.nodes:
+            if node.kind not in _TABLE_KINDS:
+                continue
+
+            terms: set[str] = set()
+            short = node.qualified_name.rsplit(".", 1)[-1].upper()
+
+            # 1. Table name segments after prefix stripping
+            stripped = short
+            for prefix in _PREFIXES:
+                if stripped.startswith(prefix):
+                    stripped = stripped[len(prefix):]
+                    break
+            for seg in stripped.split("_"):
+                if len(seg) >= 2:
+                    terms.add(seg.lower())
+
+            # 2. Entity class name words (from MAPS_TO_TABLE incoming edges)
+            for ent_id in table_to_entities.get(node.id, []):
+                ent_node = self.node_by_id.get(ent_id)
+                if ent_node is None:
+                    continue
+                ent_short = ent_node.qualified_name.rsplit(".", 1)[-1]
+                for w in _split_camel_case(ent_short):
+                    terms.add(w)
+
+                # 3. Java field names from fields of this entity
+                for field_name in field_names_by_entity.get(ent_id, []):
+                    for w in _split_camel_case(field_name):
+                        terms.add(w)
+
+            # Column names are intentionally EXCLUDED from evidence terms.
+            # Generic column names (ID, NAME, CREATE_DATE, UPDATE_USER) appear
+            # on nearly every table and would inflate concept-match counts,
+            # defeating the purpose of specificity-based scoring.
+
+            self.table_evidence_terms[node.id] = terms
 
     def columns_of(self, table_id: str) -> list[str]:
         """Return node IDs of columns connected via HAS_COLUMN from table_id."""
@@ -719,14 +812,17 @@ class _ScoredNode:
     reason: str  # debugging breadcrumb
     sub_tier: int = _SUB_COL_OF_EXACT  # default: lowest pinned priority
     kind_priority: int = 1  # 0 = table/view/entity, 1 = column/other
+    concept_matches: int = 0  # distinct story concepts matching evidence terms
 
-    def sort_key(self) -> tuple[int, int, int, int, str]:
-        """Sort: tier, sub_tier, kind_priority, -score, id.
+    def sort_key(self) -> tuple[int, int, int, int, int, str]:
+        """Sort: tier, sub_tier, kind_priority, -concept_matches, -score, id.
 
         kind_priority ensures tables/views/entities survive before columns
         when competing for the same tier+sub_tier slot.
+        concept_matches ensures tables matching more story concepts rank
+        higher within the same tier/sub_tier/kind_priority.
         """
-        return (self.tier, self.sub_tier, self.kind_priority, -self.score, self.node_id)
+        return (self.tier, self.sub_tier, self.kind_priority, -self.concept_matches, -self.score, self.node_id)
 
 
 def _apply_prefix_diversity(
@@ -764,6 +860,110 @@ def _apply_prefix_diversity(
             family_counts[prefix] = count + 1
         # else: suppressed — over the per-family cap
     return result
+
+
+def _compute_idf(terms: list[str], idx: _GraphIndex) -> dict[str, float]:
+    """Compute IDF weights for story terms against table evidence documents.
+
+    For each story term, counts how many table/view evidence documents
+    contain it (document frequency).  Returns IDF weight per term:
+
+        IDF = log(N_tables / (1 + doc_freq))
+
+    Properties:
+    - Terms appearing in >30% of tables get IDF < 1.0 (penalized).
+    - Terms appearing in <5% of tables get IDF > 3.0 (boosted).
+    - Terms with no evidence matches get IDF = 1.0 (neutral).
+    """
+    n_tables = max(len(idx.table_evidence_terms), 1)
+    idf: dict[str, float] = {}
+
+    for term in terms:
+        t_lower = term.lower()
+        # Count how many table evidence documents contain this term
+        # (including plural/singular variants)
+        variants = _normalize_plural(t_lower)
+        doc_freq = 0
+        for _table_id, ev_terms in idx.table_evidence_terms.items():
+            if variants & ev_terms:
+                doc_freq += 1
+        if doc_freq > 0:
+            idf[t_lower] = math.log(n_tables / (1 + doc_freq))
+        else:
+            idf[t_lower] = 1.0
+
+    return idf
+
+
+def _apply_concept_coverage_boost(
+    scored: dict[str, _ScoredNode],
+    terms: list[str],
+    idx: _GraphIndex,
+) -> None:
+    """Apply multi-concept coverage bonus to scored table/view/MV nodes.
+
+    Only counts terms whose IDF >= 1.5 (uncommon terms) as distinct
+    concepts.  Common infrastructure terms (project, session, id) that
+    appear in >30% of table evidence documents are excluded from the
+    concept count.
+
+    The bonus is deliberately modest — it breaks ties between similarly
+    scored candidates, not override the scoring fundamentals.
+    """
+    if not terms:
+        return
+
+    # Compute IDF for story terms
+    idf = _compute_idf(terms, idx)
+
+    # Only count uncommon terms as distinct concepts
+    _IDF_CONCEPT_THRESHOLD = 1.5
+    terms_lower = [t.lower() for t in terms]
+    rare_terms: dict[str, set[str]] = {}  # term -> plural variants
+    for t in terms_lower:
+        if idf.get(t, 0.0) >= _IDF_CONCEPT_THRESHOLD:
+            rare_terms[t] = _normalize_plural(t)
+
+    n_total_rare = len(rare_terms)
+
+    for node_id, sn in list(scored.items()):
+        node = idx.node_by_id.get(node_id)
+        if node is None or node.kind not in _TABLE_KINDS:
+            sn.concept_matches = 0
+            continue
+
+        ev_terms = idx.table_evidence_terms.get(node_id, set())
+        if not ev_terms:
+            sn.concept_matches = 0
+            continue
+
+        # Count distinct RARE story terms matching evidence terms
+        matched_concepts: set[str] = set()
+        for t_lower, variants in rare_terms.items():
+            if variants & ev_terms:
+                matched_concepts.add(t_lower)
+
+        n_matches = len(matched_concepts)
+        sn.concept_matches = n_matches
+
+        # Modest bonus: only for 2+ rare concept matches
+        if n_matches >= 3:
+            bonus = n_matches * 8
+        elif n_matches >= 2:
+            bonus = n_matches * 5
+        else:
+            continue  # No bonus for single-concept matches
+
+        # Update the scored node's score
+        scored[node_id] = _ScoredNode(
+            node_id=sn.node_id,
+            score=sn.score + bonus,
+            tier=sn.tier,
+            reason=sn.reason,
+            sub_tier=sn.sub_tier,
+            kind_priority=sn.kind_priority,
+            concept_matches=n_matches,
+        )
 
 
 def _score_and_match(
@@ -1076,6 +1276,13 @@ def _score_and_match(
                                 if part in unmatched_terms:
                                     unmatched_terms.remove(part)
                         break
+
+    # --- Phase D: Corpus-frequency concept coverage boost ---
+    # Apply IDF-weighted multi-concept scoring.  Tables whose evidence
+    # documents match multiple distinct story terms receive a bonus that
+    # penalises generic terms (high doc-frequency → low IDF) and boosts
+    # rare multi-concept matches.
+    _apply_concept_coverage_boost(scored, terms, idx)
 
     return scored, matched_terms, unmatched_terms
 
@@ -1801,7 +2008,7 @@ def select_database_context(
         if sn.node_id in col_by_parent:
             parent_priority[sn.node_id] = sn.sort_key()
     sorted_parents = sorted(col_by_parent.keys(),
-                            key=lambda pid: parent_priority.get(pid, (99, 99, 99, 0, "")))
+                            key=lambda pid: parent_priority.get(pid, (99, 99, 99, 0, 0, "")))
 
     # Count total columns needed to include ALL columns of all parents
     total_all_cols = sum(len(cols) for cols in col_by_parent.values())
