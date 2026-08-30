@@ -1,0 +1,1094 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-30T17:00:00+02:00",
+  "summary": {
+    "total_cases": 14,
+    "context_pass": 0,
+    "context_fail": 14,
+    "sql_pass": 42,
+    "sql_fail": 0,
+    "objects_missing_cases": 9,
+    "columns_missing_cases": 14,
+    "relationships_missing_cases": 11,
+    "uncertainties_missing_cases": 14
+  },
+  "cases": [
+    {
+      "case_id": "SYGMA-DB-001",
+      "context_result": "FAIL",
+      "nodes_selected": 57,
+      "edges_selected": 39,
+      "cap_ok": true,
+      "objects": {
+        "expected": 3,
+        "found": 3,
+        "missing": [],
+        "pass": true
+      },
+      "columns": {
+        "expected": 12,
+        "found": 6,
+        "missing": [
+          "TB_GRP_PF.PROJECT_NUMBER",
+          "TB_GRP_PF.VERSION",
+          "TB_GRP_PF_FEATURE.SEMANTIC_REF",
+          "TB_GRP_PF_FEATURE_P.SEMANTIC_REF",
+          "TB_GRP_PF_FEATURE_P.VALUE",
+          "TB_GRP_PF_FEATURE_P.VALUE_TYPE"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 4,
+        "found": 2,
+        "missing": [
+          "GroupVProjectFeatures.projectFeatures\u2192ProjectFeature.groupId(java_lazy_relation)",
+          "ProjectFeature.projectFeatureProperties\u2192ProjectFeatureProperty.featureId(java_lazy_relation)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 2,
+        "found": 0,
+        "missing": [
+          "Jailer 9.3.3 predates the inspected 23.12 branch; relationsh",
+          "MAX(ID) as latest snapshot is application guidance, not a ge"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-001-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-001-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-001-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNGROUNDED_JOIN']",
+          "actual": "structurally_invalid/['UNGROUNDED_JOIN']"
+        }
+      ],
+      "failure_reasons": [
+        "columns: 6/12",
+        "relationships: 2/4",
+        "uncertainties: 0/2"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-002",
+      "context_result": "FAIL",
+      "nodes_selected": 59,
+      "edges_selected": 56,
+      "cap_ok": true,
+      "objects": {
+        "expected": 2,
+        "found": 2,
+        "missing": [],
+        "pass": true
+      },
+      "columns": {
+        "expected": 9,
+        "found": 4,
+        "missing": [
+          "TB_RT_RULE_EXCEPTION_DEF.RULE_IDENTIFIER",
+          "TB_RT_RULE_EXCEPTION_DEF.EXERCISE_SCOPE_TYPE",
+          "TB_RT_RULE_EXCEPTION_DEF.EXERCISE_INSTANCES",
+          "TB_RT_RULE_EXCEPTION_DEF.SESSION_INSTANCES",
+          "TB_RT_RULE_EXCEPTION_DEF.STATE"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "TB_RT_RULE_EXCEPTION_DEF.SESSION_INSTANCES\u2192TB_RT_SESSION_INSTANCE.ID(logical_reference)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 3,
+        "found": 0,
+        "missing": [
+          "SESSION_INSTANCES is VARCHAR2(2000), not a declared numeric ",
+          "No current non-BACK_UP repository definition for SQ_RT_RULE_",
+          "The encoding semantics for wildcard or multiple session iden"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-002-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-002-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['DENORMALIZED_REFERENCE_NOT_FK']",
+          "actual": "structurally_invalid/['DENORMALIZED_REFERENCE_NOT_FK']"
+        },
+        {
+          "sql_id": "SYGMA-DB-002-NEG-02",
+          "result": "PASS",
+          "expected": "incomplete_evidence/['UNRESOLVED_SEQUENCE']",
+          "actual": "incomplete_evidence/['UNRESOLVED_SEQUENCE']"
+        }
+      ],
+      "failure_reasons": [
+        "columns: 4/9",
+        "relationships: 0/1",
+        "uncertainties: 0/3"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-003",
+      "context_result": "FAIL",
+      "nodes_selected": 58,
+      "edges_selected": 42,
+      "cap_ok": true,
+      "objects": {
+        "expected": 2,
+        "found": 0,
+        "missing": [
+          "TB_RT_SESSION_INSTANCE",
+          "TB_RT_EXERCISE_INSTANCE"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 10,
+        "found": 0,
+        "missing": [
+          "TB_RT_SESSION_INSTANCE.ID",
+          "TB_RT_SESSION_INSTANCE.EXERCISE_ID",
+          "TB_RT_SESSION_INSTANCE.STATE_INTERNAL",
+          "TB_RT_SESSION_INSTANCE.EXERCISE_MODEL_ID",
+          "TB_RT_SESSION_INSTANCE.FOREST_ID",
+          "TB_RT_EXERCISE_INSTANCE.ID",
+          "TB_RT_EXERCISE_INSTANCE.EXERCISE_MODEL_ID",
+          "TB_RT_EXERCISE_INSTANCE.STATE_INTERNAL",
+          "TB_RT_EXERCISE_INSTANCE.SCOPE_ID",
+          "TB_RT_EXERCISE_INSTANCE.SCOPE_TYPE"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "TB_RT_SESSION_INSTANCE.EXERCISE_ID\u2192TB_RT_EXERCISE_INSTANCE.ID(foreign_key)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "Live session/exercise state and deployment drift are not kno"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-003-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-003-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-003-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNGROUNDED_JOIN']",
+          "actual": "structurally_invalid/['UNGROUNDED_JOIN']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 0/2 - missing: ['TB_RT_SESSION_INSTANCE', 'TB_RT_EXERCISE_INSTANCE']",
+        "columns: 0/10",
+        "relationships: 0/1",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-004",
+      "context_result": "FAIL",
+      "nodes_selected": 58,
+      "edges_selected": 32,
+      "cap_ok": true,
+      "objects": {
+        "expected": 6,
+        "found": 1,
+        "missing": [
+          "TB_APP_PROJECT_BASE",
+          "TB_GRP_ONL_PROJECT_ITEM",
+          "TB_RT_EXERCISE_INSTANCE",
+          "TB_RT_SESSION_INSTANCE",
+          "TB_MDL_EX"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 17,
+        "found": 1,
+        "missing": [
+          "TB_APP_PROJECT_BASE.PROJECT_NUMBER",
+          "TB_APP_PROJECT_BASE.PROJECT_TYPE",
+          "TB_GRP_ONL_PROJECT_ITEM.PROJECT_NUMBER",
+          "TB_GRP_ONL_PROJECT_ITEM.GROUP_ONL_BATCH_ID",
+          "TB_RT_EXERCISE_INSTANCE.ID",
+          "TB_RT_EXERCISE_INSTANCE.SCOPE_ID",
+          "TB_RT_EXERCISE_INSTANCE.SCOPE_TYPE",
+          "TB_RT_EXERCISE_INSTANCE.EXERCISE_MODEL_ID",
+          "TB_RT_SESSION_INSTANCE.ID",
+          "TB_RT_SESSION_INSTANCE.EXERCISE_ID",
+          "TB_RT_SESSION_INSTANCE.STATE_INTERNAL",
+          "TB_RT_SESSION_INSTANCE.MODIFIABLE_TREE_DTYPE",
+          "TB_GRP_ETH.PROJECT_NUMBER",
+          "TB_GRP_ETH.ETHICS_ISSUES",
+          "TB_MDL_EX.ID",
+          "TB_MDL_EX.EXERCISE_MODEL_CATEGORY"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 3,
+        "found": 0,
+        "missing": [
+          "TB_RT_EXERCISE_INSTANCE.SCOPE_ID/SCOPE_TYPE\u2192TB_APP_PROJECT_BASE.PROJECT_NUMBER/PROJECT_TYPE(logical_reference)",
+          "TB_RT_SESSION_INSTANCE.EXERCISE_ID\u2192TB_RT_EXERCISE_INSTANCE.ID(foreign_key)",
+          "TB_GRP_ETH.SESSION_ID\u2192TB_RT_SESSION_INSTANCE.ID(logical_reference)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "MAX(session ID) is query-specific latest-session logic and m"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-004-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-004-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNGROUNDED_JOIN']",
+          "actual": "structurally_invalid/['UNGROUNDED_JOIN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-004-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 1/6 - missing: ['TB_APP_PROJECT_BASE', 'TB_GRP_ONL_PROJECT_ITEM', 'TB_RT_EXERCISE_INSTANCE', 'TB_RT_SESSION_INSTANCE', 'TB_MDL_EX']",
+        "columns: 1/17",
+        "relationships: 0/3",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-005",
+      "context_result": "FAIL",
+      "nodes_selected": 57,
+      "edges_selected": 34,
+      "cap_ok": true,
+      "objects": {
+        "expected": 3,
+        "found": 0,
+        "missing": [
+          "VW_HD_FAILED_DOC_GEN",
+          "TB_RT_SESSION_INSTANCE",
+          "TB_APP_EXTERNAL_DOCUMENT"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 21,
+        "found": 0,
+        "missing": [
+          "VW_HD_FAILED_DOC_GEN.PROJECT_NUMBER",
+          "VW_HD_FAILED_DOC_GEN.EXERCISE_MODEL_CATEGORY",
+          "VW_HD_FAILED_DOC_GEN.CALL_CCM",
+          "VW_HD_FAILED_DOC_GEN.SESSION_ID",
+          "VW_HD_FAILED_DOC_GEN.END_DATE",
+          "VW_HD_FAILED_DOC_GEN.SESSION_TYPE",
+          "VW_HD_FAILED_DOC_GEN.BATCH_ID",
+          "VW_HD_FAILED_DOC_GEN.BATCH_ITEM_ID",
+          "VW_HD_FAILED_DOC_GEN.DOCUMENT_MODEL_ID",
+          "VW_HD_FAILED_DOC_GEN.DOC_GEN_STAGE",
+          "VW_HD_FAILED_DOC_GEN.DOC_GEN_STATE",
+          "VW_HD_FAILED_DOC_GEN.TEMPLATE_ID",
+          "VW_HD_FAILED_DOC_GEN.EXERCISE_MODEL",
+          "VW_HD_FAILED_DOC_GEN.DOCUMENT_ID",
+          "TB_RT_SESSION_INSTANCE.ID",
+          "TB_RT_SESSION_INSTANCE.EXERCISE_ID",
+          "TB_RT_SESSION_INSTANCE.END_DATE",
+          "TB_RT_SESSION_INSTANCE.MODIFIABLE_TREE_DTYPE",
+          "TB_RT_SESSION_INSTANCE.PAR_SESSION_TAG",
+          "TB_APP_EXTERNAL_DOCUMENT.ID",
+          "TB_APP_EXTERNAL_DOCUMENT.DOCUMENT_ID"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 2,
+        "found": 0,
+        "missing": [
+          "VW_HD_FAILED_DOC_GEN\u2192TB_APP_EXTERNAL_DOCUMENT(view_dependency)",
+          "VW_HD_FAILED_DOC_GEN\u2192TB_RT_SESSION_INSTANCE(view_dependency)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "The view filters a specific set of generation states; it doe"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-005-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-005-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['OBJECT_NOT_WRITABLE']",
+          "actual": "structurally_invalid/['OBJECT_NOT_WRITABLE']"
+        },
+        {
+          "sql_id": "SYGMA-DB-005-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 0/3 - missing: ['VW_HD_FAILED_DOC_GEN', 'TB_RT_SESSION_INSTANCE', 'TB_APP_EXTERNAL_DOCUMENT']",
+        "columns: 0/21",
+        "relationships: 0/2",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-006",
+      "context_result": "FAIL",
+      "nodes_selected": 57,
+      "edges_selected": 28,
+      "cap_ok": true,
+      "objects": {
+        "expected": 4,
+        "found": 2,
+        "missing": [
+          "TB_GRP_PR_P",
+          "TB_RT_SESSION_INSTANCE"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 12,
+        "found": 2,
+        "missing": [
+          "VW_LATEST_CLOSED_REP_SESSIONS.PROJECT_NUMBER",
+          "VW_LATEST_CLOSED_REP_SESSIONS.PERIOD_IDENTIFIER",
+          "VW_LATEST_CLOSED_REP_SESSIONS.STATE_INTERNAL",
+          "TB_GRP_PR_P.PROJECT_NUMBER",
+          "TB_GRP_PR_P.SESSION_ID",
+          "TB_GRP_PR_P.ID",
+          "TB_GRP_PR_P.PERIOD_IDENTIFIER",
+          "VW_NON_FP7_PROJECTS.PROJECT_NUMBER",
+          "TB_RT_SESSION_INSTANCE.ID",
+          "TB_RT_SESSION_INSTANCE.STATE_INTERNAL"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 3,
+        "found": 0,
+        "missing": [
+          "VW_LATEST_CLOSED_REP_SESSIONS\u2192TB_GRP_PR_P(view_dependency)",
+          "VW_LATEST_CLOSED_REP_SESSIONS\u2192VW_NON_FP7_PROJECTS(view_dependency)",
+          "VW_LATEST_CLOSED_REP_SESSIONS\u2192TB_RT_SESSION_INSTANCE(view_dependency)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "MAX(session ID) is the view's implementation of latest, not "
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-006-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-006-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-006-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['OBJECT_NOT_WRITABLE']",
+          "actual": "structurally_invalid/['OBJECT_NOT_WRITABLE']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 2/4 - missing: ['TB_GRP_PR_P', 'TB_RT_SESSION_INSTANCE']",
+        "columns: 2/12",
+        "relationships: 0/3",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-007",
+      "context_result": "FAIL",
+      "nodes_selected": 60,
+      "edges_selected": 46,
+      "cap_ok": true,
+      "objects": {
+        "expected": 9,
+        "found": 1,
+        "missing": [
+          "TB_GRP_PL",
+          "TB_GRP_PL_AMD_DATA",
+          "TB_RT_DATA_TREE",
+          "TB_RT_DATA_FOREST",
+          "TB_RT_EXERCISE_INSTANCE",
+          "TB_MDL_EX",
+          "TB_RT_EXERCISE_PARAM",
+          "TB_RT_SESSION_INSTANCE"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 37,
+        "found": 2,
+        "missing": [
+          "VW_BAM_AMENDMENTS.PROJECT_NUMBER",
+          "VW_BAM_AMENDMENTS.AMD_REF",
+          "VW_BAM_AMENDMENTS.AMD_NUMBER",
+          "VW_BAM_AMENDMENTS.AMD_TYPE",
+          "VW_BAM_AMENDMENTS.AMD_VERSION",
+          "VW_BAM_AMENDMENTS.AMD_START_DATE",
+          "VW_BAM_AMENDMENTS.AMD_END_DATE",
+          "VW_BAM_AMENDMENTS.AMD_EXERCISE_STATE",
+          "TB_GRP_PL.ID",
+          "TB_GRP_PL.PROJECT_NUMBER",
+          "TB_GRP_PL.OTO_AMD_DATA_ID",
+          "TB_GRP_PL.VERSION",
+          "TB_GRP_PL_AMD_DATA.ID",
+          "TB_GRP_PL_AMD_DATA.AMD_TYPE",
+          "TB_GRP_PL_AMD_DATA.AMD_COMMISSION_REF",
+          "TB_RT_DATA_TREE.TREE_ROOT_ID",
+          "TB_RT_DATA_TREE.FOREST_ID",
+          "TB_RT_DATA_TREE.TREE_DTYPE",
+          "TB_RT_DATA_FOREST.ID",
+          "TB_RT_EXERCISE_INSTANCE.ID",
+          "TB_RT_EXERCISE_INSTANCE.SCOPE_ID",
+          "TB_RT_EXERCISE_INSTANCE.SCOPE_TYPE",
+          "TB_RT_EXERCISE_INSTANCE.EXERCISE_MODEL_ID",
+          "TB_RT_EXERCISE_INSTANCE.START_DATE",
+          "TB_RT_EXERCISE_INSTANCE.END_DATE",
+          "TB_RT_EXERCISE_INSTANCE.STATE_CODE",
+          "TB_MDL_EX.ID",
+          "TB_MDL_EX.EXERCISE_MODEL_CATEGORY",
+          "TB_RT_EXERCISE_PARAM.EXERCISE_ID",
+          "TB_RT_EXERCISE_PARAM.KEY",
+          "TB_RT_EXERCISE_PARAM.VALUE",
+          "TB_RT_SESSION_INSTANCE.ID",
+          "TB_RT_SESSION_INSTANCE.FOREST_ID",
+          "TB_RT_SESSION_INSTANCE.EXERCISE_ID",
+          "TB_RT_SESSION_INSTANCE.MODIFIABLE_TREE_DTYPE"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 8,
+        "found": 0,
+        "missing": [
+          "VW_BAM_AMENDMENTS\u2192TB_GRP_PL(view_dependency)",
+          "VW_BAM_AMENDMENTS\u2192TB_GRP_PL_AMD_DATA(view_dependency)",
+          "VW_BAM_AMENDMENTS\u2192TB_RT_DATA_TREE(view_dependency)",
+          "VW_BAM_AMENDMENTS\u2192TB_RT_DATA_FOREST(view_dependency)",
+          "VW_BAM_AMENDMENTS\u2192TB_RT_EXERCISE_INSTANCE(view_dependency)",
+          "VW_BAM_AMENDMENTS\u2192TB_MDL_EX(view_dependency)",
+          "VW_BAM_AMENDMENTS\u2192TB_RT_EXERCISE_PARAM(view_dependency)",
+          "VW_BAM_AMENDMENTS\u2192TB_RT_SESSION_INSTANCE(view_dependency)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "ROW_NUMBER ordering and the UNION branch are part of this vi"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-007-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-007-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['OBJECT_NOT_WRITABLE']",
+          "actual": "structurally_invalid/['OBJECT_NOT_WRITABLE']"
+        },
+        {
+          "sql_id": "SYGMA-DB-007-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNGROUNDED_JOIN']",
+          "actual": "structurally_invalid/['UNGROUNDED_JOIN']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 1/9 - missing: ['TB_GRP_PL', 'TB_GRP_PL_AMD_DATA', 'TB_RT_DATA_TREE', 'TB_RT_DATA_FOREST', 'TB_RT_EXERCISE_INSTANCE', 'TB_MDL_EX', 'TB_RT_EXERCISE_PARAM', 'TB_RT_SESSION_INSTANCE']",
+        "columns: 2/37",
+        "relationships: 0/8",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-008",
+      "context_result": "FAIL",
+      "nodes_selected": 60,
+      "edges_selected": 49,
+      "cap_ok": true,
+      "objects": {
+        "expected": 9,
+        "found": 4,
+        "missing": [
+          "TB_GRP_PR_P",
+          "TB_RT_SESSION_INSTANCE",
+          "TB_RT_EXERCISE_INSTANCE",
+          "TB_RT_EXERCISE_PARAM",
+          "MV_A_PROJECT_DATA"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 36,
+        "found": 4,
+        "missing": [
+          "MV_A_REPORTING_PERIODS.PART_TIME_EXT_DAYS",
+          "MV_A_REPORTING_PERIODS.PROJECT_NUMBER",
+          "MV_A_REPORTING_PERIODS.VERSION",
+          "MV_A_REPORTING_PERIODS.PERIOD",
+          "MV_A_REPORTING_PERIODS.PERIOD_FROM",
+          "MV_A_REPORTING_PERIODS.PERIOD_TO",
+          "MV_A_REPORTING_PERIODS.START_DATE",
+          "MV_A_REPORTING_PERIODS.END_DATE",
+          "MV_A_REPORTING_PERIODS.PREVIOUS_END_DATE",
+          "MV_A_REPORTING_PERIODS.OPENED_PERIOD",
+          "TB_GRP_PR_P.PROJECT_NUMBER",
+          "TB_GRP_PR_P.SESSION_ID",
+          "TB_GRP_PR_P.REPORT_TYPE",
+          "TB_RT_SESSION_INSTANCE.ID",
+          "TB_RT_SESSION_INSTANCE.EXERCISE_ID",
+          "TB_RT_SESSION_INSTANCE.MODIFIABLE_TREE_DTYPE",
+          "TB_RT_SESSION_INSTANCE.STATE_INTERNAL",
+          "TB_RT_EXERCISE_INSTANCE.ID",
+          "TB_RT_EXERCISE_INSTANCE.STATE_INTERNAL",
+          "TB_RT_EXERCISE_PARAM.EXERCISE_ID",
+          "TB_RT_EXERCISE_PARAM.KEY",
+          "TB_RT_EXERCISE_PARAM.VALUE",
+          "TB_APP_PROJECT_BASE.PROJECT_NUMBER",
+          "TB_GRP_PL.PROJECT_NUMBER",
+          "TB_GRP_PL.START_DATE",
+          "MV_A_PROJECT_DATA.PL_ID",
+          "MV_A_PROJECT_DATA.VERSION",
+          "TB_GRP_PL_REPORTING_PERIOD.IDENTIFIER",
+          "TB_GRP_PL_REPORTING_PERIOD.FROM_MONTH",
+          "TB_GRP_PL_REPORTING_PERIOD.TO_MONTH",
+          "TB_GRP_PL_REPORTING_PERIOD.DTYPE",
+          "TB_GRP_PL_REPORTING_PERIOD.PART_TIME_EXT_DAYS"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 8,
+        "found": 0,
+        "missing": [
+          "MV_A_REPORTING_PERIODS\u2192TB_GRP_PR_P(view_dependency)",
+          "MV_A_REPORTING_PERIODS\u2192TB_RT_SESSION_INSTANCE(view_dependency)",
+          "MV_A_REPORTING_PERIODS\u2192TB_RT_EXERCISE_INSTANCE(view_dependency)",
+          "MV_A_REPORTING_PERIODS\u2192TB_RT_EXERCISE_PARAM(view_dependency)",
+          "MV_A_REPORTING_PERIODS\u2192TB_APP_PROJECT_BASE(view_dependency)",
+          "MV_A_REPORTING_PERIODS\u2192TB_GRP_PL(view_dependency)",
+          "MV_A_REPORTING_PERIODS\u2192MV_A_PROJECT_DATA(view_dependency)",
+          "MV_A_REPORTING_PERIODS\u2192TB_GRP_PL_REPORTING_PERIOD(view_dependency)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "Materialized-view freshness and refresh status are runtime f"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-008-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-008-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['OBJECT_NOT_WRITABLE']",
+          "actual": "structurally_invalid/['OBJECT_NOT_WRITABLE']"
+        },
+        {
+          "sql_id": "SYGMA-DB-008-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 4/9 - missing: ['TB_GRP_PR_P', 'TB_RT_SESSION_INSTANCE', 'TB_RT_EXERCISE_INSTANCE', 'TB_RT_EXERCISE_PARAM', 'MV_A_PROJECT_DATA']",
+        "columns: 4/36",
+        "relationships: 0/8",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-009",
+      "context_result": "FAIL",
+      "nodes_selected": 60,
+      "edges_selected": 54,
+      "cap_ok": true,
+      "objects": {
+        "expected": 2,
+        "found": 2,
+        "missing": [],
+        "pass": true
+      },
+      "columns": {
+        "expected": 9,
+        "found": 6,
+        "missing": [
+          "TB_GRP_PR_ITM_LOG.STATE",
+          "TB_GRP_PR_ITM_LOG.REPORT_ITEM_TYPE",
+          "TB_APP_EXTERNAL_DOCUMENT.VERSION"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 1,
+        "found": 1,
+        "missing": [],
+        "pass": true
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "Java exposes several raw IDs and custom LazySetProvider rela"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-009-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-009-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-009-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNGROUNDED_JOIN']",
+          "actual": "structurally_invalid/['UNGROUNDED_JOIN']"
+        }
+      ],
+      "failure_reasons": [
+        "columns: 6/9",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-010",
+      "context_result": "FAIL",
+      "nodes_selected": 57,
+      "edges_selected": 43,
+      "cap_ok": true,
+      "objects": {
+        "expected": 2,
+        "found": 0,
+        "missing": [
+          "TB_GRP_PR_MD_DEC_P_BASE",
+          "TB_GRP_PR_MD_PER_P_BASE"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 10,
+        "found": 0,
+        "missing": [
+          "TB_GRP_PR_MD_DEC_P_BASE.ID",
+          "TB_GRP_PR_MD_DEC_P_BASE.DECLARATION_STATE",
+          "TB_GRP_PR_MD_DEC_P_BASE.MOBILITY_NUMBER",
+          "TB_GRP_PR_MD_DEC_P_BASE.PERSON_SEM_REF_ID",
+          "TB_GRP_PR_MD_DEC_P_BASE.CONTINUOUS_REPORT_ID",
+          "TB_GRP_PR_MD_PER_P_BASE.ID",
+          "TB_GRP_PR_MD_PER_P_BASE.START_DATE",
+          "TB_GRP_PR_MD_PER_P_BASE.END_DATE",
+          "TB_GRP_PR_MD_PER_P_BASE.DURATION",
+          "TB_GRP_PR_MD_PER_P_BASE.MOBILITY_DECLARATION_ID"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 2,
+        "found": 0,
+        "missing": [
+          "TB_GRP_PR_MD_PER_P_BASE.MOBILITY_DECLARATION_ID\u2192TB_GRP_PR_MD_DEC_P_BASE.ID(foreign_key)",
+          "PrimaryMobilityDeclarationBase.mobilityPeriods\u2192PrimaryMobilityPeriodBase.MOBILITY_DECLARATION_ID(java_lazy_relation)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 2,
+        "found": 0,
+        "missing": [
+          "The stored duration and the duration derivable from dates ma",
+          "Current Java declares DURATION scale 7 while Jailer 9.3.3 re"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-010-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-010-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-010-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNGROUNDED_JOIN']",
+          "actual": "structurally_invalid/['UNGROUNDED_JOIN']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 0/2 - missing: ['TB_GRP_PR_MD_DEC_P_BASE', 'TB_GRP_PR_MD_PER_P_BASE']",
+        "columns: 0/10",
+        "relationships: 0/2",
+        "uncertainties: 0/2"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-011",
+      "context_result": "FAIL",
+      "nodes_selected": 57,
+      "edges_selected": 49,
+      "cap_ok": true,
+      "objects": {
+        "expected": 2,
+        "found": 1,
+        "missing": [
+          "TB_GRP_PR_AI"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 7,
+        "found": 3,
+        "missing": [
+          "TB_GRP_PR_AI_GR.GRANT_REDUCTION_AMOUNT",
+          "TB_GRP_PR_AI_GR.ACCEPTED_CONTRIBUTION",
+          "TB_GRP_PR_AI.ID",
+          "TB_GRP_PR_AI.GRANT_REDUCTIONS_APPLIC"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "TB_GRP_PR_AI_GR.AUDIT_ID\u2192TB_GRP_PR_AI.ID(migration_lineage)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "The Jailer 9.3.3 snapshot predates the 23.12 table and must "
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-011-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-011-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['DROPPED_COLUMN']",
+          "actual": "structurally_invalid/['DROPPED_COLUMN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-011-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 1/2 - missing: ['TB_GRP_PR_AI']",
+        "columns: 3/7",
+        "relationships: 0/1",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-012",
+      "context_result": "FAIL",
+      "nodes_selected": 60,
+      "edges_selected": 51,
+      "cap_ok": true,
+      "objects": {
+        "expected": 2,
+        "found": 2,
+        "missing": [],
+        "pass": true
+      },
+      "columns": {
+        "expected": 6,
+        "found": 3,
+        "missing": [
+          "TB_MDL_DOC_ITEM.TPL_INFO_CONDITIONAL",
+          "TB_MDL_DOC_ITEM.DISPLAY_NAME",
+          "TB_MDL_DOC_ITEM.HAS_DYNAMIC_TEMPLATES"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 1,
+        "found": 1,
+        "missing": [],
+        "pass": true
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "Jailer 9.3.3 lacks TPL_INFO_CONDITIONAL and HAS_DYNAMIC_TEMP"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-012-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-012-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_COLUMN']",
+          "actual": "structurally_invalid/['UNKNOWN_COLUMN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-012-NEG-02",
+          "result": "PASS",
+          "expected": "incomplete_evidence/['SOURCE_CONFLICT']",
+          "actual": "incomplete_evidence/['SOURCE_CONFLICT']"
+        }
+      ],
+      "failure_reasons": [
+        "columns: 3/6",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-013",
+      "context_result": "FAIL",
+      "nodes_selected": 59,
+      "edges_selected": 31,
+      "cap_ok": true,
+      "objects": {
+        "expected": 1,
+        "found": 1,
+        "missing": [],
+        "pass": true
+      },
+      "columns": {
+        "expected": 5,
+        "found": 4,
+        "missing": [
+          "TB_GRP_PL_TEMPLATE_MGA.DOCUMENT_ITEM_CCM"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 0,
+        "found": 0,
+        "missing": [],
+        "pass": true
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "Backup classification is based on explicit BCK naming plus t"
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-013-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-013-NEG-01",
+          "result": "PASS",
+          "expected": "structurally_invalid/['HISTORICAL_OBJECT']",
+          "actual": "structurally_invalid/['HISTORICAL_OBJECT']"
+        },
+        {
+          "sql_id": "SYGMA-DB-013-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['HISTORICAL_OBJECT']",
+          "actual": "structurally_invalid/['HISTORICAL_OBJECT']"
+        }
+      ],
+      "failure_reasons": [
+        "columns: 4/5",
+        "uncertainties: 0/1"
+      ]
+    },
+    {
+      "case_id": "SYGMA-DB-014",
+      "context_result": "FAIL",
+      "nodes_selected": 50,
+      "edges_selected": 25,
+      "cap_ok": true,
+      "objects": {
+        "expected": 2,
+        "found": 0,
+        "missing": [
+          "SYGMA.TB_GRP_PF",
+          "DYNAMIC:ALL_SYGMA_OBJECTS"
+        ],
+        "pass": false
+      },
+      "columns": {
+        "expected": 3,
+        "found": 0,
+        "missing": [
+          "SYGMA.TB_GRP_PF.ID",
+          "SYGMA.TB_GRP_PF.PROJECT_NUMBER",
+          "SYGMA.TB_GRP_PF.SESSION_ID"
+        ],
+        "pass": false
+      },
+      "relationships": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "consumer-schema synonym name\u2192SYGMA.<runtime all_objects name>(synonym_alias)"
+        ],
+        "pass": false
+      },
+      "uncertainties": {
+        "expected": 1,
+        "found": 0,
+        "missing": [
+          "The generator queries live ALL_OBJECTS and executes dynamic "
+        ],
+        "pass": false
+      },
+      "sql_results": [
+        {
+          "sql_id": "SYGMA-DB-014-POS-01",
+          "result": "PASS",
+          "expected": "structurally_valid/[]",
+          "actual": "structurally_valid/[]"
+        },
+        {
+          "sql_id": "SYGMA-DB-014-NEG-01",
+          "result": "PASS",
+          "expected": "incomplete_evidence/['DYNAMIC_SYNONYM_TARGET_UNPROVEN']",
+          "actual": "incomplete_evidence/['DYNAMIC_SYNONYM_TARGET_UNPROVEN']"
+        },
+        {
+          "sql_id": "SYGMA-DB-014-NEG-02",
+          "result": "PASS",
+          "expected": "structurally_invalid/['UNKNOWN_OBJECT']",
+          "actual": "structurally_invalid/['UNKNOWN_OBJECT']"
+        }
+      ],
+      "failure_reasons": [
+        "objects: 0/2 - missing: ['SYGMA.TB_GRP_PF', 'DYNAMIC:ALL_SYGMA_OBJECTS']",
+        "columns: 0/3",
+        "relationships: 0/1",
+        "uncertainties: 0/1"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-30T17:05:00+02:00",
+  "purpose": "Document the difference between internal and independent context assertions",
+  
+  "internal_harness": {
+    "file": "/home/meskeda/sygma-eval/runner/sygma_eval_runner.py",
+    "invocation": {
+      "function": "select_database_context",
+      "parameters": {
+        "graph": "DatabaseGraph",
+        "story": "case.story.text",
+        "max_hops": "max(expected_context.max_graph_hops, 2)",
+        "max_objects": 60
+      }
+    },
+    "assertions": [
+      {
+        "name": "budget_cap",
+        "expression": "len(ctx.selected_nodes) <= 60",
+        "required": true,
+        "checked": true
+      },
+      {
+        "name": "objects_complete",
+        "expression": "all(obj in selected for obj in expected_objects)",
+        "required": true,
+        "checked": false
+      },
+      {
+        "name": "columns_complete",
+        "expression": "all(col in selected for col in expected_columns)",
+        "required": true,
+        "checked": false
+      },
+      {
+        "name": "relationships_complete",
+        "expression": "all(rel in selected for rel in expected_relationships)",
+        "required": true,
+        "checked": false
+      },
+      {
+        "name": "uncertainties_complete",
+        "expression": "validate_uncertainties(actual, expected)",
+        "required": true,
+        "checked": false
+      }
+    ],
+    "pass_criteria": "budget_cap only",
+    "result": "14/14 PASS (FALSE)"
+  },
+  
+  "independent_evaluator": {
+    "assertions": [
+      {
+        "name": "budget_cap",
+        "expression": "nodes <= 60",
+        "required": true,
+        "checked": true
+      },
+      {
+        "name": "objects_complete",
+        "expression": "objects_found == objects_expected",
+        "required": true,
+        "checked": true
+      },
+      {
+        "name": "columns_complete",
+        "expression": "columns_fail == 0",
+        "required": true,
+        "checked": true
+      },
+      {
+        "name": "relationships_complete",
+        "expression": "relationships_fail == 0",
+        "required": true,
+        "checked": true
+      },
+      {
+        "name": "uncertainties_complete",
+        "expression": "uncertainties_fail == 0",
+        "required": true,
+        "checked": true
+      }
+    ],
+    "pass_criteria": "ALL assertions pass",
+    "result": "0/14 PASS (CORRECT)"
+  },
+  
+  "discrepancy": {
+    "cause": "Internal harness checks only budget_cap, not complete contract",
+    "false_positives": 14,
+    "impact": "All 14 cases falsely reported as PASS",
+    "fix": "Internal harness cannot check expected answers (they belong to pack). Must rely on structural invariants and defer completeness to independent evaluator."
+  }
+}
