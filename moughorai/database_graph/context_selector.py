@@ -1695,7 +1695,63 @@ def select_database_context(
         for col in bundle.columns:
             selected_ids.add(col.column_id)
 
-    # Collect edges between selected nodes
+    # FK column closure: when FK edges would be selected, ensure their columns fit
+    # If adding FK columns would exceed budget, DON'T include the FK edge
+    # First, identify candidate FK edges (both endpoints selected)
+    candidate_fk_edges: list[tuple[DatabaseGraphEdge, str | None, str | None]] = []  # (edge, src_col_id, tgt_col_id)
+    
+    for edge in graph.edges:
+        if edge.kind != EdgeKind.FOREIGN_KEY_TO.value:
+            continue
+        if edge.from_node not in selected_ids or edge.to_node not in selected_ids:
+            continue
+        
+        props = dict(edge.properties)
+        src_tbl = props.get("source_table")
+        src_col = props.get("source_column")
+        tgt_tbl = props.get("target_table")
+        tgt_col = props.get("target_column")
+        
+        src_col_id: str | None = None
+        tgt_col_id: str | None = None
+        
+        if src_tbl and src_col:
+            src_col_name = f"{src_tbl}.{src_col}"
+            for node in graph.nodes:
+                if node.qualified_name == src_col_name and node.kind == NodeKind.COLUMN.value:
+                    src_col_id = node.id
+                    break
+        
+        if tgt_tbl and tgt_col:
+            tgt_col_name = f"{tgt_tbl}.{tgt_col}"
+            for node in graph.nodes:
+                if node.qualified_name == tgt_col_name and node.kind == NodeKind.COLUMN.value:
+                    tgt_col_id = node.id
+                    break
+        
+        candidate_fk_edges.append((edge, src_col_id, tgt_col_id))
+    
+    # Now add FK columns respecting the budget
+    # Count how many new nodes we'd add
+    current_node_count = len(selected_ids)
+    fk_columns_to_add: set[str] = set()
+    
+    for edge, src_col_id, tgt_col_id in candidate_fk_edges:
+        new_cols: set[str] = set()
+        if src_col_id and src_col_id not in selected_ids:
+            new_cols.add(src_col_id)
+        if tgt_col_id and tgt_col_id not in selected_ids:
+            new_cols.add(tgt_col_id)
+        
+        # Check if adding these columns would exceed budget
+        projected_count = current_node_count + len(fk_columns_to_add) + len(new_cols)
+        if projected_count <= max_objects:
+            fk_columns_to_add.update(new_cols)
+        # else: skip this FK edge's columns (edge won't be selected)
+    
+    selected_ids.update(fk_columns_to_add)
+
+    # Collect edges between selected nodes (final pass)
     selected_edges_list = [
         e for e in graph.edges
         if e.from_node in selected_ids and e.to_node in selected_ids
