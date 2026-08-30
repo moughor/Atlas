@@ -80,6 +80,10 @@ _ANCHOR_COLUMN_BUDGET_FRACTION: float = 0.3
 # Maximum tables (soft cap to leave room for columns)
 _MAX_TABLES_FRACTION: float = 0.5  # At most 50% of budget for tables
 
+# Reserve budget for view dependencies (source tables)
+# When views are selected, reserve this fraction of budget for their dependencies
+_VIEW_DEPENDENCY_RESERVE: float = 0.15  # 15% = 9 slots for 60-node budget
+
 # Minimum evidence score for weak matches
 _WEAK_MIN_EVIDENCE: float = 0.3
 
@@ -436,6 +440,7 @@ class _CandidateMatch:
     entity_id: str | None = None
     confidence: float = 0.0
     concept_count: int = 0
+    exact_entity_match: bool = False  # True if full entity name appeared in story
 
 
 def _build_candidate_bundles(
@@ -524,12 +529,14 @@ def _build_candidate_bundles(
                     matched_terms=matched_terms,
                     entity_id=entity_node.id,
                     confidence=confidence,
+                    exact_entity_match=full_match,  # Track if full entity name matched
                 )
             elif candidates[table_id].confidence < confidence:
                 candidates[table_id].match_type = "entity"
                 candidates[table_id].entity_id = entity_node.id
                 candidates[table_id].confidence = confidence
                 candidates[table_id].matched_terms.extend(matched_terms)
+                candidates[table_id].exact_entity_match = full_match
     
     # --- Phase 3: Domain segment matches (with abbreviation expansion) ---
     # For each table, check if any segment matches a story term directly OR
@@ -709,6 +716,8 @@ def _build_candidate_bundles(
             match.confidence,
             1 + len(columns),  # object_cost
             kind,
+            table_name=match.table_name,  # Pass table name for tier classification
+            exact_entity_match=match.exact_entity_match,  # Bonus for full entity name match
         )
         
         entity_name = None
@@ -1166,8 +1175,15 @@ def select_bundles(
             family_counts[bundle.family_prefix] = family_counts.get(bundle.family_prefix, 0) + 1
     
     # --- Pass 2: Enrich with columns ---
-    # Budget for columns = max_objects - table_count - entity_count
-    column_budget = max_objects - table_count - entity_count
+    # Budget for columns = max_objects - table_count - entity_count - view_dep_reserve
+    # Reserve budget for view dependencies (their source tables)
+    # Count selected views to determine reservation
+    selected_view_count = sum(
+        1 for (b, _, _) in selected_cores
+        if b.table_name.upper().startswith(('VW_', 'MV_'))
+    )
+    view_dep_reserve = int(max_objects * _VIEW_DEPENDENCY_RESERVE) if selected_view_count > 0 else 0
+    column_budget = max_objects - table_count - entity_count - view_dep_reserve
     
     # Collect all column candidates
     # Priority: story-matched > PK > FK
@@ -1338,6 +1354,16 @@ def _expand_view_dependencies(
                 continue
 
             # Create a dependency bundle for this source table
+            # Compute proper marginal benefit for the dependency table
+            # This includes the tier bonus so runtime tables rank higher
+            dep_marginal = compute_marginal_benefit(
+                concept_count=0,  # No direct story match
+                confidence=0.8,
+                object_cost=1,
+                kind=BundleKind.BRIDGE_VIEW,
+                table_name=source_node.qualified_name,
+            )
+            
             dep_bundle = SelectionBundle(
                 table_id=source_node.id,
                 table_name=source_node.qualified_name,
@@ -1350,7 +1376,7 @@ def _expand_view_dependencies(
                 columns=(),  # Columns will be added later
                 relationships=(),
                 object_cost=1,
-                marginal_benefit=bundle.marginal_benefit * 0.9,  # Slightly lower than parent
+                marginal_benefit=dep_marginal,
                 match_reason=f"source_table_of:{bundle.table_name}",
                 family_prefix=compute_family_prefix(source_node.qualified_name),
             )
@@ -1402,7 +1428,11 @@ def build_and_select_bundles(
         added_deps: list[SelectionBundle] = []
         deps_added_cost = 0
         
-        for dep in dep_bundles:
+        # Sort dependency bundles by marginal benefit (best first) so high-priority
+        # tables (TB_RT_SESSION_INSTANCE) are added before lower-priority ones
+        dep_bundles_sorted = sorted(dep_bundles, key=lambda b: b.sort_key())
+        
+        for dep in dep_bundles_sorted:
             # Each dependency bundle adds: 1 table + N columns
             dep_cost = 1 + len(dep.columns)
             if deps_added_cost + dep_cost <= remaining_budget:

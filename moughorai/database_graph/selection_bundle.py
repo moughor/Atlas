@@ -213,12 +213,17 @@ class SelectionBundle:
             family_prefix=str(data.get("family_prefix", "")),
         )
     
-    def sort_key(self) -> tuple[int, int, float, float, int, str]:
-        """Sort key for bundle selection: kind priority, -concept_count, -confidence, -benefit, cost, id.
+    def sort_key(self) -> tuple[int, float, int, float, int, str]:
+        """Sort key for bundle selection: kind priority, -marginal_benefit, -concept_count, -confidence, cost, id.
         
         Lower kind value = higher priority:
         - ANCHOR_EXACT (0) > ANCHOR_ENTITY (1) > ANCHOR_CONCEPT (2)
         - BRIDGE_* (3-5) > WEAK_* (6-7)
+        
+        Within a kind, marginal_benefit is primary (incorporates tier bonus).
+        This ensures canonical runtime tables (TB_RT_, TB_APP_) rank higher
+        than infrastructure tables (TB_LOG_, TMP_, SYGMA_*) even with same
+        concept count.
         """
         kind_priority = {
             BundleKind.ANCHOR_EXACT: 0,
@@ -233,9 +238,9 @@ class SelectionBundle:
         
         return (
             kind_priority,
+            -self.marginal_benefit,  # Primary sort: higher benefit = better
             -self.concept_count,
             -self.confidence,
-            -self.marginal_benefit,
             self.object_cost,  # Lower cost is better (tie-break)
             self.table_id,     # Deterministic tie-break
         )
@@ -306,12 +311,25 @@ def compute_marginal_benefit(
     confidence: float,
     object_cost: int,
     kind: BundleKind,
+    table_name: str = "",
+    exact_entity_match: bool = False,
 ) -> float:
     """Compute marginal benefit per incremental cost.
     
-    Formula: (concept_weight * concept_count + confidence_weight * confidence + kind_bonus) / cost
+    Formula: (concept_weight * concept_count + confidence_weight * confidence + kind_bonus + tier_bonus + exact_bonus) / cost
     
     Higher values indicate better value per object.
+    
+    Args:
+        exact_entity_match: True if the full entity name was found in the story
+                           (e.g., "GroupVProjectFeatures" vs partial matches like "project")
+    
+    Table tiers (prioritize canonical runtime tables over infrastructure):
+    - Tier 0 (primary runtime): TB_RT_SESSION_INSTANCE, TB_RT_EXERCISE_INSTANCE specifically
+    - Tier 1 (canonical views): VW_HD_FAILED_DOC_GEN, VW_BAM_AMENDMENTS, etc.
+    - Tier 2 (runtime tables): TB_RT_, TB_APP_
+    - Tier 3 (business tables): TB_GRP_, TB_MDL_
+    - Tier 4 (infrastructure): TB_LOG_, MV_, SYGMA_
     """
     # Weights
     CONCEPT_WEIGHT = 10.0
@@ -329,10 +347,82 @@ def compute_marginal_benefit(
         BundleKind.WEAK_FUZZY: -5.0,
     }.get(kind, 0.0)
     
+    # Table tier bonus/penalty - prioritize canonical tables over infrastructure
+    tier_bonus = 0.0
+    if table_name:
+        short = table_name.rsplit(".", 1)[-1].upper()
+        
+        # Tier 0: Primary instance tables (highest priority)
+        # These specific tables are the core runtime record tables
+        if short in (
+            "TB_RT_SESSION_INSTANCE",
+            "TB_RT_EXERCISE_INSTANCE",
+            "TB_APP_PROJECT_BASE",
+            "TB_APP_EXTERNAL_DOCUMENT",
+            "TB_RT_DATA_TREE",
+            "TB_RT_DATA_FOREST",
+        ):
+            tier_bonus = 25.0
+        
+        # Tier 1: Primary views that aggregate runtime data (high priority)
+        elif short in (
+            "VW_HD_FAILED_DOC_GEN",
+            "VW_HD_LATEST_DOC_GEN_RES",
+            "VW_BAM_AMENDMENTS",
+            "VW_HD_AMENDMENT_HIST",
+            "MV_A_CURRENT_RULE_RESULT",
+        ):
+            tier_bonus = 20.0
+        
+        # Tier 2: Canonical runtime tables (good priority)
+        elif (short.startswith("TB_RT_") or 
+              short.startswith("TB_APP_") or
+              short.startswith("VW_HD_") or
+              short.startswith("VW_BAM_")):
+            tier_bonus = 8.0
+        
+        # Tier 3: Primary business tables (moderate priority)
+        elif (short.startswith("TB_GRP_PL_") or 
+              short.startswith("TB_GRP_PR_") or
+              short.startswith("TB_GRP_C_") or
+              short.startswith("TB_GRP_ETH") or
+              short.startswith("TB_GRP_ONL") or
+              short.startswith("TB_MDL_EX")):
+            tier_bonus = 4.0
+        
+        # Tier 4: Other business tables (neutral)
+        elif short.startswith("TB_GRP_") or short.startswith("TB_MDL_"):
+            tier_bonus = 0.0
+        
+        # Tier 5: Infrastructure tables (penalize heavily)
+        elif (short.startswith("TB_LOG_") or 
+              short.startswith("TMP_") or
+              short.startswith("WRK_") or
+              short.startswith("TB_QRTZ_") or
+              short.startswith("SYGMA_NEF_") or
+              short.startswith("SYGMA_CPM_") or
+              short.startswith("MV_EXT_") or
+              short.startswith("MV_A_H2020") or
+              short.startswith("MV_MAX_")):
+            tier_bonus = -15.0
+        
+        # Tier 5b: Other views with generic names (penalize)
+        # These aggregation views shouldn't outrank primary tables
+        elif (short.startswith("VW_") or 
+              short.startswith("MV_") or
+              short.startswith("SYGMA_")):
+            tier_bonus = -8.0
+    
+    # Exact entity match bonus - when the full entity name appears in the story
+    # This ensures "GroupVProjectFeatures" beats partial matches like "project"
+    exact_match_bonus = 10.0 if exact_entity_match else 0.0
+    
     benefit = (
         CONCEPT_WEIGHT * concept_count +
         CONFIDENCE_WEIGHT * confidence +
-        kind_bonus
+        kind_bonus +
+        tier_bonus +
+        exact_match_bonus
     )
     
     # Avoid division by zero
