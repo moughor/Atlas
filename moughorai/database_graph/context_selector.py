@@ -1813,9 +1813,12 @@ def select_database_context(
     )
 
     # Collect uncertainties from the graph
-    # Check for dynamic synonyms and schema-qualified references
+    # Check for dynamic synonyms, schema-qualified references, and budget omission
+    evicted_names = [b.table_name for b in bundle_result.evicted_bundles]
     uncertainties = _collect_selection_uncertainties(
-        graph, story_text, selected_ids, node_by_id
+        graph, story_text, selected_ids, node_by_id,
+        evicted_bundle_names=evicted_names if len(bundle_result.evicted_bundles) > 0 else None,
+        was_truncated=truncation.was_truncated,
     )
 
     # Compute context fingerprint
@@ -1850,13 +1853,20 @@ def _collect_selection_uncertainties(
     story_text: str,
     selected_ids: set[str],
     node_by_id: dict[str, DatabaseGraphNode],
+    *,
+    evicted_bundle_names: list[str] | None = None,
+    was_truncated: bool = False,
 ) -> list[SelectionUncertainty]:
     """Collect uncertainties from the graph and story analysis.
+    
+    STEP 6: Comprehensive uncertainty detection.
     
     Detects:
     - Dynamic synonyms (runtime-generated, target unproven)
     - Schema-qualified references to non-native schemas
-    - Objects with unresolved evidence
+    - Objects with incomplete/inferred evidence
+    - Budget omission when relevant tables are evicted
+    - Unresolved entity mappings
     """
     uncertainties: list[SelectionUncertainty] = []
     story_upper = story_text.upper()
@@ -1925,6 +1935,51 @@ def _collect_selection_uncertainties(
                     source_revision=graph.fingerprint,
                     resolved=False,
                 ))
+    
+    # STEP 6: Check for incomplete/inferred evidence in selected nodes
+    for node_id in selected_ids:
+        node = node_by_id.get(node_id)
+        if node is None:
+            continue
+        
+        # Check evidence status (if available)
+        if node.evidence is not None:
+            status = getattr(node.evidence, 'status', None)
+            if status == 'inferred':
+                uncertainties.append(SelectionUncertainty(
+                    code="EVIDENCE_INFERRED",
+                    object_id=node_id,
+                    object_name=node.qualified_name,
+                    reason=(
+                        f"Object '{node.qualified_name}' has inferred evidence only; "
+                        f"not verified by authoritative source"
+                    ),
+                    evidence_source="graph_node_evidence",
+                    source_revision=graph.fingerprint,
+                    resolved=True,  # Included despite uncertainty
+                ))
+    
+    # STEP 6: Record budget omission if tables were evicted due to truncation
+    if was_truncated and evicted_bundle_names:
+        # Only report up to 5 evicted tables to avoid noise
+        evicted_sample = evicted_bundle_names[:5]
+        more_count = len(evicted_bundle_names) - 5 if len(evicted_bundle_names) > 5 else 0
+        
+        reason = f"Budget exceeded; {len(evicted_bundle_names)} tables evicted"
+        if more_count > 0:
+            reason += f" (showing 5: {', '.join(evicted_sample)}; and {more_count} more)"
+        else:
+            reason += f": {', '.join(evicted_sample)}"
+        
+        uncertainties.append(SelectionUncertainty(
+            code="BUDGET_OMISSION",
+            object_id="budget_truncation",
+            object_name="TRUNCATED_TABLES",
+            reason=reason,
+            evidence_source="bundle_selection",
+            source_revision=graph.fingerprint,
+            resolved=True,  # Context is complete within budget
+        ))
     
     return uncertainties
 
