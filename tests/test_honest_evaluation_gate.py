@@ -1223,8 +1223,8 @@ class TestHonestEvaluationGate:
         print(vector)
         
         # Verify expected d521 baseline with coverage semantics:
-        # - REQUIRED_OBJECT_COVERAGE: 6/14
-        # - OFFICIAL_FK_ASSERTIONS: 4/7
+        # - REQUIRED_OBJECT_COVERAGE: 7/14 (improved via native query bridges)
+        # - OFFICIAL_FK_ASSERTIONS: 6/7 (improved via native query bridges)
         # - REQUIRED_COLUMN_CASES: 0/14
         # - REQUIRED_UNCERTAINTY_CASES: 0/14
         # - AGGREGATE_COMPLETE_CASES: 0/14
@@ -1237,9 +1237,9 @@ class TestHonestEvaluationGate:
         assert vector.cap_pass == vector.cap_total, "All cases should respect cap"
         
         # Official coverage baseline assertions
-        assert vector.required_object_coverage == 6, \
-            f"Expected REQUIRED_OBJECT_COVERAGE=6, got {vector.required_object_coverage}"
-        assert vector.official_fk_assertions == 4, \
-            f"Expected OFFICIAL_FK_ASSERTIONS=4, got {vector.official_fk_assertions}"
+        assert vector.required_object_coverage >= 7, \
+            f"Expected REQUIRED_OBJECT_COVERAGE>=7, got {vector.required_object_coverage}"
+        assert vector.official_fk_assertions >= 6, \
+            f"Expected OFFICIAL_FK_ASSERTIONS>=6, got {vector.official_fk_assertions}"
         assert vector.official_fk_total == 7, \
             f"Expected 7 total FK assertions, got {vector.official_fk_total}"

@@ -40,6 +40,7 @@ class BundleKind(Enum):
     BRIDGE_FK = "bridge_fk"             # FK-connected to anchor
     BRIDGE_VIEW = "bridge_view"         # View derived from anchor
     BRIDGE_SYNONYM = "bridge_synonym"   # Synonym alias of anchor
+    BRIDGE_NATIVE_QUERY = "bridge_native_query"  # Same native query as anchor
     
     # Weak matches: single-term or fuzzy matches
     WEAK_DOMAIN = "weak_domain"         # Single domain term match
@@ -324,6 +325,7 @@ def compute_marginal_benefit(
         BundleKind.ANCHOR_CONCEPT: 12.0,
         BundleKind.BRIDGE_FK: 5.0,
         BundleKind.BRIDGE_VIEW: 5.0,
+        BundleKind.BRIDGE_NATIVE_QUERY: 8.0,  # Higher than FK bridge - same query is strong evidence
         BundleKind.BRIDGE_SYNONYM: 3.0,
         BundleKind.WEAK_DOMAIN: 0.0,
         BundleKind.WEAK_FUZZY: -5.0,

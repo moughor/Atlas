@@ -156,6 +156,8 @@ class _BundleGraphIndex:
         "column_by_name",
         "pk_columns",
         "fk_columns",
+        "native_query_clusters",  # method_name -> set of table_ids
+        "table_to_native_methods",  # table_id -> set of method_names
     )
     
     def __init__(self, graph: DatabaseGraph) -> None:
@@ -172,6 +174,8 @@ class _BundleGraphIndex:
         self.column_by_name: dict[str, list[str]] = {}  # column_short_name -> [column_ids]
         self.pk_columns: dict[str, set[str]] = {}  # table_id -> {pk_column_ids}
         self.fk_columns: dict[str, set[str]] = {}  # table_id -> {fk_column_ids}
+        self.native_query_clusters: dict[str, set[str]] = {}  # method_name -> {table_ids}
+        self.table_to_native_methods: dict[str, set[str]] = {}  # table_id -> {method_names}
         
         self._build_indexes(graph)
     
@@ -229,8 +233,56 @@ class _BundleGraphIndex:
             self.pk_columns[table_id] = pk_set
             self.fk_columns[table_id] = fk_set
         
+        # Build native query clusters from LOGICAL_REFERENCE_TO edges
+        # These represent tables that are referenced together in Java native queries
+        self._build_native_query_clusters(graph)
+        
         # Build evidence term documents for each table
         self._build_evidence_terms(graph)
+    
+    def _build_native_query_clusters(self, graph: DatabaseGraph) -> None:
+        """Build clusters of tables that appear in the same native query.
+        
+        When a native query references multiple tables (via LOGICAL_REFERENCE_TO
+        edges with evidence_kind='java_native_query'), those tables form a
+        semantic cluster. If one table in the cluster is selected, the others
+        are strong candidates for inclusion.
+        """
+        for edge in graph.edges:
+            if edge.kind != EdgeKind.LOGICAL_REFERENCE_TO.value:
+                continue
+            
+            props = dict(edge.properties)
+            ev_kind = props.get('evidence_kind')
+            if ev_kind != 'java_native_query':
+                continue
+            
+            method_name = props.get('method', '')
+            if not method_name:
+                continue
+            
+            # Find table nodes involved in this edge
+            for node_id in (edge.from_node, edge.to_node):
+                node = self.node_by_id.get(node_id)
+                if node is None or node.kind not in _TABLE_KINDS:
+                    continue
+                
+                # Add to cluster
+                self.native_query_clusters.setdefault(method_name, set()).add(node_id)
+                self.table_to_native_methods.setdefault(node_id, set()).add(method_name)
+    
+    def get_native_query_cluster_members(self, table_id: str) -> set[str]:
+        """Get all other tables in the same native query cluster(s).
+        
+        Returns table IDs (excluding the input table) that share native query
+        evidence with the given table.
+        """
+        methods = self.table_to_native_methods.get(table_id, set())
+        cluster_members: set[str] = set()
+        for method in methods:
+            cluster_members.update(self.native_query_clusters.get(method, set()))
+        cluster_members.discard(table_id)  # Remove self
+        return cluster_members
     
     def _build_evidence_terms(self, graph: DatabaseGraph) -> None:
         """Build semantic evidence documents for IDF computation."""
@@ -831,6 +883,125 @@ def _build_candidate_bundles(
     # SKIP this for now - only use bridges that have existing evidence (promotion)
     # This prevents FK flooding from pure structural neighbors
     
+    # --- Phase 7: Promote native query cluster members ---
+    # When an anchor table appears in a native query, other tables in that
+    # query form a semantic cluster. Promote them to BRIDGE_NATIVE_QUERY.
+    #
+    # Also: if ANY candidate (even weak) has native query evidence, promote
+    # all other tables in the same query cluster.
+    
+    # First, find all candidates that have native query evidence
+    candidates_with_native_query: set[str] = set()
+    for table_id in bundles_by_table:
+        if idx.table_to_native_methods.get(table_id):
+            candidates_with_native_query.add(table_id)
+    
+    # Promote tables in native query clusters if:
+    # 1. They share a cluster with an anchor, OR
+    # 2. They share a cluster with any candidate that has story evidence
+    tables_to_promote: set[str] = set()
+    
+    # Check anchors
+    for anchor_id in anchor_ids:
+        cluster_members = idx.get_native_query_cluster_members(anchor_id)
+        tables_to_promote.update(cluster_members)
+    
+    # Also check any candidate with native query evidence
+    for candidate_id in candidates_with_native_query:
+        existing = bundles_by_table.get(candidate_id)
+        # If this candidate has story term matches, use its cluster
+        if existing and existing.story_terms_matched:
+            cluster_members = idx.get_native_query_cluster_members(candidate_id)
+            tables_to_promote.update(cluster_members)
+    
+    for member_id in tables_to_promote:
+        if member_id in anchor_ids:
+            continue  # Don't demote anchors
+        
+        member_node = idx.node_by_id.get(member_id)
+        if member_node is None or member_node.kind not in _TABLE_KINDS:
+            continue
+        
+        # Skip BCK tables
+        short_name = member_node.qualified_name.rsplit(".", 1)[-1].upper()
+        if short_name.startswith("BCK") or "_BCK_" in short_name:
+            continue
+        
+        existing_bundle = bundles_by_table.get(member_id)
+        
+        if existing_bundle is not None:
+            # Promote existing weak bundle to native query bridge
+            if existing_bundle.kind in (BundleKind.WEAK_DOMAIN, BundleKind.WEAK_FUZZY):
+                promoted = SelectionBundle(
+                    table_id=existing_bundle.table_id,
+                    table_name=existing_bundle.table_name,
+                    kind=BundleKind.BRIDGE_NATIVE_QUERY,
+                    entity_id=existing_bundle.entity_id,
+                    entity_evidence=existing_bundle.entity_evidence,
+                    story_terms_matched=existing_bundle.story_terms_matched,
+                    concept_count=existing_bundle.concept_count,
+                    confidence=max(existing_bundle.confidence, 0.7),  # Native query is strong evidence
+                    columns=existing_bundle.columns,
+                    relationships=existing_bundle.relationships,
+                    marginal_benefit=compute_marginal_benefit(
+                        existing_bundle.concept_count,
+                        0.7,
+                        existing_bundle.object_cost,
+                        BundleKind.BRIDGE_NATIVE_QUERY,
+                    ),
+                    match_reason=f"native_query_promoted",
+                    family_prefix=existing_bundle.family_prefix,
+                )
+                bundles_by_table[member_id] = promoted
+                for i, b in enumerate(bundles):
+                    if b.table_id == member_id:
+                        bundles[i] = promoted
+                        break
+        else:
+            # Create new bridge bundle for native query cluster member
+            family_prefix = compute_family_prefix(member_node.qualified_name)
+            
+            # Collect FK columns
+            columns: list[ColumnEvidence] = []
+            for col_id in idx.fk_columns.get(member_id, set()):
+                col_node = idx.node_by_id.get(col_id)
+                if col_node:
+                    columns.append(ColumnEvidence(
+                        column_id=col_id,
+                        column_name=col_node.qualified_name,
+                        reason="fk_column",
+                    ))
+            
+            # Collect PK columns
+            for col_id in idx.pk_columns.get(member_id, set()):
+                col_node = idx.node_by_id.get(col_id)
+                if col_node:
+                    columns.append(ColumnEvidence(
+                        column_id=col_id,
+                        column_name=col_node.qualified_name,
+                        reason="pk_column",
+                    ))
+            
+            new_bundle = SelectionBundle(
+                table_id=member_id,
+                table_name=member_node.qualified_name,
+                kind=BundleKind.BRIDGE_NATIVE_QUERY,
+                entity_id=None,
+                entity_evidence=None,
+                story_terms_matched=(),
+                concept_count=0,
+                confidence=0.7,
+                columns=tuple(columns),
+                relationships=(),
+                marginal_benefit=compute_marginal_benefit(
+                    0, 0.7, 1 + len(columns), BundleKind.BRIDGE_NATIVE_QUERY
+                ),
+                match_reason="native_query_cluster",
+                family_prefix=family_prefix,
+            )
+            bundles.append(new_bundle)
+            bundles_by_table[member_id] = new_bundle
+    
     return bundles
 
 
@@ -1010,7 +1181,7 @@ def select_bundles(
             entity_anchors.append(bundle)
         elif bundle.kind == BundleKind.ANCHOR_CONCEPT:
             concept_anchors.append(bundle)
-        elif bundle.kind in (BundleKind.BRIDGE_FK, BundleKind.BRIDGE_VIEW, BundleKind.BRIDGE_SYNONYM):
+        elif bundle.kind in (BundleKind.BRIDGE_FK, BundleKind.BRIDGE_VIEW, BundleKind.BRIDGE_SYNONYM, BundleKind.BRIDGE_NATIVE_QUERY):
             bridges.append(bundle)
         else:
             weak_matches.append(bundle)
@@ -1105,10 +1276,15 @@ def select_bundles(
         if bundle.family_prefix:
             family_counts[bundle.family_prefix] = family_counts.get(bundle.family_prefix, 0) + 1
     
-    # 4. Select bridges (only if connects anchors)
+    # 4. Select bridges (only if connects anchors OR is native query bridge)
     for bundle in bridges:
+        # Native query bridges are selected if they exist (they were created based on cluster membership)
+        is_native_query_bridge = bundle.kind == BundleKind.BRIDGE_NATIVE_QUERY
+        
+        # FK/View/Synonym bridges require relationship to selected anchor
         connects_anchor = any(rel.target_table_id in selected_table_ids for rel in bundle.relationships)
-        if not connects_anchor:
+        
+        if not is_native_query_bridge and not connects_anchor:
             evicted.append(bundle)
             continue
         
