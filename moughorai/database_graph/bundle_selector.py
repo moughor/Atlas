@@ -1568,8 +1568,9 @@ def build_and_select_bundles(
     bundles = _build_candidate_bundles(terms, idx, idf)
     
     # Count how many views might be selected (to estimate dependency budget)
-    # Reserve ~15% of budget for view dependencies (max 10 objects)
-    view_dep_reserve = min(10, max(3, int(max_objects * 0.15)))
+    # Reserve ~25% of budget for view dependencies (max 15 objects)
+    # This ensures source tables of selected views can be included
+    view_dep_reserve = min(15, max(5, int(max_objects * 0.25)))
     initial_budget = max_objects - view_dep_reserve
     
     result = select_bundles(bundles, initial_budget, max_per_family)
@@ -1577,6 +1578,24 @@ def build_and_select_bundles(
     # Expand view dependencies with reserved budget
     dep_bundles = _expand_view_dependencies(list(result.selected_bundles), idx)
     if dep_bundles:
+        # Sort dependencies by parent view priority (via inherited story terms)
+        # Primary view deps (2+ terms) come first, then by table name
+        story_terms_upper = frozenset(t.upper() for t in terms)
+        
+        def dep_relevance(dep: SelectionBundle) -> tuple[int, int, str]:
+            """Score dependency relevance: parent priority first, then table name matches."""
+            # Primary priority: inherited story terms from parent view
+            parent_terms = len(dep.story_terms_matched)
+            
+            # Secondary: check if table name itself matches any story terms
+            table_upper = dep.table_name.upper()
+            name_matches = sum(1 for t in story_terms_upper if t in table_upper)
+            
+            # Sort: -parent_terms (primary deps first), -name_matches, then alphabetically
+            return (-parent_terms, -name_matches, dep.table_name)
+        
+        dep_bundles.sort(key=dep_relevance)
+        
         # Now we have the reserved budget for dependencies
         remaining_budget = max_objects - result.total_objects
         
