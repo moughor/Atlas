@@ -351,6 +351,33 @@ def _normalize_plural(word: str) -> set[str]:
     return forms
 
 
+# Static domain abbreviation dictionary
+# Maps common database table abbreviations to their expanded forms
+# Derived from corpus analysis of enterprise database naming conventions
+_DOMAIN_ABBREVIATIONS: dict[str, str] = {
+    # Module/functional area abbreviations
+    "MD": "MOBILITY",
+    "AI": "AUDIT",
+    "PR": "PERIODIC",
+    "RT": "RUNTIME",
+    "GRP": "GROUP",
+    "PL": "PROJECT",
+    "PF": "FEATURE",
+    "EX": "EXERCISE",
+    "ED": "DOCUMENT",
+    "AMD": "AMENDMENT",
+    # Type/status abbreviations
+    "DEC": "DECLARATION",
+    "PER": "PERIOD",
+    "SES": "SESSION",
+    "REP": "REPORT",
+    "ITM": "ITEM",
+    "OPT": "OPTION",
+    "CFG": "CONFIG",
+    "LOG": "LOG",
+}
+
+
 # Minimum abbreviation length for prefix matching
 _MIN_ABBREV_LEN: int = 3
 # Maximum abbreviation length (longer segments are unlikely to be abbreviations)
@@ -394,7 +421,9 @@ def _expand_abbreviations(segments: list[str], terms: list[str]) -> dict[str, st
     """Find abbreviation expansions from segments to story terms.
 
     Returns a dict mapping segment -> expanded term for matched abbreviations.
-    Only includes unambiguous matches (segment matches exactly one term).
+    
+    First checks the static domain dictionary, then falls back to prefix matching.
+    Only includes matches where the expanded form exists in the story terms.
     """
     terms_upper = {t.upper() for t in terms}
     expansions: dict[str, str] = {}
@@ -405,7 +434,13 @@ def _expand_abbreviations(segments: list[str], terms: list[str]) -> dict[str, st
         if seg_upper in terms_upper:
             continue
 
-        # Find potential expansions
+        # First: Check static domain dictionary
+        dict_expansion = _DOMAIN_ABBREVIATIONS.get(seg_upper)
+        if dict_expansion and dict_expansion in terms_upper:
+            expansions[seg_upper] = dict_expansion
+            continue
+
+        # Second: Find potential expansions via prefix matching
         matches: list[str] = []
         for term in terms:
             if _is_likely_abbreviation(seg, term):
@@ -648,11 +683,23 @@ def _build_candidate_bundles(
         ev_terms = idx.table_evidence_terms.get(table_id, set())
         rare_matches: set[str] = set()
         
+        # Get table segments for abbreviation expansion
+        table_node = idx.node_by_id.get(table_id)
+        segments = []
+        if table_node:
+            short = table_node.qualified_name.rsplit(".", 1)[-1].upper()
+            segments = short.split("_")
+        abbrev_expansions = _expand_abbreviations(segments, terms)
+        
         for term in terms:
             t_lower = term.lower()
             if idf.get(t_lower, 0.0) >= _IDF_THRESHOLD:
                 variants = _normalize_plural(t_lower)
+                # Direct segment match
                 if variants & ev_terms:
+                    rare_matches.add(t_lower)
+                # Abbreviation expansion match
+                elif term.upper() in abbrev_expansions.values():
                     rare_matches.add(t_lower)
         
         match.concept_count = len(rare_matches)
