@@ -1640,9 +1640,14 @@ def build_and_select_bundles(
     
     This is the main entry point for bundle-based selection.
     
-    When views are selected, their source table dependencies are automatically
-    included. Budget is reserved for view dependencies to ensure they can be
-    added after initial selection.
+    ATOMIC EVIDENCE CLOSURE:
+    When a high-confidence artifact (view, MV, native query) is selected,
+    its evidence-backed dependency closure is included atomically:
+    - Selected view/MV -> direct READS_FROM source tables
+    - Selected native query anchor -> referenced tables in the same query
+    
+    Evidence closure members bypass weak lexical family quotas but respect
+    the total budget. If needed, weak candidates are evicted to make room.
     
     Args:
         graph: The reconciled DatabaseGraph
@@ -1653,64 +1658,221 @@ def build_and_select_bundles(
     Returns:
         BundleSelectionResult with selected and evicted bundles
     """
+    from .models import NodeKind, EdgeKind
+    
     idx = _BundleGraphIndex(graph)
     terms = _extract_terms(story_text)
     idf = _compute_idf(terms, idx)
     bundles = _build_candidate_bundles(terms, idx, idf)
     
-    # Count how many views might be selected (to estimate dependency budget)
-    # Reserve ~25% of budget for view dependencies (max 15 objects)
-    # This ensures source tables of selected views can be included
-    view_dep_reserve = min(15, max(5, int(max_objects * 0.25)))
-    initial_budget = max_objects - view_dep_reserve
+    # Build bundle lookup
+    bundles_by_table: dict[str, SelectionBundle] = {b.table_id: b for b in bundles}
     
-    result = select_bundles(bundles, initial_budget, max_per_family)
-
-    # Expand view dependencies with reserved budget
-    dep_bundles = _expand_view_dependencies(list(result.selected_bundles), idx)
-    if dep_bundles:
-        # Sort dependencies by parent view priority (via inherited story terms)
-        # Primary view deps (2+ terms) come first, then by table name
-        story_terms_upper = frozenset(t.upper() for t in terms)
+    # === PHASE 1: Select primary anchors ===
+    # Primary anchors: exact, entity, concept, and views/MVs with high term matches
+    result = select_bundles(bundles, max_objects, max_per_family)
+    
+    selected_list = list(result.selected_bundles)
+    evicted_list = list(result.evicted_bundles)
+    selected_ids = {b.table_id for b in selected_list}
+    
+    # === PHASE 2: Atomic Evidence Closure ===
+    # For each selected view/MV, include READS_FROM sources atomically
+    # These bypass family quotas but respect total budget
+    
+    closure_bundles: list[SelectionBundle] = []
+    
+    for bundle in list(selected_list):  # Copy to avoid mutation during iteration
+        table_node = idx.node_by_id.get(bundle.table_id)
+        if table_node is None:
+            continue
         
-        def dep_relevance(dep: SelectionBundle) -> tuple[int, int, str]:
-            """Score dependency relevance: parent priority first, then table name matches."""
-            # Primary priority: inherited story terms from parent view
-            parent_terms = len(dep.story_terms_matched)
+        # Only expand views and materialized views with strong evidence
+        if table_node.kind not in (NodeKind.VIEW.value, NodeKind.MATERIALIZED_VIEW.value):
+            continue
+        
+        # Require minimum term matches for atomic closure
+        if len(bundle.story_terms_matched) < 2:
+            continue
+        
+        # Find READS_FROM edges
+        outgoing = idx.outgoing_edges.get(bundle.table_id, [])
+        reads_from = [e for e in outgoing if e.kind == EdgeKind.READS_FROM.value]
+        
+        for edge in reads_from:
+            props = dict(edge.properties)
+            source_table = props.get("source_table", "").upper()
+            if not source_table:
+                continue
             
-            # Secondary: check if table name itself matches any story terms
-            table_upper = dep.table_name.upper()
-            name_matches = sum(1 for t in story_terms_upper if t in table_upper)
+            # Find the source table node
+            source_nodes = idx.table_by_short_name.get(source_table, [])
+            if not source_nodes:
+                continue
             
-            # Sort: -parent_terms (primary deps first), -name_matches, then alphabetically
-            return (-parent_terms, -name_matches, dep.table_name)
+            source_node = source_nodes[0]
+            
+            # Skip if already selected
+            if source_node.id in selected_ids:
+                continue
+            
+            # Create closure bundle (bypasses family quota)
+            existing = bundles_by_table.get(source_node.id)
+            if existing:
+                closure_bundle = SelectionBundle(
+                    table_id=existing.table_id,
+                    table_name=existing.table_name,
+                    kind=BundleKind.BRIDGE_VIEW,
+                    entity_id=None,
+                    entity_evidence=existing.entity_evidence,
+                    story_terms_matched=bundle.story_terms_matched,  # Inherit from parent
+                    concept_count=existing.concept_count,
+                    confidence=0.85,  # High confidence - verified evidence closure
+                    columns=existing.columns,
+                    relationships=existing.relationships,
+                    marginal_benefit=bundle.marginal_benefit * 0.9,
+                    match_reason=f"evidence_closure:{bundle.table_name}",
+                    family_prefix=existing.family_prefix,
+                )
+            else:
+                closure_bundle = SelectionBundle(
+                    table_id=source_node.id,
+                    table_name=source_node.qualified_name,
+                    kind=BundleKind.BRIDGE_VIEW,
+                    entity_id=None,
+                    entity_evidence=None,
+                    story_terms_matched=bundle.story_terms_matched,
+                    concept_count=0,
+                    confidence=0.85,
+                    columns=(),
+                    relationships=(),
+                    marginal_benefit=bundle.marginal_benefit * 0.9,
+                    match_reason=f"evidence_closure:{bundle.table_name}",
+                    family_prefix=compute_family_prefix(source_node.qualified_name),
+                )
+            
+            closure_bundles.append(closure_bundle)
+            selected_ids.add(source_node.id)
+    
+    # === PHASE 3: Native Query Cluster Closure ===
+    # For selected bundles with native query evidence, include cluster members
+    for bundle in list(selected_list):
+        if bundle.kind != BundleKind.BRIDGE_NATIVE_QUERY:
+            continue
         
-        dep_bundles.sort(key=dep_relevance)
+        cluster_members = idx.get_native_query_cluster_members(bundle.table_id)
+        for member_id in cluster_members:
+            if member_id in selected_ids:
+                continue
+            
+            member_node = idx.node_by_id.get(member_id)
+            if member_node is None or member_node.kind not in _TABLE_KINDS:
+                continue
+            
+            existing = bundles_by_table.get(member_id)
+            if existing:
+                closure_bundle = SelectionBundle(
+                    table_id=member_id,
+                    table_name=member_node.qualified_name,
+                    kind=BundleKind.BRIDGE_NATIVE_QUERY,
+                    entity_id=None,
+                    entity_evidence=existing.entity_evidence if existing else None,
+                    story_terms_matched=bundle.story_terms_matched,
+                    concept_count=existing.concept_count if existing else 0,
+                    confidence=0.80,
+                    columns=existing.columns if existing else (),
+                    relationships=existing.relationships if existing else (),
+                    marginal_benefit=bundle.marginal_benefit * 0.85,
+                    match_reason=f"native_query_cluster:{bundle.table_name}",
+                    family_prefix=compute_family_prefix(member_node.qualified_name),
+                )
+            else:
+                closure_bundle = SelectionBundle(
+                    table_id=member_id,
+                    table_name=member_node.qualified_name,
+                    kind=BundleKind.BRIDGE_NATIVE_QUERY,
+                    entity_id=None,
+                    entity_evidence=None,
+                    story_terms_matched=bundle.story_terms_matched,
+                    concept_count=0,
+                    confidence=0.80,
+                    columns=(),
+                    relationships=(),
+                    marginal_benefit=bundle.marginal_benefit * 0.85,
+                    match_reason=f"native_query_cluster:{bundle.table_name}",
+                    family_prefix=compute_family_prefix(member_node.qualified_name),
+                )
+            
+            closure_bundles.append(closure_bundle)
+            selected_ids.add(member_id)
+    
+    # === PHASE 4: Budget enforcement with weak eviction ===
+    # Add closure bundles, evicting weak candidates if needed
+    current_count = result.total_objects
+    
+    # Sort closure by parent priority using IDF-weighted term specificity
+    # Closures from views with more specific (higher IDF) terms come first
+    def closure_priority(bundle: SelectionBundle) -> tuple[float, int, str]:
+        # Compute total IDF weight of story terms
+        idf_sum = sum(idf.get(t.lower(), 0.0) for t in bundle.story_terms_matched)
+        # Negative to sort descending by IDF, then by term count, then alphabetically
+        return (-idf_sum, -len(bundle.story_terms_matched), bundle.table_name)
+    
+    closure_bundles.sort(key=closure_priority)
+    
+    # Find weak bundles that can be evicted if needed
+    weak_in_selection = [
+        (sel_idx, b) for sel_idx, b in enumerate(selected_list) 
+        if b.kind in (BundleKind.WEAK_DOMAIN, BundleKind.WEAK_FUZZY)
+    ]
+    # Sort weakest first (lowest confidence)
+    weak_in_selection.sort(key=lambda x: (x[1].confidence, -len(x[1].story_terms_matched)))
+    
+    added_closures: list[SelectionBundle] = []
+    evicted_for_closure: set[int] = set()  # indices in selected_list
+    
+    for closure in closure_bundles:
+        closure_cost = 1 + len(closure.columns)
         
-        # Now we have the reserved budget for dependencies
-        remaining_budget = max_objects - result.total_objects
-        
-        # Only add dependencies that fit within budget
-        added_deps: list[SelectionBundle] = []
-        deps_added_cost = 0
-        
-        for dep in dep_bundles:
-            # Each dependency bundle adds: 1 table + N columns
-            dep_cost = 1 + len(dep.columns)
-            if deps_added_cost + dep_cost <= remaining_budget:
-                added_deps.append(dep)
-                deps_added_cost += dep_cost
-            # else: skip this dependency - would exceed budget
-        
-        if added_deps:
-            all_selected = list(result.selected_bundles) + added_deps
-            new_total = result.total_objects + deps_added_cost
-            return BundleSelectionResult(
-                selected_bundles=tuple(all_selected),
-                evicted_bundles=result.evicted_bundles,
-                total_objects=new_total,
-                budget_used=new_total / max_objects if max_objects > 0 else 0.0,
-                family_suppressions=result.family_suppressions,
-            )
-
-    return result
+        if current_count + closure_cost <= max_objects:
+            # Room available
+            added_closures.append(closure)
+            current_count += closure_cost
+        else:
+            # Need to evict weak candidates
+            needed = (current_count + closure_cost) - max_objects
+            freed = 0
+            candidates_to_evict = []
+            
+            for sel_idx, weak_bundle in weak_in_selection:
+                if sel_idx in evicted_for_closure:
+                    continue
+                weak_cost = 1 + len(weak_bundle.columns)
+                candidates_to_evict.append((sel_idx, weak_cost))
+                freed += weak_cost
+                if freed >= needed:
+                    break
+            
+            if freed >= needed:
+                # Evict and add closure
+                for sel_idx, cost in candidates_to_evict:
+                    evicted_for_closure.add(sel_idx)
+                    current_count -= cost
+                
+                added_closures.append(closure)
+                current_count += closure_cost
+            # else: can't fit this closure, skip it
+    
+    # Build final selection
+    final_selected = [b for i, b in enumerate(selected_list) if i not in evicted_for_closure]
+    final_selected.extend(added_closures)
+    
+    final_evicted = evicted_list + [selected_list[i] for i in evicted_for_closure]
+    
+    return BundleSelectionResult(
+        selected_bundles=tuple(final_selected),
+        evicted_bundles=tuple(final_evicted),
+        total_objects=current_count,
+        budget_used=current_count / max_objects if max_objects > 0 else 0.0,
+        family_suppressions=result.family_suppressions,
+    )
