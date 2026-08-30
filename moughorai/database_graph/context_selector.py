@@ -2012,25 +2012,34 @@ def select_database_context(
     sorted_parents = sorted(col_by_parent.keys(),
                             key=lambda pid: parent_priority.get(pid, (99, 99, 99, 0, 0, "")))
 
-    # Within each parent, re-sort columns to prioritize structurally
-    # important ones: ID, PK, FK reference columns come first.
+    # Within each parent, re-sort columns to prioritize:
+    # 1. ID column (always structurally important)
+    # 2. FK reference columns (ending in _ID) — story-matched first
+    # 3. Story-grounded columns (segments match story terms)
+    # 4. PK/version columns
+    # 5. Everything else — story-matched first within this tier
     _PK_FK_PATTERNS = {"ID", "PK", "ROW_VERSION"}
+    _story_terms_upper: set[str] = set(terms)  # terms from earlier extraction
     for pid in col_by_parent:
         cols = col_by_parent[pid]
         def _col_priority(sn: _ScoredNode) -> tuple:
             nd = idx.node_by_id.get(sn.node_id)
             if nd:
                 short = nd.qualified_name.rsplit(".", 1)[-1].upper()
-                # ID column is always most important
+                segments = set(short.split("_"))
+                story_match = 0 if (segments & _story_terms_upper) else 1
+                # ID column
                 if short == "ID":
-                    return (0, sn.sort_key())
-                # FK reference columns (ending in _ID) are important
-                if short.endswith("_ID"):
-                    return (1, sn.sort_key())
-                # Other PK/version columns
+                    return (0, story_match, sn.sort_key())
+                # FK column (ends in _ID)
+                if short.endswith("_ID") and short != "ID":
+                    return (1, story_match, sn.sort_key())
+                # PK/version
                 if short in _PK_FK_PATTERNS:
-                    return (2, sn.sort_key())
-            return (3, sn.sort_key())
+                    return (2, story_match, sn.sort_key())
+                # Other — story-matched columns come before non-matched
+                return (3, story_match, sn.sort_key())
+            return (4, 1, sn.sort_key())
         col_by_parent[pid] = sorted(cols, key=_col_priority)
 
     # Count total columns needed to include ALL columns of all parents
@@ -2046,26 +2055,47 @@ def select_database_context(
             kept.extend(orphan_cols[:remaining])
     else:
         # Not all columns fit — hybrid distribution:
-        # Only distribute to the top-8 parents (the most story-relevant).
-        # This gives each priority table ~5-7 columns instead of ~3.
+        # Phase 1: Give exact-tier parents ALL their columns (they are
+        #          the primary story-grounded tables).
+        # Phase 2: Distribute remaining to other parents fairly.
+        # Phase 3: Extras go to highest-priority parents.
         _MAX_COL_PARENTS = 8
         active_parents = sorted_parents[:_MAX_COL_PARENTS]
-        n_parents = max(len(active_parents), 1)
-        per_parent = min(7, max(1, remaining // n_parents))
+
+        # Identify high-priority parents (exact or entity-bridge tier)
+        exact_parent_ids = set()
+        for sn in kept:
+            if sn.kind_priority == 0 and sn.tier == _TIER_PINNED and sn.sub_tier <= _SUB_ENTITY_BRIDGE:
+                exact_parent_ids.add(sn.node_id)
 
         allocated: dict[str, list[_ScoredNode]] = {pid: [] for pid in active_parents}
         leftover = remaining
 
-        # Round 1: min(per_parent, available) per parent
+        # Phase 1: exact parents get all their columns
         for pid in active_parents:
+            if pid not in exact_parent_ids:
+                continue
             cols = col_by_parent[pid]
-            take = min(per_parent, len(cols), leftover)
+            take = min(len(cols), leftover)
             allocated[pid] = cols[:take]
             leftover -= take
             if leftover <= 0:
                 break
 
-        # Round 2: all remaining to the highest-priority parents
+        # Phase 2: fair distribution to remaining parents
+        if leftover > 0:
+            other_active = [p for p in active_parents if p not in exact_parent_ids]
+            n_other = max(len(other_active), 1)
+            per_parent = min(7, max(1, leftover // n_other))
+            for pid in other_active:
+                cols = col_by_parent[pid]
+                take = min(per_parent, len(cols), leftover)
+                allocated[pid] = cols[:take]
+                leftover -= take
+                if leftover <= 0:
+                    break
+
+        # Phase 3: extras to highest-priority parents
         if leftover > 0:
             for pid in active_parents:
                 cols = col_by_parent[pid]
