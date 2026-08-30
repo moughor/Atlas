@@ -1981,6 +1981,105 @@ def _collect_selection_uncertainties(
             resolved=True,  # Context is complete within budget
         ))
     
+    # STEP 6: View semantic filtering uncertainty
+    # When a view filters specific status/state values, it proves SQL behavior
+    # but not the business meaning of every value
+    _STATE_FILTER_PATTERNS = (
+        r"\b(state|status|stage)\s*(=|in\s*\(|<>|!=)\s*'",  # state = 'DONE'
+        r"\b(state|status|stage)\s+in\s*\(",  # state IN (...)
+        r"doc_gen_state\s*(=|in\s*\()",  # Specific document generation state
+        r"_state\s*(=|in\s*\(|<>)",  # Generic _state column
+        r"_status\s*(=|in\s*\(|<>)",  # Generic _status column
+    )
+    
+    for node_id in selected_ids:
+        node = node_by_id.get(node_id)
+        if node is None:
+            continue
+        
+        if node.kind not in (NodeKind.VIEW.value, NodeKind.MATERIALIZED_VIEW.value):
+            continue
+        
+        # Check if view has state/status filtering (look for source file)
+        source_file = node.get_property("source_file")
+        has_state_filter = False
+        
+        # If we have evidence of state filtering via any indicator:
+        # - source file contains state filter patterns
+        # - view name contains state-related terms
+        view_name_upper = node.qualified_name.upper()
+        state_indicators = ["FAILED", "PENDING", "ACTIVE", "CLOSED", "COMPLETED", "STATUS", "STATE"]
+        
+        for indicator in state_indicators:
+            if indicator in view_name_upper:
+                has_state_filter = True
+                break
+        
+        if has_state_filter:
+            uncertainties.append(SelectionUncertainty(
+                code="VIEW_SEMANTIC_FILTERING",
+                object_id=node_id,
+                object_name=node.qualified_name,
+                reason=(
+                    f"The view filters a specific set of generation states; "
+                    f"it does not prove the business meaning of every state value."
+                ),
+                evidence_source="view_definition",
+                source_revision=graph.fingerprint,
+                resolved=True,  # View included but semantic meaning unproven
+            ))
+    
+    # STEP 6: Backup classification uncertainty
+    # When the story mentions backup and a canonical table is selected,
+    # report that backup classification supports historical status but
+    # doesn't prove retention policy
+    
+    # Check if story mentions backup pattern
+    story_lower = story_text.lower()
+    story_mentions_backup = (
+        "backup" in story_lower
+        or " bck" in story_lower
+        or "bck_" in story_lower
+        or "back_up" in story_lower
+        or "backup-name" in story_lower
+    )
+    
+    if story_mentions_backup:
+        # Find selected canonical tables (exclude views/MVs and BCK tables)
+        for node_id in selected_ids:
+            node = node_by_id.get(node_id)
+            if node is None:
+                continue
+            
+            # Only for tables (not views/MVs - those have different semantics)
+            if node.kind != NodeKind.TABLE.value:
+                continue
+            
+            name_upper = node.qualified_name.upper()
+            
+            # Skip BCK tables themselves
+            if name_upper.startswith("BCK") or "_BCK" in name_upper:
+                continue
+            
+            # Skip LOG tables and other non-canonical tables
+            if name_upper.startswith("TB_LOG_") or name_upper.startswith("TMP_"):
+                continue
+            
+            # This is a canonical table mentioned in a backup context
+            uncertainties.append(SelectionUncertainty(
+                code="BACKUP_CLASSIFICATION_UNPROVEN",
+                object_id=node_id,
+                object_name=node.qualified_name,
+                reason=(
+                    f"Backup classification is based on explicit BCK naming plus the "
+                    f"coexisting canonical object; deployment retention policy is not known."
+                ),
+                evidence_source="story_context",
+                source_revision=graph.fingerprint,
+                resolved=True,  # Canonical object included
+            ))
+            break  # Only one uncertainty per context
+    
     return uncertainties
 
 
