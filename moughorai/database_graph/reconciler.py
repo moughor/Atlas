@@ -1004,10 +1004,23 @@ def reconcile_database_graph(
         all_nodes = [n for n in all_nodes if n.id not in _remove_ids]
 
         # Deduplicate edges that now have the same (kind, from_node, to_node)
-        _seen_edges: set[tuple[str, str, str]] = set()
+        # For FK edges, include source/target column to distinguish multiple
+        # FKs between the same table pair (e.g., different join columns)
+        _seen_edges: set[tuple[str, ...]] = set()
         deduped_edges: list[DatabaseGraphEdge] = []
         for e in all_edges:
-            edge_key = (e.kind, e.from_node, e.to_node)
+            if e.kind == EdgeKind.FOREIGN_KEY_TO.value:
+                # Include column info to distinguish multiple FKs
+                props = dict(e.properties)
+                edge_key = (
+                    e.kind,
+                    e.from_node,
+                    e.to_node,
+                    props.get("source_column", ""),
+                    props.get("target_column", ""),
+                )
+            else:
+                edge_key = (e.kind, e.from_node, e.to_node)
             if edge_key not in _seen_edges:
                 _seen_edges.add(edge_key)
                 deduped_edges.append(e)

@@ -90,6 +90,13 @@ def jpa_result():
 
 
 @pytest.fixture(scope="module")
+def view_result():
+    from moughorai.database_graph.view_sql_ingest import ingest_view_sql
+
+    return ingest_view_sql(SYGMA_ROOT)
+
+
+@pytest.fixture(scope="module")
 def fixed_provenance():
     return {
         "vcs": "git",
@@ -102,13 +109,14 @@ def fixed_provenance():
 
 
 @pytest.fixture(scope="module")
-def reconciled_graph(jailer_result, jpa_result, fixed_provenance):
+def reconciled_graph(jailer_result, jpa_result, view_result, fixed_provenance):
     from moughorai.database_graph.reconciler import reconcile_database_graph
 
     return reconcile_database_graph(
         SYGMA_ROOT,
         jailer_result,
         jpa_result,
+        view_result=view_result,
         provenance=fixed_provenance,
         workspace_fingerprint="eval-pack-ws-fp",
     )
