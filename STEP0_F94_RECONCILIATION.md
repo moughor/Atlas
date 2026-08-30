@@ -125,3 +125,59 @@ These require structured evidence analysis, not blanket insertion.
 3. **Evidence-first object retrieval** - find artifacts, then materialize closure
 4. **Evidence-exact column selection** - from artifact projections, not random
 5. **Structured uncertainty derivation** - from evidence state, not blanket insertion
+
+## Evidence Artifacts Already Available
+
+Analysis reveals the required evidence artifacts ARE being extracted but NOT used:
+
+### Native Query Relations (13 extracted)
+The `RulesDao#getAllEthicsIssuesFlags` query tables are fully extracted:
+- TB_APP_PROJECT_BASE -> TB_GRP_ONL_PROJECT_ITEM
+- TB_APP_PROJECT_BASE -> TB_RT_EXERCISE_INSTANCE (SCOPE_ID/SCOPE_TYPE)
+- TB_RT_EXERCISE_INSTANCE -> TB_MDL_EX (EXERCISE_MODEL_ID)
+- TB_RT_EXERCISE_INSTANCE -> TB_RT_SESSION_INSTANCE (EXERCISE_ID)
+- TB_RT_SESSION_INSTANCE -> TB_GRP_ETH (SESSION_ID)
+
+This is exactly what Case 004 requires. **The data exists in JpaExtractionResult.native_query_relations**.
+
+### JPA Entity Mappings (694 entities, 4225 fields)
+Entity-to-table mappings exist as MAPS_TO_TABLE edges (336 edges).
+Field-to-column mappings exist as MAPS_TO_COLUMN edges (2052 edges).
+
+### Graph Relationships
+- FOREIGN_KEY_TO: 741 edges
+- JAVA_RELATION_TO: 316 edges
+- LOGICAL_REFERENCE_TO: 11 edges
+
+### What's Missing from Graph
+- **VW_HD_FAILED_DOC_GEN** and most views (only 3 views in graph)
+- View dependency edges (DERIVED_FROM, READS_FROM) are not created
+- Migration lineage edges
+
+## Architecture Fix Required
+
+The bundle_selector.py must be modified to:
+
+1. **Query native_query_relations by method name**
+   When story mentions "RulesDao", find all native queries from that class.
+
+2. **Traverse JPA relationships**
+   When story mentions Java entity name, follow MAPS_TO_TABLE and MAPS_TO_COLUMN.
+
+3. **Traverse view dependencies**
+   When a view is matched, follow DERIVED_FROM/READS_FROM to source tables.
+
+4. **Use FK relationships for closure**
+   After primary objects selected, traverse FOREIGN_KEY_TO for closure.
+
+The current algorithm's fatal flaw: it builds candidates from table names only,
+ignoring the rich evidence artifacts already in the extraction result.
+
+## Immediate Actions
+
+1. Remove quota policies (50% table, 3 entities, 2 bridges)
+2. Add evidence artifact index to bundle_selector
+3. Match story concepts to artifact names (class names, method names)
+4. Materialize complete evidence closure when artifact matched
+5. Select columns from evidence (not random PK/FK)
+6. Derive uncertainties from evidence state (not blanket insertion)
