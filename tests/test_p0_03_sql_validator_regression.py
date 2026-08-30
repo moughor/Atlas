@@ -350,3 +350,58 @@ class TestValidationRoundTrip:
         assert d["overall_status"] == "structurally_valid"
         assert d["graph_fingerprint"] == g.fingerprint
         assert len(d["statements"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: schema-qualified dynamic synonym detection (STEP 4 regression)
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaFallbackDynamicSynonym:
+    """Verify schema fallback raises DYNAMIC_SYNONYM_TARGET_UNPROVEN.
+    
+    This test covers SYGMA-DB-014-NEG-01 pattern: when SQL references a table
+    with a non-native schema prefix (e.g., CONSUMER.TB_GRP_PF) and the table
+    is resolved via schema fallback (ignoring the prefix), the resolution is
+    unproven because a dynamic synonym would be needed to make it work.
+    """
+
+    def test_consumer_schema_raises_dynamic_synonym_unproven(self):
+        """Non-native schema prefix triggers DYNAMIC_SYNONYM_TARGET_UNPROVEN."""
+        g = _build_fk_graph()
+        result = validate_sql("SELECT * FROM CONSUMER.TB_ORDERS", g)
+        
+        # Should be incomplete_evidence due to warning
+        assert result.overall_status == "incomplete_evidence"
+        
+        # Check for the specific issue
+        stmt = result.statements[0]
+        issue_types = {i.issue_type for i in stmt.issues}
+        assert "dynamic_synonym_target_unproven" in issue_types
+        
+        # Verify the issue detail mentions schema fallback
+        for issue in stmt.issues:
+            if issue.issue_type == "dynamic_synonym_target_unproven":
+                assert "CONSUMER" in issue.object_name.upper()
+                assert "schema fallback" in issue.detail.lower()
+
+    def test_sygma_schema_does_not_raise(self):
+        """Native SYGMA schema prefix does NOT trigger the warning."""
+        g = _build_fk_graph()
+        result = validate_sql("SELECT * FROM SYGMA.TB_ORDERS", g)
+        
+        # No warnings expected for native schema
+        stmt = result.statements[0]
+        issue_types = {i.issue_type for i in stmt.issues}
+        assert "dynamic_synonym_target_unproven" not in issue_types
+
+    def test_unqualified_table_does_not_raise(self):
+        """Unqualified table references do NOT trigger the warning."""
+        g = _build_fk_graph()
+        result = validate_sql("SELECT * FROM TB_ORDERS", g)
+        
+        # No warnings for unqualified references
+        stmt = result.statements[0]
+        issue_types = {i.issue_type for i in stmt.issues}
+        assert "dynamic_synonym_target_unproven" not in issue_types
+        assert result.overall_status == "structurally_valid"

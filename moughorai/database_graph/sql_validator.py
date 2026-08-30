@@ -1254,25 +1254,25 @@ def _validate_statement(
 
             # Fix D: Check for dynamic synonym resolution
             # If the table was resolved via schema fallback (e.g., CONSUMER.TB_GRP_PF
-            # → TB_GRP_PF) and the schema prefix is not the native schema, check
-            # whether a dynamic synonym generator exists. If so, the resolution
-            # is unproven — the synonym may or may not have been created at runtime.
+            # → TB_GRP_PF) and the schema prefix is not the native schema, the 
+            # resolution is unproven — the synonym may or may not have been created
+            # at runtime. This is evidence of incomplete_evidence regardless of
+            # whether dynamic synonym nodes exist in the graph.
             if resolution_method == "short" and "." in tname:
                 _schema_prefix = tname.upper().rsplit(".", 1)[0]
                 _NATIVE_SCHEMAS = {"SYGMA", ""}
                 if _schema_prefix not in _NATIVE_SCHEMAS:
-                    # Check for dynamic synonym nodes in the index
-                    if index.has_any_dynamic_synonym():
-                        issues.append(SqlValidationIssue(
-                            issue_type=ISSUE_DYNAMIC_SYNONYM,
-                            object_name=tname,
-                            detail=(
-                                f"Table '{tname}' resolved via schema fallback but "
-                                f"the '{_schema_prefix}' schema synonym requires a "
-                                f"dynamic runtime generator whose execution is unproven"
-                            ),
-                            severity="warning",
-                        ))
+                    # Schema fallback to non-native schema = unproven synonym resolution
+                    issues.append(SqlValidationIssue(
+                        issue_type=ISSUE_DYNAMIC_SYNONYM,
+                        object_name=tname,
+                        detail=(
+                            f"Table '{tname}' resolved via schema fallback but "
+                            f"the '{_schema_prefix}' schema synonym requires a "
+                            f"dynamic runtime generator whose execution is unproven"
+                        ),
+                        severity="warning",
+                    ))
 
             # CB2-6: historical_object is an error and counts as structurally_invalid
             if index.is_historical(qname_upper):
