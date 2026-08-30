@@ -262,42 +262,74 @@ def extract_actual_result(
 
 
 # ---------------------------------------------------------------------------
-# Comparator — Formal metric computation
+# Comparator — Dual-mode formal metric computation
 # ---------------------------------------------------------------------------
+#
+# TWO SEPARATE METRICS:
+#
+# 1. OFFICIAL_REQUIRED_COVERAGE (pack acceptance predicate)
+#    - required ⊆ actual (subset containment)
+#    - must_exclude assertions must be absent
+#    - extras are allowed unless excluded or cap exceeded
+#    - this is the authoritative acceptance metric
+#
+# 2. PRECISION_DIAGNOSTIC (informational only)
+#    - exact normalized-set equality
+#    - tracks expected_only and actual_only
+#    - extras are diagnostic, not official failures
+#    - never call this official acceptance
+#
 
 @dataclass
 class CaseComparison:
-    """Comparison results for one case."""
+    """Comparison results for one case with dual metrics."""
     case_id: str
     
-    # Exact object match
+    # --- OFFICIAL REQUIRED COVERAGE (subset semantics) ---
+    # Objects: required ⊆ actual
     objects_expected: int
-    objects_found: int
-    objects_missing: frozenset[str]
-    objects_pass: bool  # ALL expected objects present
+    objects_found: int  # |required ∩ actual|
+    objects_missing: frozenset[str]  # required - actual
+    objects_coverage_pass: bool  # ALL required objects present (extras OK)
     
-    # Exact column match (parent-bound)
+    # Columns: required ⊆ actual with exact parent binding
     columns_expected: int
     columns_found: int
     columns_missing: frozenset[ExpectedColumn]
-    columns_pass: bool  # ALL expected columns present with correct parent
+    columns_coverage_pass: bool
     
-    # FK match
+    # FKs: required ⊆ actual with exact endpoints
     fks_expected: int
     fks_found: int
     fks_missing: frozenset[ExpectedFK]
-    fks_pass: bool  # ALL expected FKs present
+    fks_coverage_pass: bool
     
-    # Uncertainty match
+    # Uncertainties: required ⊆ actual
     uncertainties_expected: int
     uncertainties_found: int
     uncertainties_missing: frozenset[ExpectedUncertainty]
-    uncertainties_pass: bool  # ALL expected uncertainties reported
+    uncertainties_coverage_pass: bool
     
-    # Aggregate
-    aggregate_pass: bool  # ALL dimensions pass
+    # Exclusions: must_exclude assertions must be absent
+    exclusion_violations: frozenset[str]  # Items matching must_exclude that ARE present
+    exclusion_pass: bool  # No violations
     
-    # Structure (INTERNAL_SMOKE only)
+    # Official aggregate: all coverage dimensions pass AND exclusions pass
+    coverage_aggregate_pass: bool
+    
+    # --- PRECISION DIAGNOSTIC (exact equality, informational only) ---
+    objects_extra: frozenset[str]  # actual - required (diagnostic)
+    columns_extra: frozenset[ExpectedColumn]
+    fks_extra: frozenset[ExpectedFK]
+    uncertainties_extra: frozenset[ExpectedUncertainty]
+    
+    precision_objects_pass: bool  # Exact equality (no missing AND no extra)
+    precision_columns_pass: bool
+    precision_fks_pass: bool
+    precision_uncertainties_pass: bool
+    precision_aggregate_pass: bool
+    
+    # --- STRUCTURE ---
     cap_pass: bool
     node_count: int
 
@@ -305,69 +337,117 @@ class CaseComparison:
 def compare_case(expected: CaseExpectation, actual: ActualResult) -> CaseComparison:
     """Compare expected vs actual for one case.
     
-    This produces formal metrics, not smoke tests.
+    Produces TWO metrics:
     
-    SEMANTICS (exact normalized-set equality):
-    - expected=None (absent)    => NOT_EVALUATED, cannot produce formal PASS
-    - expected=[] vs actual=[]  => PASS (explicit empty matches explicit empty)
-    - expected=[] vs actual={X} => FAIL (expected nothing, got something)
-    - expected={A,B} vs actual={A}     => FAIL (missing B)
-    - expected={A} vs actual={A,B}     => FAIL (extra B)
-    - expected={A,B} vs actual={A,B}   => PASS (exact match)
+    1. OFFICIAL_REQUIRED_COVERAGE (pack acceptance predicate):
+       - required ⊆ actual (all required items must be present)
+       - explicit expected=[] means no positive requirement (actual can be anything)
+       - must_exclude assertions must be absent
+       - extras are allowed unless they violate must_exclude
     
-    Subset containment is forbidden. Extras are failures.
+    2. PRECISION_DIAGNOSTIC (informational):
+       - exact set equality (expected == actual)
+       - tracks expected_only and actual_only for diagnostic
+       - never used for official acceptance
     """
-    # Objects - exact set equality required
+    # --- OBJECTS ---
     objects_found = expected.expected_objects & actual.selected_objects
     objects_missing = expected.expected_objects - actual.selected_objects
     objects_extra = actual.selected_objects - expected.expected_objects
     
-    # Pass only if sets are exactly equal (no missing AND no extras)
-    # Empty expected vs empty actual = PASS
-    # Empty expected vs non-empty actual = FAIL (has extras)
-    objects_pass = (len(objects_missing) == 0) and (len(objects_extra) == 0)
+    # Coverage: all required present (extras OK)
+    # Empty expected means no requirement, so coverage passes
+    objects_coverage_pass = len(objects_missing) == 0
     
-    # Columns (parent-bound) - exact set equality required
+    # Precision: exact equality (no missing AND no extra)
+    precision_objects_pass = (len(objects_missing) == 0) and (len(objects_extra) == 0)
+    
+    # --- COLUMNS (parent-bound) ---
     columns_found = expected.expected_columns & actual.selected_columns
     columns_missing = expected.expected_columns - actual.selected_columns
     columns_extra = actual.selected_columns - expected.expected_columns
-    columns_pass = (len(columns_missing) == 0) and (len(columns_extra) == 0)
     
-    # FKs - exact set equality required
+    columns_coverage_pass = len(columns_missing) == 0
+    precision_columns_pass = (len(columns_missing) == 0) and (len(columns_extra) == 0)
+    
+    # --- FKs ---
     fks_found = expected.expected_fks & actual.selected_fks
     fks_missing = expected.expected_fks - actual.selected_fks
     fks_extra = actual.selected_fks - expected.expected_fks
-    fks_pass = (len(fks_missing) == 0) and (len(fks_extra) == 0)
     
-    # Uncertainties - exact set equality required
+    fks_coverage_pass = len(fks_missing) == 0
+    precision_fks_pass = (len(fks_missing) == 0) and (len(fks_extra) == 0)
+    
+    # --- UNCERTAINTIES ---
     uncerts_found = expected.expected_uncertainties & actual.reported_uncertainties
     uncerts_missing = expected.expected_uncertainties - actual.reported_uncertainties
     uncerts_extra = actual.reported_uncertainties - expected.expected_uncertainties
-    uncerts_pass = (len(uncerts_missing) == 0) and (len(uncerts_extra) == 0)
     
-    # Aggregate: all dimensions must pass for aggregate pass
-    # Note: empty expected is still evaluated (not NOT_EVALUATED)
-    aggregate_pass = objects_pass and columns_pass and fks_pass and uncerts_pass
+    uncerts_coverage_pass = len(uncerts_missing) == 0
+    precision_uncerts_pass = (len(uncerts_missing) == 0) and (len(uncerts_extra) == 0)
+    
+    # --- EXCLUSION CHECKING ---
+    # Any object matching must_exclude prefixes is a violation
+    exclusion_violations: set[str] = set()
+    for obj_name in actual.selected_objects:
+        for prefix in expected.must_exclude_prefixes:
+            if obj_name.startswith(prefix):
+                exclusion_violations.add(obj_name)
+    
+    exclusion_pass = len(exclusion_violations) == 0
+    
+    # --- AGGREGATES ---
+    # Official coverage: all coverage dimensions pass AND exclusions pass AND cap
+    coverage_aggregate_pass = (
+        objects_coverage_pass and
+        columns_coverage_pass and
+        fks_coverage_pass and
+        uncerts_coverage_pass and
+        exclusion_pass and
+        actual.cap_respected
+    )
+    
+    # Precision: exact equality on all dimensions
+    precision_aggregate_pass = (
+        precision_objects_pass and
+        precision_columns_pass and
+        precision_fks_pass and
+        precision_uncerts_pass
+    )
     
     return CaseComparison(
         case_id=expected.case_id,
+        # Coverage metrics
         objects_expected=len(expected.expected_objects),
         objects_found=len(objects_found),
         objects_missing=objects_missing,
-        objects_pass=objects_pass and len(objects_missing) == 0,
+        objects_coverage_pass=objects_coverage_pass,
         columns_expected=len(expected.expected_columns),
         columns_found=len(columns_found),
         columns_missing=columns_missing,
-        columns_pass=columns_pass and len(columns_missing) == 0,
+        columns_coverage_pass=columns_coverage_pass,
         fks_expected=len(expected.expected_fks),
         fks_found=len(fks_found),
         fks_missing=fks_missing,
-        fks_pass=fks_pass and len(fks_missing) == 0,
+        fks_coverage_pass=fks_coverage_pass,
         uncertainties_expected=len(expected.expected_uncertainties),
         uncertainties_found=len(uncerts_found),
         uncertainties_missing=uncerts_missing,
-        uncertainties_pass=uncerts_pass and len(uncerts_missing) == 0,
-        aggregate_pass=aggregate_pass,
+        uncertainties_coverage_pass=uncerts_coverage_pass,
+        exclusion_violations=frozenset(exclusion_violations),
+        exclusion_pass=exclusion_pass,
+        coverage_aggregate_pass=coverage_aggregate_pass,
+        # Precision metrics (diagnostic)
+        objects_extra=objects_extra,
+        columns_extra=columns_extra,
+        fks_extra=fks_extra,
+        uncertainties_extra=uncerts_extra,
+        precision_objects_pass=precision_objects_pass,
+        precision_columns_pass=precision_columns_pass,
+        precision_fks_pass=precision_fks_pass,
+        precision_uncertainties_pass=precision_uncerts_pass,
+        precision_aggregate_pass=precision_aggregate_pass,
+        # Structure
         cap_pass=actual.cap_respected,
         node_count=actual.node_count,
     )
@@ -375,76 +455,136 @@ def compare_case(expected: CaseExpectation, actual: ActualResult) -> CaseCompari
 
 @dataclass
 class FormalVector:
-    """The formal evaluation vector with honest metric names."""
+    """The formal evaluation vector with dual metrics.
     
-    # Case-level metrics
-    exact_object_cases: int  # X/14 cases with ALL expected objects
-    exact_object_total: int
+    OFFICIAL metrics use coverage semantics (required ⊆ actual).
+    PRECISION metrics use exact equality (diagnostic only).
+    """
     
-    official_fk_assertions: int  # X/7 FK relationships found across all cases
+    # --- OFFICIAL REQUIRED COVERAGE (acceptance predicate) ---
+    required_object_coverage: int  # Cases with ALL required objects present
+    required_object_total: int
+    
+    official_fk_assertions: int  # FK relationships found across all cases
     official_fk_total: int
     
-    exact_column_cases: int  # X/14 cases with ALL parent-bound columns
-    exact_column_total: int
+    required_column_cases: int  # Cases with ALL required columns present
+    required_column_total: int
     
-    exact_uncertainty_cases: int  # X/14 cases with ALL uncertainties
-    exact_uncertainty_total: int
+    required_uncertainty_cases: int  # Cases with ALL required uncertainties
+    required_uncertainty_total: int
     
-    aggregate_complete_cases: int  # X/14 cases passing ALL dimensions
+    aggregate_complete_cases: int  # Cases passing ALL official dimensions
     aggregate_complete_total: int
     
-    # Structure metrics (INTERNAL_SMOKE)
-    cap_pass: int  # X/14 cases respecting cap
+    # --- PRECISION DIAGNOSTIC (informational only) ---
+    precision_exact_object_cases: int  # Cases with EXACTLY expected objects (no extras)
+    precision_exact_column_cases: int
+    precision_exact_uncertainty_cases: int
+    precision_aggregate_cases: int
+    
+    # --- STRUCTURE ---
+    cap_pass: int
     cap_total: int
     
-    # Determinism
+    # --- DETERMINISM ---
     determinism_pass: bool
     graph_fingerprints: list[str]
     
-    # SQL (from separate runner)
+    # --- SQL ---
     sql_pass: int
     sql_total: int
     
     def __str__(self) -> str:
         return (
-            f"EXACT_OBJECT_CASES: {self.exact_object_cases}/{self.exact_object_total}\n"
+            "=== OFFICIAL REQUIRED COVERAGE ===\n"
+            f"REQUIRED_OBJECT_COVERAGE: {self.required_object_coverage}/{self.required_object_total}\n"
             f"OFFICIAL_FK_ASSERTIONS: {self.official_fk_assertions}/{self.official_fk_total}\n"
-            f"EXACT_COLUMN_CASES: {self.exact_column_cases}/{self.exact_column_total}\n"
-            f"EXACT_UNCERTAINTY_CASES: {self.exact_uncertainty_cases}/{self.exact_uncertainty_total}\n"
+            f"REQUIRED_COLUMN_CASES: {self.required_column_cases}/{self.required_column_total}\n"
+            f"REQUIRED_UNCERTAINTY_CASES: {self.required_uncertainty_cases}/{self.required_uncertainty_total}\n"
             f"AGGREGATE_COMPLETE_CASES: {self.aggregate_complete_cases}/{self.aggregate_complete_total}\n"
             f"CAP_PASS: {self.cap_pass}/{self.cap_total}\n"
             f"DETERMINISM: {'PASS' if self.determinism_pass else 'FAIL'}\n"
-            f"SQL: {self.sql_pass}/{self.sql_total}"
+            f"SQL: {self.sql_pass}/{self.sql_total}\n"
+            "\n"
+            "=== PRECISION DIAGNOSTIC (informational) ===\n"
+            f"PRECISION_EXACT_OBJECT_CASES: {self.precision_exact_object_cases}/{self.required_object_total}\n"
+            f"PRECISION_EXACT_COLUMN_CASES: {self.precision_exact_column_cases}/{self.required_column_total}\n"
+            f"PRECISION_EXACT_UNCERTAINTY_CASES: {self.precision_exact_uncertainty_cases}/{self.required_uncertainty_total}\n"
+            f"PRECISION_AGGREGATE_CASES: {self.precision_aggregate_cases}/{self.aggregate_complete_total}"
         )
 
 
 def compute_formal_vector(comparisons: list[CaseComparison]) -> FormalVector:
-    """Compute the formal evaluation vector from case comparisons."""
+    """Compute the formal evaluation vector from case comparisons.
     
-    exact_object_cases = sum(1 for c in comparisons if c.objects_pass and c.objects_expected > 0)
-    exact_column_cases = sum(1 for c in comparisons if c.columns_pass and c.columns_expected > 0)
-    exact_uncertainty_cases = sum(1 for c in comparisons if c.uncertainties_pass and c.uncertainties_expected > 0)
-    aggregate_complete_cases = sum(1 for c in comparisons if c.aggregate_pass)
+    Official metrics count cases where required items are present (coverage).
+    Precision metrics count cases with exact equality (diagnostic).
+    """
+    # --- OFFICIAL COVERAGE ---
+    # Count cases where ALL required items are present AND expected > 0
+    required_object_coverage = sum(
+        1 for c in comparisons 
+        if c.objects_coverage_pass and c.objects_expected > 0
+    )
+    required_column_cases = sum(
+        1 for c in comparisons 
+        if c.columns_coverage_pass and c.columns_expected > 0
+    )
+    required_uncertainty_cases = sum(
+        1 for c in comparisons 
+        if c.uncertainties_coverage_pass and c.uncertainties_expected > 0
+    )
+    
+    # Aggregate: all coverage dimensions pass (including exclusions and cap)
+    aggregate_complete_cases = sum(
+        1 for c in comparisons if c.coverage_aggregate_pass
+    )
+    
     cap_pass = sum(1 for c in comparisons if c.cap_pass)
     
     # FK is counted per-relationship, not per-case
-    total_fks_found = sum(c.fks_expected - len(c.fks_missing) for c in comparisons)
+    total_fks_found = sum(c.fks_found for c in comparisons)
     total_fks_expected = sum(c.fks_expected for c in comparisons)
     
+    # --- PRECISION DIAGNOSTIC ---
+    precision_exact_object_cases = sum(
+        1 for c in comparisons 
+        if c.precision_objects_pass and c.objects_expected > 0
+    )
+    precision_exact_column_cases = sum(
+        1 for c in comparisons 
+        if c.precision_columns_pass and c.columns_expected > 0
+    )
+    precision_exact_uncertainty_cases = sum(
+        1 for c in comparisons 
+        if c.precision_uncertainties_pass and c.uncertainties_expected > 0
+    )
+    precision_aggregate_cases = sum(
+        1 for c in comparisons if c.precision_aggregate_pass
+    )
+    
     return FormalVector(
-        exact_object_cases=exact_object_cases,
-        exact_object_total=len(comparisons),
+        # Official coverage
+        required_object_coverage=required_object_coverage,
+        required_object_total=len(comparisons),
         official_fk_assertions=total_fks_found,
         official_fk_total=total_fks_expected,
-        exact_column_cases=exact_column_cases,
-        exact_column_total=len(comparisons),
-        exact_uncertainty_cases=exact_uncertainty_cases,
-        exact_uncertainty_total=len(comparisons),
+        required_column_cases=required_column_cases,
+        required_column_total=len(comparisons),
+        required_uncertainty_cases=required_uncertainty_cases,
+        required_uncertainty_total=len(comparisons),
         aggregate_complete_cases=aggregate_complete_cases,
         aggregate_complete_total=len(comparisons),
+        # Precision diagnostic
+        precision_exact_object_cases=precision_exact_object_cases,
+        precision_exact_column_cases=precision_exact_column_cases,
+        precision_exact_uncertainty_cases=precision_exact_uncertainty_cases,
+        precision_aggregate_cases=precision_aggregate_cases,
+        # Structure
         cap_pass=cap_pass,
         cap_total=len(comparisons),
-        determinism_pass=True,  # Will be verified separately
+        determinism_pass=True,  # Verified separately
         graph_fingerprints=[],
         sql_pass=42,  # From separate SQL runner
         sql_total=42,
@@ -519,307 +659,415 @@ def reconciled_graph():
 
 
 # ---------------------------------------------------------------------------
-# Comparator Canary Tests
+# Comparator Canary Tests — Coverage Mode (Official Acceptance)
 # ---------------------------------------------------------------------------
 
-class TestComparatorCanaries:
-    """Tests proving the comparator fails correctly on various error cases."""
+class TestCoverageCanaries:
+    """Tests proving OFFICIAL_REQUIRED_COVERAGE semantics work correctly.
     
-    def test_missing_one_object_fails(self):
-        """Comparator must fail when one required object is missing."""
+    Coverage mode: required ⊆ actual (extras allowed unless excluded).
+    This is the authoritative acceptance predicate.
+    """
+    
+    def test_missing_one_object_fails_coverage(self):
+        """Coverage fails when one required object is missing."""
         expected = CaseExpectation(
-            case_id="test",
+            case_id="test-cov-obj-missing",
             story_text="test story",
-            expected_objects=frozenset(["TB_A", "TB_B", "TB_C"]),
+            expected_objects=frozenset(["TB_ALPHA", "TB_BETA", "TB_GAMMA"]),
         )
         actual = ActualResult(
-            case_id="test",
-            selected_objects=frozenset(["TB_A", "TB_B"]),  # Missing TB_C
+            case_id="test-cov-obj-missing",
+            selected_objects=frozenset(["TB_ALPHA", "TB_BETA"]),  # Missing TB_GAMMA
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        assert not comparison.objects_pass, "Should fail when object is missing"
-        assert "TB_C" in comparison.objects_missing
+        assert not comparison.objects_coverage_pass, "Coverage should fail when required object missing"
+        assert "TB_GAMMA" in comparison.objects_missing
         assert comparison.objects_found == 2
         assert comparison.objects_expected == 3
     
-    def test_missing_one_column_fails(self):
-        """Comparator must fail when one required column is missing."""
+    def test_extra_objects_pass_coverage(self):
+        """Coverage passes when all required present, even with extras."""
         expected = CaseExpectation(
-            case_id="test",
+            case_id="test-cov-obj-extra",
+            story_text="test story",
+            expected_objects=frozenset(["TB_ALPHA", "TB_BETA"]),
+        )
+        actual = ActualResult(
+            case_id="test-cov-obj-extra",
+            selected_objects=frozenset(["TB_ALPHA", "TB_BETA", "TB_DELTA"]),  # Extra TB_DELTA
+            cap_respected=True,
+        )
+        
+        comparison = compare_case(expected, actual)
+        
+        # Coverage: passes (all required present, extras allowed)
+        assert comparison.objects_coverage_pass, "Coverage should pass with extras"
+        assert len(comparison.objects_missing) == 0
+        assert comparison.objects_found == 2
+        
+        # Extras tracked for diagnostic
+        assert "TB_DELTA" in comparison.objects_extra
+    
+    def test_empty_expected_passes_coverage(self):
+        """Empty expected means no positive requirement; coverage passes."""
+        expected = CaseExpectation(
+            case_id="test-cov-empty",
+            story_text="test story",
+            expected_objects=frozenset(),  # No required objects
+        )
+        actual = ActualResult(
+            case_id="test-cov-empty",
+            selected_objects=frozenset(["TB_ALPHA"]),  # Has items, but no requirement
+            cap_respected=True,
+        )
+        
+        comparison = compare_case(expected, actual)
+        
+        # Coverage passes (no requirements means no failures)
+        assert comparison.objects_coverage_pass, "Coverage should pass when no requirements"
+        assert comparison.objects_expected == 0
+    
+    def test_missing_column_fails_coverage(self):
+        """Coverage fails when required column is missing."""
+        expected = CaseExpectation(
+            case_id="test-cov-col-missing",
             story_text="test story",
             expected_columns=frozenset([
-                ExpectedColumn("TB_A", "COL1"),
-                ExpectedColumn("TB_A", "COL2"),
+                ExpectedColumn("TB_ALPHA", "COL1"),
+                ExpectedColumn("TB_ALPHA", "COL2"),
             ]),
         )
         actual = ActualResult(
-            case_id="test",
+            case_id="test-cov-col-missing",
             selected_columns=frozenset([
-                ExpectedColumn("TB_A", "COL1"),
-                # Missing COL2
+                ExpectedColumn("TB_ALPHA", "COL1"),
             ]),
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        assert not comparison.columns_pass, "Should fail when column is missing"
-        assert ExpectedColumn("TB_A", "COL2") in comparison.columns_missing
+        assert not comparison.columns_coverage_pass, "Coverage should fail when column missing"
+        assert ExpectedColumn("TB_ALPHA", "COL2") in comparison.columns_missing
     
-    def test_column_wrong_parent_fails(self):
-        """Comparator must fail when column has wrong parent table."""
+    def test_column_wrong_parent_fails_coverage(self):
+        """Coverage fails when column has wrong parent table."""
         expected = CaseExpectation(
-            case_id="test",
+            case_id="test-cov-col-parent",
             story_text="test story",
             expected_columns=frozenset([
-                ExpectedColumn("TB_A", "COL1"),  # Expected on TB_A
+                ExpectedColumn("TB_ALPHA", "COL1"),  # Expected on TB_ALPHA
             ]),
         )
         actual = ActualResult(
-            case_id="test",
+            case_id="test-cov-col-parent",
             selected_columns=frozenset([
-                ExpectedColumn("TB_B", "COL1"),  # Actually on TB_B (wrong parent)
+                ExpectedColumn("TB_BETA", "COL1"),  # Actually on TB_BETA (wrong parent)
             ]),
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        assert not comparison.columns_pass, "Should fail when column has wrong parent"
-        assert ExpectedColumn("TB_A", "COL1") in comparison.columns_missing
+        assert not comparison.columns_coverage_pass, "Should fail when column has wrong parent"
+        assert ExpectedColumn("TB_ALPHA", "COL1") in comparison.columns_missing
     
-    def test_missing_one_fk_fails(self):
-        """Comparator must fail when one required FK is missing."""
+    def test_missing_fk_fails_coverage(self):
+        """Coverage fails when required FK is missing."""
         expected = CaseExpectation(
-            case_id="test",
+            case_id="test-cov-fk-missing",
             story_text="test story",
             expected_fks=frozenset([
-                ExpectedFK("TB_A", "FK_COL", "TB_B", "ID"),
-                ExpectedFK("TB_C", "FK_COL", "TB_D", "ID"),
+                ExpectedFK("TB_ALPHA", "FK_COL", "TB_BETA", "ID"),
+                ExpectedFK("TB_GAMMA", "FK_COL", "TB_DELTA", "ID"),
             ]),
         )
         actual = ActualResult(
-            case_id="test",
+            case_id="test-cov-fk-missing",
             selected_fks=frozenset([
-                ExpectedFK("TB_A", "FK_COL", "TB_B", "ID"),
-                # Missing second FK
+                ExpectedFK("TB_ALPHA", "FK_COL", "TB_BETA", "ID"),
             ]),
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        assert not comparison.fks_pass, "Should fail when FK is missing"
+        assert not comparison.fks_coverage_pass, "Should fail when FK is missing"
         assert comparison.fks_found == 1
         assert comparison.fks_expected == 2
     
-    def test_fk_wrong_endpoint_fails(self):
-        """Comparator must fail when FK has wrong endpoint."""
+    def test_fk_wrong_endpoint_fails_coverage(self):
+        """Coverage fails when FK has wrong endpoint."""
         expected = CaseExpectation(
-            case_id="test",
+            case_id="test-cov-fk-endpoint",
             story_text="test story",
             expected_fks=frozenset([
-                ExpectedFK("TB_A", "FK_COL", "TB_B", "ID"),
+                ExpectedFK("TB_ALPHA", "FK_COL", "TB_BETA", "ID"),
             ]),
         )
         actual = ActualResult(
-            case_id="test",
+            case_id="test-cov-fk-endpoint",
             selected_fks=frozenset([
-                ExpectedFK("TB_A", "FK_COL", "TB_C", "ID"),  # Wrong target
+                ExpectedFK("TB_ALPHA", "FK_COL", "TB_GAMMA", "ID"),  # Wrong target
             ]),
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        assert not comparison.fks_pass, "Should fail when FK endpoint is wrong"
+        assert not comparison.fks_coverage_pass, "Should fail when FK endpoint is wrong"
     
-    def test_missing_uncertainty_fails(self):
-        """Comparator must fail when expected uncertainty is missing."""
+    def test_missing_uncertainty_fails_coverage(self):
+        """Coverage fails when required uncertainty is missing."""
         expected = CaseExpectation(
-            case_id="test",
+            case_id="test-cov-uncert",
             story_text="test story",
             expected_uncertainties=frozenset([
-                ExpectedUncertainty("This is uncertain"),
+                ExpectedUncertainty("Synthetic uncertainty statement for testing"),
             ]),
         )
         actual = ActualResult(
-            case_id="test",
-            reported_uncertainties=frozenset(),  # No uncertainties reported
-            cap_respected=True,
-        )
-        
-        comparison = compare_case(expected, actual)
-        
-        assert not comparison.uncertainties_pass, "Should fail when uncertainty is missing"
-    
-    def test_empty_expected_vs_nonempty_actual_is_fail(self):
-        """Empty expected list vs non-empty actual => FAIL (extras exist)."""
-        expected = CaseExpectation(
-            case_id="test",
-            story_text="test story",
-            expected_objects=frozenset(),  # No requirements (empty)
-            expected_columns=frozenset(),
-            expected_fks=frozenset(),
-            expected_uncertainties=frozenset(),
-        )
-        actual = ActualResult(
-            case_id="test",
-            selected_objects=frozenset(["TB_A"]),  # Has an extra
-            cap_respected=True,
-        )
-        
-        comparison = compare_case(expected, actual)
-        
-        # Empty vs non-empty => FAIL (extras present)
-        assert not comparison.objects_pass, "Empty expected vs non-empty actual => FAIL"
-        
-        # Columns/FKs/Uncertainties: empty vs empty => PASS
-        assert comparison.columns_pass  # both empty
-        assert comparison.fks_pass  # both empty
-        assert comparison.uncertainties_pass  # both empty
-        
-        # But expected counts are 0
-        assert comparison.objects_expected == 0
-        assert comparison.columns_expected == 0
-        assert comparison.fks_expected == 0
-        assert comparison.uncertainties_expected == 0
-        
-        # Aggregate FAIL because objects dimension fails
-        assert not comparison.aggregate_pass
-    
-    def test_synthetic_object_does_not_satisfy_real(self):
-        """Synthetic object cannot substitute for a real expected object."""
-        expected = CaseExpectation(
-            case_id="test",
-            story_text="test story",
-            expected_objects=frozenset(["TB_REAL_TABLE"]),
-        )
-        actual = ActualResult(
-            case_id="test",
-            selected_objects=frozenset(["TB_SYNTHETIC_TABLE"]),  # Different name
-            cap_respected=True,
-        )
-        
-        comparison = compare_case(expected, actual)
-        
-        assert not comparison.objects_pass
-        assert "TB_REAL_TABLE" in comparison.objects_missing
-    
-    def test_empty_expected_empty_actual_passes(self):
-        """Explicit empty expected vs empty actual => PASS (exact match)."""
-        expected = CaseExpectation(
-            case_id="test-empty-empty",
-            story_text="test story",
-            expected_objects=frozenset(),  # Explicit empty
-            expected_columns=frozenset(),
-            expected_fks=frozenset(),
-            expected_uncertainties=frozenset(),
-        )
-        actual = ActualResult(
-            case_id="test-empty-empty",
-            selected_objects=frozenset(),  # Also empty
-            selected_columns=frozenset(),
-            selected_fks=frozenset(),
+            case_id="test-cov-uncert",
             reported_uncertainties=frozenset(),
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        # Empty == Empty => PASS
-        assert comparison.objects_pass, "Empty expected vs empty actual should PASS"
-        assert comparison.columns_pass
-        assert comparison.fks_pass
-        assert comparison.uncertainties_pass
-        assert comparison.aggregate_pass, "Aggregate should PASS when all dimensions match"
+        assert not comparison.uncertainties_coverage_pass, "Should fail when uncertainty missing"
     
-    def test_empty_expected_nonempty_actual_fails(self):
-        """Explicit empty expected vs non-empty actual => FAIL (extras present)."""
+    def test_must_exclude_violation_fails_coverage(self):
+        """Coverage fails when must_exclude item is present."""
         expected = CaseExpectation(
-            case_id="test-empty-nonempty",
+            case_id="test-cov-exclude",
             story_text="test story",
-            expected_objects=frozenset(),  # Expect nothing
+            expected_objects=frozenset(["TB_ALPHA"]),
+            must_exclude_prefixes=frozenset(["TB_BCK_"]),  # Exclude backup tables
         )
         actual = ActualResult(
-            case_id="test-empty-nonempty",
-            selected_objects=frozenset(["TB_EXTRA"]),  # Got something (extra)
+            case_id="test-cov-exclude",
+            selected_objects=frozenset(["TB_ALPHA", "TB_BCK_BACKUP"]),  # Violation
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        # Empty expected vs non-empty actual => FAIL (has extras)
-        assert not comparison.objects_pass, "Empty expected vs non-empty actual should FAIL"
-        assert not comparison.aggregate_pass, "Aggregate should FAIL when extras present"
+        # Coverage of required passes (TB_ALPHA present)
+        assert comparison.objects_coverage_pass
+        
+        # But exclusion fails
+        assert not comparison.exclusion_pass, "Should fail when excluded item present"
+        assert "TB_BCK_BACKUP" in comparison.exclusion_violations
+        
+        # Aggregate fails due to exclusion violation
+        assert not comparison.coverage_aggregate_pass
     
-    def test_nonempty_expected_with_one_extra_fails(self):
-        """Expected {A,B} vs actual {A,B,C} => FAIL (extra C)."""
+    def test_cap_exceeded_fails_coverage(self):
+        """Coverage aggregate fails when cap exceeded."""
         expected = CaseExpectation(
-            case_id="test-extras",
+            case_id="test-cov-cap",
+            story_text="test story",
+            expected_objects=frozenset(["TB_ALPHA"]),
+        )
+        actual = ActualResult(
+            case_id="test-cov-cap",
+            selected_objects=frozenset(["TB_ALPHA"]),
+            node_count=65,  # Exceeds 60
+            cap_respected=False,
+        )
+        
+        comparison = compare_case(expected, actual)
+        
+        assert comparison.objects_coverage_pass  # Required present
+        assert not comparison.cap_pass  # Cap exceeded
+        assert not comparison.coverage_aggregate_pass  # Aggregate fails
+
+
+# ---------------------------------------------------------------------------
+# Comparator Canary Tests — Precision Mode (Diagnostic Only)
+# ---------------------------------------------------------------------------
+
+class TestPrecisionCanaries:
+    """Tests proving PRECISION_DIAGNOSTIC semantics work correctly.
+    
+    Precision mode: exact set equality (expected == actual).
+    This is diagnostic only, never official acceptance.
+    """
+    
+    def test_missing_object_fails_precision(self):
+        """Precision fails when object is missing."""
+        expected = CaseExpectation(
+            case_id="test-prec-missing",
             story_text="test story",
             expected_objects=frozenset(["TB_ALPHA", "TB_BETA"]),
         )
         actual = ActualResult(
-            case_id="test-extras",
-            selected_objects=frozenset(["TB_ALPHA", "TB_BETA", "TB_GAMMA"]),  # Extra TB_GAMMA
+            case_id="test-prec-missing",
+            selected_objects=frozenset(["TB_ALPHA"]),  # Missing TB_BETA
             cap_respected=True,
         )
         
         comparison = compare_case(expected, actual)
         
-        # All expected present but one extra => FAIL
-        assert comparison.objects_found == 2, "Should find both expected objects"
-        assert len(comparison.objects_missing) == 0, "No missing objects"
-        assert not comparison.objects_pass, "Should FAIL because of extra TB_GAMMA"
-        assert not comparison.aggregate_pass
+        assert not comparison.precision_objects_pass, "Precision should fail when missing"
     
-    def test_unevaluated_dimension_forbids_aggregate_pass(self):
-        """If one mandatory dimension has expected=None, aggregate FORMAL_PASS forbidden.
-        
-        Note: With current dataclass defaults, None fields become empty frozensets.
-        The semantic distinction is that expected_count=0 means "explicitly no requirements"
-        which is different from "not evaluated" in the formal sense.
-        
-        For the formal vector, only cases with expected_count > 0 contribute to 
-        EXACT_X_CASES metrics. Empty expected is a design choice in the pack, 
-        not an evaluation pass.
-        """
-        # This test verifies that compute_formal_vector correctly handles
-        # cases where some dimensions have no expectations
-        from test_honest_evaluation_gate import compute_formal_vector
-        
-        # Case 1: Objects expected but columns not (empty)
-        expected1 = CaseExpectation(
-            case_id="test-partial",
+    def test_extra_object_fails_precision(self):
+        """Precision fails when extra object present."""
+        expected = CaseExpectation(
+            case_id="test-prec-extra",
             story_text="test story",
-            expected_objects=frozenset(["TB_X"]),  # Has object requirement
-            expected_columns=frozenset(),  # No column requirement (N/A)
+            expected_objects=frozenset(["TB_ALPHA"]),
         )
-        actual1 = ActualResult(
-            case_id="test-partial",
-            selected_objects=frozenset(["TB_X"]),  # Exact match
+        actual = ActualResult(
+            case_id="test-prec-extra",
+            selected_objects=frozenset(["TB_ALPHA", "TB_BETA"]),  # Extra TB_BETA
+            cap_respected=True,
+        )
+        
+        comparison = compare_case(expected, actual)
+        
+        # Coverage passes (all required present)
+        assert comparison.objects_coverage_pass
+        
+        # Precision fails (has extra)
+        assert not comparison.precision_objects_pass, "Precision should fail with extras"
+        assert "TB_BETA" in comparison.objects_extra
+    
+    def test_exact_match_passes_both(self):
+        """Exact match passes both coverage and precision."""
+        expected = CaseExpectation(
+            case_id="test-exact",
+            story_text="test story",
+            expected_objects=frozenset(["TB_ALPHA", "TB_BETA"]),
+        )
+        actual = ActualResult(
+            case_id="test-exact",
+            selected_objects=frozenset(["TB_ALPHA", "TB_BETA"]),  # Exact match
+            cap_respected=True,
+        )
+        
+        comparison = compare_case(expected, actual)
+        
+        assert comparison.objects_coverage_pass, "Coverage should pass on exact match"
+        assert comparison.precision_objects_pass, "Precision should pass on exact match"
+        assert len(comparison.objects_missing) == 0
+        assert len(comparison.objects_extra) == 0
+    
+    def test_empty_expected_empty_actual_passes_precision(self):
+        """Empty expected vs empty actual passes precision (exact match)."""
+        expected = CaseExpectation(
+            case_id="test-prec-empty",
+            story_text="test story",
+            expected_objects=frozenset(),
+            expected_columns=frozenset(),
+        )
+        actual = ActualResult(
+            case_id="test-prec-empty",
+            selected_objects=frozenset(),
             selected_columns=frozenset(),
             cap_respected=True,
         )
         
-        comparison1 = compare_case(expected1, actual1)
+        comparison = compare_case(expected, actual)
         
-        # Objects pass (exact match), columns pass (both empty)
-        assert comparison1.objects_pass
-        assert comparison1.columns_pass
-        assert comparison1.aggregate_pass  # This case aggregates pass
+        assert comparison.precision_objects_pass, "Empty vs empty should pass precision"
+        assert comparison.precision_columns_pass
+    
+    def test_empty_expected_nonempty_actual_fails_precision(self):
+        """Empty expected vs non-empty actual fails precision."""
+        expected = CaseExpectation(
+            case_id="test-prec-empty-nonempty",
+            story_text="test story",
+            expected_objects=frozenset(),  # Expect nothing
+        )
+        actual = ActualResult(
+            case_id="test-prec-empty-nonempty",
+            selected_objects=frozenset(["TB_ALPHA"]),  # Got something
+            cap_respected=True,
+        )
         
-        # But in formal vector, EXACT_COLUMN_CASES should NOT count this
-        # because columns_expected == 0
-        vector = compute_formal_vector([comparison1])
+        comparison = compare_case(expected, actual)
         
-        # exact_object_cases counts cases with objects_pass AND objects_expected > 0
-        assert vector.exact_object_cases == 1  # This case counts
-        assert vector.exact_column_cases == 0  # columns_expected=0, doesn't count
+        # Coverage passes (no requirements)
+        assert comparison.objects_coverage_pass
+        
+        # Precision fails (has extras)
+        assert not comparison.precision_objects_pass, "Precision should fail with unexpected items"
+
+
+# ---------------------------------------------------------------------------
+# Formal Vector Computation Tests
+# ---------------------------------------------------------------------------
+
+class TestFormalVectorComputation:
+    """Tests for compute_formal_vector with dual metrics."""
+    
+    def test_coverage_counts_with_extras_allowed(self):
+        """Coverage metric counts cases where all required present, ignoring extras."""
+        comparisons = [
+            # Case 1: All required present with extras
+            CaseComparison(
+                case_id="case1",
+                objects_expected=2, objects_found=2, objects_missing=frozenset(),
+                objects_coverage_pass=True,
+                columns_expected=0, columns_found=0, columns_missing=frozenset(),
+                columns_coverage_pass=True,
+                fks_expected=0, fks_found=0, fks_missing=frozenset(),
+                fks_coverage_pass=True,
+                uncertainties_expected=0, uncertainties_found=0, uncertainties_missing=frozenset(),
+                uncertainties_coverage_pass=True,
+                exclusion_violations=frozenset(), exclusion_pass=True,
+                coverage_aggregate_pass=True,
+                objects_extra=frozenset(["EXTRA1"]),  # Has extra
+                columns_extra=frozenset(), fks_extra=frozenset(), uncertainties_extra=frozenset(),
+                precision_objects_pass=False,  # Precision fails due to extra
+                precision_columns_pass=True, precision_fks_pass=True, precision_uncertainties_pass=True,
+                precision_aggregate_pass=False,
+                cap_pass=True, node_count=50,
+            ),
+        ]
+        
+        vector = compute_formal_vector(comparisons)
+        
+        # Coverage counts this as pass (all required present)
+        assert vector.required_object_coverage == 1
+        
+        # Precision does not count it (has extras)
+        assert vector.precision_exact_object_cases == 0
+    
+    def test_coverage_requires_expected_gt_zero(self):
+        """Coverage only counts cases with expected > 0."""
+        comparisons = [
+            # Case with no requirements
+            CaseComparison(
+                case_id="empty",
+                objects_expected=0, objects_found=0, objects_missing=frozenset(),
+                objects_coverage_pass=True,
+                columns_expected=0, columns_found=0, columns_missing=frozenset(),
+                columns_coverage_pass=True,
+                fks_expected=0, fks_found=0, fks_missing=frozenset(),
+                fks_coverage_pass=True,
+                uncertainties_expected=0, uncertainties_found=0, uncertainties_missing=frozenset(),
+                uncertainties_coverage_pass=True,
+                exclusion_violations=frozenset(), exclusion_pass=True,
+                coverage_aggregate_pass=True,
+                objects_extra=frozenset(), columns_extra=frozenset(),
+                fks_extra=frozenset(), uncertainties_extra=frozenset(),
+                precision_objects_pass=True, precision_columns_pass=True,
+                precision_fks_pass=True, precision_uncertainties_pass=True,
+                precision_aggregate_pass=True,
+                cap_pass=True, node_count=50,
+            ),
+        ]
+        
+        vector = compute_formal_vector(comparisons)
+        
+        # Not counted because expected=0
+        assert vector.required_object_coverage == 0
 
 
 # ---------------------------------------------------------------------------
@@ -902,10 +1150,14 @@ class TestAssertionSeparation:
 @requires_sygma
 @requires_pack
 class TestHonestEvaluationGate:
-    """Run the full honest evaluation gate."""
+    """Run the full honest evaluation gate with dual metrics."""
     
     def test_formal_vector(self, pack_expectations, reconciled_graph):
-        """Compute and report the formal evaluation vector."""
+        """Compute and report the formal evaluation vector with dual metrics.
+        
+        OFFICIAL REQUIRED COVERAGE: required ⊆ actual (subset semantics)
+        PRECISION DIAGNOSTIC: exact set equality (informational only)
+        """
         from moughorai.database_graph.context_selector import select_database_context
         
         comparisons: list[CaseComparison] = []
@@ -929,45 +1181,65 @@ class TestHonestEvaluationGate:
             comparison = compare_case(expected, actual)
             comparisons.append(comparison)
             
-            # Report per-case results
+            # Report per-case results with both metrics
             print(f"\n{expected.case_id}:")
+            
+            # Objects
+            cov_status = 'PASS' if comparison.objects_coverage_pass and comparison.objects_expected > 0 else 'FAIL' if comparison.objects_expected > 0 else 'N/A'
+            prec_status = 'PASS' if comparison.precision_objects_pass else 'FAIL'
             print(f"  OBJECTS: {comparison.objects_found}/{comparison.objects_expected} "
-                  f"{'PASS' if comparison.objects_pass and comparison.objects_expected > 0 else 'FAIL' if comparison.objects_expected > 0 else 'N/A'}")
+                  f"coverage={cov_status} precision={prec_status}")
             if comparison.objects_missing:
-                print(f"    Missing: {sorted(comparison.objects_missing)}")
+                print(f"    Missing: {sorted(comparison.objects_missing)[:5]}{'...' if len(comparison.objects_missing) > 5 else ''}")
+            if comparison.objects_extra:
+                print(f"    Extra (diagnostic): {len(comparison.objects_extra)} objects")
             
-            print(f"  COLUMNS: {comparison.columns_found}/{comparison.columns_expected} "
-                  f"{'PASS' if comparison.columns_pass and comparison.columns_expected > 0 else 'FAIL' if comparison.columns_expected > 0 else 'N/A'}")
+            # Columns
+            cov_status = 'PASS' if comparison.columns_coverage_pass and comparison.columns_expected > 0 else 'FAIL' if comparison.columns_expected > 0 else 'N/A'
+            print(f"  COLUMNS: {comparison.columns_found}/{comparison.columns_expected} coverage={cov_status}")
             if comparison.columns_missing:
-                print(f"    Missing: {sorted(str(c) for c in comparison.columns_missing)[:5]}...")
+                print(f"    Missing: {sorted(str(c) for c in list(comparison.columns_missing)[:3])}...")
             
-            print(f"  FKs: {comparison.fks_found}/{comparison.fks_expected} "
-                  f"{'PASS' if comparison.fks_pass and comparison.fks_expected > 0 else 'FAIL' if comparison.fks_expected > 0 else 'N/A'}")
+            # FKs
+            cov_status = 'PASS' if comparison.fks_coverage_pass and comparison.fks_expected > 0 else 'FAIL' if comparison.fks_expected > 0 else 'N/A'
+            print(f"  FKs: {comparison.fks_found}/{comparison.fks_expected} coverage={cov_status}")
             
-            print(f"  UNCERTAINTIES: {comparison.uncertainties_found}/{comparison.uncertainties_expected} "
-                  f"{'PASS' if comparison.uncertainties_pass and comparison.uncertainties_expected > 0 else 'FAIL' if comparison.uncertainties_expected > 0 else 'N/A'}")
+            # Uncertainties
+            cov_status = 'PASS' if comparison.uncertainties_coverage_pass and comparison.uncertainties_expected > 0 else 'FAIL' if comparison.uncertainties_expected > 0 else 'N/A'
+            print(f"  UNCERTAINTIES: {comparison.uncertainties_found}/{comparison.uncertainties_expected} coverage={cov_status}")
+            
+            # Exclusions
+            if comparison.exclusion_violations:
+                print(f"  EXCLUSION VIOLATIONS: {sorted(comparison.exclusion_violations)}")
             
             print(f"  CAP: {comparison.node_count}/60 {'PASS' if comparison.cap_pass else 'FAIL'}")
         
         # Compute formal vector
         vector = compute_formal_vector(comparisons)
         
-        print("\n" + "="*60)
-        print("FORMAL EVALUATION VECTOR")
-        print("="*60)
+        print("\n" + "="*70)
+        print("FORMAL EVALUATION VECTOR (DUAL METRICS)")
+        print("="*70)
         print(vector)
         
-        # Record the vector for verification
-        # The expected d521 baseline is:
-        # - exact objects: 6/14
-        # - official FK: 4/7
-        # - exact columns: 0/14
-        # - exact uncertainties: 0/14
-        # - aggregate complete: 0/14
-        # - cap: 14/14
-        # - determinism: PASS
+        # Verify expected d521 baseline with coverage semantics:
+        # - REQUIRED_OBJECT_COVERAGE: 6/14
+        # - OFFICIAL_FK_ASSERTIONS: 4/7
+        # - REQUIRED_COLUMN_CASES: 0/14
+        # - REQUIRED_UNCERTAINTY_CASES: 0/14
+        # - AGGREGATE_COMPLETE_CASES: 0/14
+        # - PRECISION_EXACT_OBJECT_CASES: 0/14
+        # - CAP: 14/14
+        # - DETERMINISM: PASS
         # - SQL: 42/42
         
-        # These assertions verify the test infrastructure works,
-        # not that production code achieves certain metrics
+        # Structure assertions (always required)
         assert vector.cap_pass == vector.cap_total, "All cases should respect cap"
+        
+        # Official coverage baseline assertions
+        assert vector.required_object_coverage == 6, \
+            f"Expected REQUIRED_OBJECT_COVERAGE=6, got {vector.required_object_coverage}"
+        assert vector.official_fk_assertions == 4, \
+            f"Expected OFFICIAL_FK_ASSERTIONS=4, got {vector.official_fk_assertions}"
+        assert vector.official_fk_total == 7, \
+            f"Expected 7 total FK assertions, got {vector.official_fk_total}"
