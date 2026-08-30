@@ -2553,3 +2553,154 @@ def render_database_context_mermaid(result: DatabaseContextResult) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Bundle-based selection (experimental)
+# ---------------------------------------------------------------------------
+
+def select_database_context_via_bundles(
+    graph: DatabaseGraph,
+    story_text: str,
+    *,
+    max_hops: int = _DEFAULT_MAX_HOPS,
+    max_objects: int = _DEFAULT_MAX_OBJECTS,
+) -> DatabaseContextResult:
+    """Select database context using evidence-backed bundle selection.
+    
+    This is an alternative implementation that uses SelectionBundle for
+    atomic table+column+relationship selection. It produces the same
+    DatabaseContextResult format as select_database_context.
+    
+    Key differences from the standard selector:
+    - Tables, columns, and relationships are grouped into atomic bundles
+    - Family suppression prevents prefix flooding
+    - FK neighbors of exact anchors become bridges, not concept-anchors
+    - Bundles are evicted atomically (table + its columns together)
+    
+    Args:
+        graph: The reconciled DatabaseGraph
+        story_text: Story or impediment text
+        max_hops: Maximum expansion depth (kept for API compatibility)
+        max_objects: Maximum total objects in result
+    
+    Returns:
+        DatabaseContextResult with bounded subgraph
+    """
+    from .bundle_selector import (
+        build_and_select_bundles,
+        _extract_terms,
+        _ENGLISH_STOP_WORDS,
+    )
+    
+    if max_hops < 0:
+        raise ValueError(f"max_hops must be >= 0, got {max_hops}")
+    if max_objects < 1:
+        raise ValueError(f"max_objects must be >= 1, got {max_objects}")
+    
+    # Run bundle selection
+    bundle_result = build_and_select_bundles(
+        graph, story_text,
+        max_objects=max_objects,
+        max_per_family=2,
+    )
+    
+    # Build node and edge indexes
+    node_by_id = {n.id: n for n in graph.nodes}
+    
+    # Collect selected node IDs
+    selected_ids: set[str] = set()
+    
+    for bundle in bundle_result.selected_bundles:
+        # Add table
+        selected_ids.add(bundle.table_id)
+        
+        # Add columns
+        for col in bundle.columns:
+            selected_ids.add(col.column_id)
+    
+    # Collect edges between selected nodes
+    selected_edges_list = [
+        e for e in graph.edges
+        if e.from_node in selected_ids and e.to_node in selected_ids
+    ]
+    
+    # Build final node list
+    selected_node_list = [
+        node_by_id[nid] for nid in selected_ids
+        if nid in node_by_id
+    ]
+    
+    # Sort for deterministic output
+    selected_nodes = tuple(sorted(selected_node_list, key=lambda n: n.qualified_name))
+    selected_edges = tuple(
+        sorted(selected_edges_list, key=lambda e: (e.from_node, e.to_node, e.kind))
+    )
+    
+    # Extract story terms for reporting
+    raw_terms = _extract_terms(story_text)
+    terms = [t for t in raw_terms if t.lower() not in _ENGLISH_STOP_WORDS]
+    
+    # Determine matched vs unmatched terms
+    matched_terms: list[str] = []
+    unmatched_terms: list[str] = []
+    matched_set: set[str] = set()
+    
+    for bundle in bundle_result.selected_bundles:
+        for term in bundle.story_terms_matched:
+            matched_set.add(term.upper())
+    
+    for term in terms:
+        if term in matched_set:
+            matched_terms.append(term)
+        else:
+            unmatched_terms.append(term)
+    
+    # Compute omitted counts
+    total_candidates = len(bundle_result.selected_bundles) + len(bundle_result.evicted_bundles)
+    total_candidate_objects = sum(
+        b.object_cost for b in bundle_result.selected_bundles
+    ) + sum(
+        b.object_cost for b in bundle_result.evicted_bundles
+    )
+    
+    omitted = OmittedCounts(
+        nodes_omitted=total_candidate_objects - len(selected_ids),
+        edges_omitted=0,  # Not tracking edge omissions in bundle mode
+        total_candidate_nodes=total_candidate_objects,
+        total_candidate_edges=len(graph.edges),
+    )
+    
+    # Build truncation metadata
+    truncation = TruncationMetadata(
+        was_truncated=len(bundle_result.evicted_bundles) > 0,
+        hard_cap=max_objects,
+        total_candidates=total_candidate_objects,
+        total_selected=len(selected_ids),
+        tier_details=(),  # Tiers don't map to bundle kinds directly
+        pinned_evicted=0,  # Bundles don't have pinned concept
+    )
+    
+    # Compute context fingerprint
+    ctx_fp = _context_fingerprint(
+        selected_nodes=selected_nodes,
+        selected_edges=selected_edges,
+        story_terms_matched=tuple(matched_terms),
+        story_terms_unmatched=tuple(unmatched_terms),
+        full_graph_fingerprint=graph.fingerprint,
+        max_hops=max_hops,
+        max_objects=max_objects,
+    )
+    
+    return DatabaseContextResult(
+        selected_nodes=selected_nodes,
+        selected_edges=selected_edges,
+        story_terms_matched=tuple(matched_terms),
+        story_terms_unmatched=tuple(unmatched_terms),
+        omitted_counts=omitted,
+        full_graph_fingerprint=graph.fingerprint,
+        context_fingerprint=ctx_fp,
+        max_hops=max_hops,
+        max_objects=max_objects,
+        truncation=truncation,
+    )
