@@ -1550,8 +1550,8 @@ def build_and_select_bundles(
     This is the main entry point for bundle-based selection.
     
     When views are selected, their source table dependencies are automatically
-    included ONLY if they fit within the remaining budget. Dependencies that
-    would exceed max_objects are not included.
+    included. Budget is reserved for view dependencies to ensure they can be
+    added after initial selection.
     
     Args:
         graph: The reconciled DatabaseGraph
@@ -1566,12 +1566,18 @@ def build_and_select_bundles(
     terms = _extract_terms(story_text)
     idf = _compute_idf(terms, idx)
     bundles = _build_candidate_bundles(terms, idx, idf)
-    result = select_bundles(bundles, max_objects, max_per_family)
+    
+    # Count how many views might be selected (to estimate dependency budget)
+    # Reserve ~15% of budget for view dependencies (max 10 objects)
+    view_dep_reserve = min(10, max(3, int(max_objects * 0.15)))
+    initial_budget = max_objects - view_dep_reserve
+    
+    result = select_bundles(bundles, initial_budget, max_per_family)
 
-    # Expand view dependencies ONLY if budget allows
+    # Expand view dependencies with reserved budget
     dep_bundles = _expand_view_dependencies(list(result.selected_bundles), idx)
     if dep_bundles:
-        # Compute remaining budget
+        # Now we have the reserved budget for dependencies
         remaining_budget = max_objects - result.total_objects
         
         # Only add dependencies that fit within budget
