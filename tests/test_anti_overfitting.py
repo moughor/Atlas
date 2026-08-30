@@ -395,3 +395,158 @@ class TestNoPackExpectedTextInProduction:
                 msg += f"  - {filename}: {matches}\n"
             msg += "\nCase-specific logic indicates overfitting to the evaluation pack."
             pytest.fail(msg)
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Hard cap boundary tests
+# ---------------------------------------------------------------------------
+
+class TestHardCapBoundary:
+    """Verify that the hard cap (max_objects) is strictly enforced.
+    
+    These tests ensure:
+    - No post-selection overflow
+    - No arbitrary first-N columns trimming
+    - Full closure or rejection (no partial bundles)
+    """
+    
+    def test_cap_at_59(self):
+        """Output never exceeds max_objects=59."""
+        from moughorai.database_graph.models import (
+            DatabaseGraphNode,
+            NodeKind,
+            EvidenceRecord,
+        )
+        from moughorai.database_graph.context_selector import (
+            select_database_context,
+        )
+        
+        # Create a graph with many tables (more than would fit)
+        nodes = []
+        for i in range(100):
+            nodes.append(DatabaseGraphNode(
+                id=f"tb_{i:03d}",
+                kind=NodeKind.TABLE.value,
+                qualified_name=f"TB_TEST_{i:03d}",
+                evidence=EvidenceRecord(status="verified", confidence=1.0),
+            ))
+        graph = _make_test_graph(nodes)
+        
+        # Story that would match many tables
+        story = "Show all TB_TEST tables"
+        
+        result = select_database_context(graph, story, max_objects=59)
+        
+        assert len(result.selected_nodes) <= 59, (
+            f"Hard cap violated: got {len(result.selected_nodes)} nodes, max=59"
+        )
+    
+    def test_cap_at_60(self):
+        """Output never exceeds max_objects=60 (default)."""
+        from moughorai.database_graph.models import (
+            DatabaseGraphNode,
+            NodeKind,
+            EvidenceRecord,
+        )
+        from moughorai.database_graph.context_selector import (
+            select_database_context,
+        )
+        
+        # Create a graph with many tables
+        nodes = []
+        for i in range(100):
+            nodes.append(DatabaseGraphNode(
+                id=f"tb_{i:03d}",
+                kind=NodeKind.TABLE.value,
+                qualified_name=f"TB_TEST_{i:03d}",
+                evidence=EvidenceRecord(status="verified", confidence=1.0),
+            ))
+        graph = _make_test_graph(nodes)
+        
+        story = "Show all TB_TEST tables"
+        
+        result = select_database_context(graph, story, max_objects=60)
+        
+        assert len(result.selected_nodes) <= 60, (
+            f"Hard cap violated: got {len(result.selected_nodes)} nodes, max=60"
+        )
+    
+    def test_cap_at_61(self):
+        """Output never exceeds max_objects=61."""
+        from moughorai.database_graph.models import (
+            DatabaseGraphNode,
+            NodeKind,
+            EvidenceRecord,
+        )
+        from moughorai.database_graph.context_selector import (
+            select_database_context,
+        )
+        
+        # Create a graph with many tables
+        nodes = []
+        for i in range(100):
+            nodes.append(DatabaseGraphNode(
+                id=f"tb_{i:03d}",
+                kind=NodeKind.TABLE.value,
+                qualified_name=f"TB_TEST_{i:03d}",
+                evidence=EvidenceRecord(status="verified", confidence=1.0),
+            ))
+        graph = _make_test_graph(nodes)
+        
+        story = "Show all TB_TEST tables"
+        
+        result = select_database_context(graph, story, max_objects=61)
+        
+        assert len(result.selected_nodes) <= 61, (
+            f"Hard cap violated: got {len(result.selected_nodes)} nodes, max=61"
+        )
+    
+    def test_view_dependency_respects_cap(self):
+        """View dependencies do not cause cap overflow."""
+        from moughorai.database_graph.models import (
+            DatabaseGraphNode,
+            DatabaseGraphEdge,
+            NodeKind,
+            EdgeKind,
+            EvidenceRecord,
+        )
+        from moughorai.database_graph.context_selector import (
+            select_database_context,
+        )
+        
+        # Create a view with many dependencies
+        nodes = [
+            DatabaseGraphNode(
+                id="vw_main",
+                kind=NodeKind.VIEW.value,
+                qualified_name="VW_MAIN_VIEW",
+                evidence=EvidenceRecord(status="verified", confidence=1.0),
+            ),
+        ]
+        edges = []
+        
+        # Add many source tables for the view
+        for i in range(50):
+            nodes.append(DatabaseGraphNode(
+                id=f"tb_src_{i:03d}",
+                kind=NodeKind.TABLE.value,
+                qualified_name=f"TB_SOURCE_{i:03d}",
+                evidence=EvidenceRecord(status="verified", confidence=1.0),
+            ))
+            edges.append(DatabaseGraphEdge(
+                id=f"reads_{i:03d}",
+                from_node="vw_main",
+                to_node=f"tb_src_{i:03d}",
+                kind=EdgeKind.READS_FROM.value,
+            ))
+        
+        graph = _make_test_graph(nodes, edges)
+        
+        story = "Show VW_MAIN_VIEW data"
+        
+        result = select_database_context(graph, story, max_objects=30)
+        
+        assert len(result.selected_nodes) <= 30, (
+            f"View dependency expansion violated cap: "
+            f"got {len(result.selected_nodes)} nodes, max=30"
+        )

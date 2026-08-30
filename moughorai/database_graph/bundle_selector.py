@@ -1374,7 +1374,8 @@ def build_and_select_bundles(
     This is the main entry point for bundle-based selection.
     
     When views are selected, their source table dependencies are automatically
-    included to materialize the view's evidence closure.
+    included ONLY if they fit within the remaining budget. Dependencies that
+    would exceed max_objects are not included.
     
     Args:
         graph: The reconciled DatabaseGraph
@@ -1391,17 +1392,33 @@ def build_and_select_bundles(
     bundles = _build_candidate_bundles(terms, idx, idf)
     result = select_bundles(bundles, max_objects, max_per_family)
 
-    # Expand view dependencies
+    # Expand view dependencies ONLY if budget allows
     dep_bundles = _expand_view_dependencies(list(result.selected_bundles), idx)
     if dep_bundles:
-        # Add dependency bundles to selected list
-        all_selected = list(result.selected_bundles) + dep_bundles
-        return BundleSelectionResult(
-            selected_bundles=tuple(all_selected),
-            evicted_bundles=result.evicted_bundles,
-            total_objects=result.total_objects + len(dep_bundles),
-            budget_used=result.budget_used,
-            family_suppressions=result.family_suppressions,
-        )
+        # Compute remaining budget
+        remaining_budget = max_objects - result.total_objects
+        
+        # Only add dependencies that fit within budget
+        added_deps: list[SelectionBundle] = []
+        deps_added_cost = 0
+        
+        for dep in dep_bundles:
+            # Each dependency bundle adds: 1 table + N columns
+            dep_cost = 1 + len(dep.columns)
+            if deps_added_cost + dep_cost <= remaining_budget:
+                added_deps.append(dep)
+                deps_added_cost += dep_cost
+            # else: skip this dependency - would exceed budget
+        
+        if added_deps:
+            all_selected = list(result.selected_bundles) + added_deps
+            new_total = result.total_objects + deps_added_cost
+            return BundleSelectionResult(
+                selected_bundles=tuple(all_selected),
+                evicted_bundles=result.evicted_bundles,
+                total_objects=new_total,
+                budget_used=new_total / max_objects if max_objects > 0 else 0.0,
+                family_suppressions=result.family_suppressions,
+            )
 
     return result
