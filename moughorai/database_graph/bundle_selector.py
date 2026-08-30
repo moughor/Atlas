@@ -639,50 +639,67 @@ def _build_candidate_bundles(
         # Build column evidence
         columns: list[ColumnEvidence] = []
         
-        # Get PK and FK columns (always include for data tables)
-        pk_cols = idx.pk_columns.get(table_id, set())
-        fk_cols = idx.fk_columns.get(table_id, set())
+        # High-confidence anchors: include ALL verified columns when complete set fits
+        # This implements: "when a high-confidence canonical table and its complete
+        # verified column set fit under the hard cap, retain the complete verified set."
+        is_high_confidence = (
+            kind in (BundleKind.ANCHOR_EXACT, BundleKind.ANCHOR_ENTITY, BundleKind.ANCHOR_CONCEPT)
+            or match.confidence >= 0.65  # Multi-term matches also qualify
+        )
         
-        for col_id in pk_cols:
-            col_node = idx.node_by_id.get(col_id)
-            if col_node:
-                columns.append(ColumnEvidence(
-                    column_id=col_id,
-                    column_name=col_node.qualified_name,
-                    reason="pk_column",
-                ))
+        all_table_cols = idx.columns_by_table.get(table_id, [])
         
-        for col_id in fk_cols:
-            col_node = idx.node_by_id.get(col_id)
-            if col_node:
-                columns.append(ColumnEvidence(
-                    column_id=col_id,
-                    column_name=col_node.qualified_name,
-                    reason="fk_column",
-                ))
-        
-        # Story-matched columns: search ALL story terms, not just the terms
-        # that matched the table name/entity. This ensures columns like CODE
-        # and NAME are included when the story mentions them, even if the table
-        # was matched via entity bridging (e.g., "Parent" -> PARENT_A).
-        seen_col_ids: set[str] = set(pk_cols) | set(fk_cols)
-        for term in terms:  # Use all story terms, not match.matched_terms
-            col_ids = idx.column_by_name.get(term.upper(), [])
-            for col_id in col_ids:
-                if col_id in seen_col_ids:
-                    continue
+        if is_high_confidence and len(all_table_cols) <= 20:
+            # Include ALL columns for high-confidence anchors with reasonable column count
+            for col_id in all_table_cols:
                 col_node = idx.node_by_id.get(col_id)
                 if col_node:
-                    # Check if this column belongs to this table
-                    table_cols = idx.columns_by_table.get(table_id, [])
-                    if col_id in table_cols:
-                        columns.append(ColumnEvidence(
-                            column_id=col_id,
-                            column_name=col_node.qualified_name,
-                            reason="story_matched",
-                            story_term=term,
-                        ))
-                        seen_col_ids.add(col_id)
+                    columns.append(ColumnEvidence(
+                        column_id=col_id,
+                        column_name=col_node.qualified_name,
+                        reason="verified_complete",
+                    ))
+        else:
+            # Standard column selection: PK, FK, and story-matched only
+            pk_cols = idx.pk_columns.get(table_id, set())
+            fk_cols = idx.fk_columns.get(table_id, set())
+            
+            for col_id in pk_cols:
+                col_node = idx.node_by_id.get(col_id)
+                if col_node:
+                    columns.append(ColumnEvidence(
+                        column_id=col_id,
+                        column_name=col_node.qualified_name,
+                        reason="pk_column",
+                    ))
+            
+            for col_id in fk_cols:
+                col_node = idx.node_by_id.get(col_id)
+                if col_node:
+                    columns.append(ColumnEvidence(
+                        column_id=col_id,
+                        column_name=col_node.qualified_name,
+                        reason="fk_column",
+                    ))
+            
+            # Story-matched columns: search ALL story terms
+            seen_col_ids: set[str] = set(pk_cols) | set(fk_cols)
+            for term in terms:
+                col_ids = idx.column_by_name.get(term.upper(), [])
+                for col_id in col_ids:
+                    if col_id in seen_col_ids:
+                        continue
+                    col_node = idx.node_by_id.get(col_id)
+                    if col_node:
+                        table_cols = idx.columns_by_table.get(table_id, [])
+                        if col_id in table_cols:
+                            columns.append(ColumnEvidence(
+                                column_id=col_id,
+                                column_name=col_node.qualified_name,
+                                reason="story_matched",
+                                story_term=term,
+                            ))
+                            seen_col_ids.add(col_id)
         
         # Build relationship evidence
         relationships: list[RelationshipEvidence] = []
@@ -838,6 +855,7 @@ def _classify_columns(columns: tuple[ColumnEvidence, ...]) -> tuple[
     list[ColumnEvidence],  # story_matched (truly mandatory)
     list[ColumnEvidence],  # pk_columns (important but can be trimmed)
     list[ColumnEvidence],  # fk_columns (needed for relationships)
+    list[ColumnEvidence],  # verified_complete (all columns for high-confidence anchors)
     list[ColumnEvidence],  # optional (descriptive only)
 ]:
     """Classify columns by priority.
@@ -851,12 +869,16 @@ def _classify_columns(columns: tuple[ColumnEvidence, ...]) -> tuple[
     FK columns (included only if relationship is selected):
     - fk_column: Foreign key columns
     
+    Verified complete columns (complete column set for high-confidence anchors):
+    - verified_complete: All columns for tables that fit budget
+    
     Optional columns:
     - Any other descriptive columns
     """
     story_matched = []
     pk_cols = []
     fk_cols = []
+    verified_complete = []
     optional = []
     for col in columns:
         if col.reason == "story_matched":
@@ -865,9 +887,11 @@ def _classify_columns(columns: tuple[ColumnEvidence, ...]) -> tuple[
             pk_cols.append(col)
         elif col.reason == "fk_column":
             fk_cols.append(col)
+        elif col.reason == "verified_complete":
+            verified_complete.append(col)
         else:
             optional.append(col)
-    return story_matched, pk_cols, fk_cols, optional
+    return story_matched, pk_cols, fk_cols, verified_complete, optional
 
 
 def _compute_mandatory_closure_cost(
@@ -882,6 +906,7 @@ def _compute_mandatory_closure_cost(
     - 1 table node (always)
     - 1 entity node (only if include_entity=True AND bundle has entity_id)
     - Story-matched columns (always included)
+    - Verified-complete columns (always included - these are for high-confidence anchors)
     - PK columns (if include_pk_columns=True)
     - FK columns (if include_fk_columns=True)
     """
@@ -890,8 +915,9 @@ def _compute_mandatory_closure_cost(
     if include_entity and bundle.entity_id:
         cost += 1
     
-    story_matched, pk_cols, fk_cols, _ = _classify_columns(bundle.columns)
+    story_matched, pk_cols, fk_cols, verified_complete, _ = _classify_columns(bundle.columns)
     cost += len(story_matched)  # Always include story-matched
+    cost += len(verified_complete)  # Always include verified-complete
     
     if include_pk_columns:
         cost += len(pk_cols)
@@ -909,9 +935,11 @@ def _create_bundle_with_closure(
     include_fk_columns: bool,
 ) -> SelectionBundle:
     """Create a bundle with specified closure level."""
-    story_matched, pk_cols, fk_cols, _ = _classify_columns(bundle.columns)
+    story_matched, pk_cols, fk_cols, verified_complete, _ = _classify_columns(bundle.columns)
     
-    columns_to_keep = list(story_matched)
+    # Include verified_complete columns - these are complete column sets for
+    # high-confidence anchors that fit under budget
+    columns_to_keep = list(story_matched) + list(verified_complete)
     if include_pk_columns:
         columns_to_keep.extend(pk_cols)
     if include_fk_columns:
@@ -1162,16 +1190,20 @@ def select_bundles(
     column_budget = max_objects - table_count - entity_count
     
     # Collect all column candidates
-    # Priority: story-matched > PK > FK
+    # Priority: story-matched/verified-complete > PK > FK
     story_matched_cols: list[tuple[int, ColumnEvidence]] = []
+    verified_complete_cols: list[tuple[int, ColumnEvidence]] = []
     pk_candidates: list[tuple[int, ColumnEvidence]] = []
     fk_candidates: list[tuple[int, ColumnEvidence]] = []
     
     for i, (bundle, _include_entity, is_bridge) in enumerate(selected_cores):
-        story_matched, pk_cols, fk_cols, _ = _classify_columns(bundle.columns)
+        story_matched, pk_cols, fk_cols, verified_complete, _ = _classify_columns(bundle.columns)
         
         for col in story_matched:
             story_matched_cols.append((i, col))
+        
+        for col in verified_complete:
+            verified_complete_cols.append((i, col))
         
         for col in pk_cols:
             pk_candidates.append((i, col))
@@ -1182,6 +1214,7 @@ def select_bundles(
     
     # Sort by column name for determinism
     story_matched_cols.sort(key=lambda x: x[1].column_name)
+    verified_complete_cols.sort(key=lambda x: x[1].column_name)
     pk_candidates.sort(key=lambda x: x[1].column_name)
     fk_candidates.sort(key=lambda x: x[1].column_name)
     
@@ -1191,6 +1224,13 @@ def select_bundles(
     
     # Story-matched columns first (highest priority)
     for core_idx, col in story_matched_cols:
+        if columns_added >= column_budget:
+            break
+        columns_by_core[core_idx].append(col)
+        columns_added += 1
+    
+    # Then verified-complete columns (complete column sets for high-confidence anchors)
+    for core_idx, col in verified_complete_cols:
         if columns_added >= column_budget:
             break
         columns_by_core[core_idx].append(col)
