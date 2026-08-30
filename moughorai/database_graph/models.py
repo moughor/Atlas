@@ -840,6 +840,27 @@ class DatabaseGraph:
 # Internal: canonical payload for fingerprinting
 # ---------------------------------------------------------------------------
 
+# Provenance fields that are volatile/execution-specific and should not
+# affect the semantic fingerprint (graph content identity).
+_VOLATILE_PROVENANCE_FIELDS = frozenset({
+    "captured_at",      # Timestamp of analysis run
+    "analysis_id",      # Run-specific identifier
+    "workspace_path",   # Local filesystem path
+    "temp_path",        # Temporary working directory
+})
+
+
+def _semantic_provenance(provenance: dict[str, Any]) -> dict[str, Any]:
+    """Extract semantic-only provenance fields for deterministic fingerprinting.
+
+    Excludes volatile execution-time fields like captured_at, workspace_path.
+    """
+    return {
+        k: v for k, v in sorted(provenance.items())
+        if k not in _VOLATILE_PROVENANCE_FIELDS
+    }
+
+
 def _graph_payload(
     *,
     provenance: dict[str, Any],
@@ -853,10 +874,11 @@ def _graph_payload(
     """Build the canonical dict used for fingerprint computation.
 
     The schema_version is included; the fingerprint itself is excluded.
+    Uses semantic provenance (excluding volatile fields) for determinism.
     """
     return {
         "schema_version": DATABASE_GRAPH_SCHEMA_VERSION,
-        "provenance": provenance,
+        "provenance": _semantic_provenance(provenance),
         "nodes": [n.to_dict() for n in nodes],
         "edges": [e.to_dict() for e in edges],
         "coverage": coverage.to_dict(),
