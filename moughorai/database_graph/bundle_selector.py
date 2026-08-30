@@ -1303,14 +1303,9 @@ def select_bundles(
             family_counts[bundle.family_prefix] = family_counts.get(bundle.family_prefix, 0) + 1
     
     # 2. Select entity anchors (limit entity nodes)
+    # Entity anchors bypass family quota per user guidance - family quotas apply
+    # only to weak lexical/fuzzy candidates, not evidence-backed anchors
     for bundle in entity_anchors:
-        if bundle.family_prefix:
-            count = family_counts.get(bundle.family_prefix, 0)
-            if count >= max_per_family:
-                evicted.append(bundle)
-                family_suppressions += 1
-                continue
-        
         if table_count >= max_tables:
             evicted.append(bundle)
             continue
@@ -1338,14 +1333,8 @@ def select_bundles(
             family_counts[bundle.family_prefix] = family_counts.get(bundle.family_prefix, 0) + 1
     
     # 3. Select concept anchors (require evidence)
+    # Concept anchors with sufficient evidence bypass family quota
     for bundle in concept_anchors:
-        if bundle.family_prefix:
-            count = family_counts.get(bundle.family_prefix, 0)
-            if count >= max_per_family:
-                evicted.append(bundle)
-                family_suppressions += 1
-                continue
-        
         # Require minimum evidence (concept_count >= 2)
         if bundle.concept_count < _ANCHOR_MIN_CONCEPTS:
             evicted.append(bundle)
