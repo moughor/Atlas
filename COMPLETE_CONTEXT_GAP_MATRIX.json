@@ -1,0 +1,1677 @@
+[
+  {
+    "case_id": "SYGMA-DB-001",
+    "story": "A project feature property is missing for one project. Identify the current project-feature snapshot, feature, and prope",
+    "max_hops": 3,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 18,
+      "column": 35,
+      "java_entity": 7
+    },
+    "budget_remaining": 0,
+    "missing_objects": [],
+    "missing_columns": [
+      {
+        "parent": "TB_GRP_PF",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF",
+        "column": "PROJECT_NUMBER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF",
+        "column": "SESSION_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF",
+        "column": "VERSION",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF_FEATURE",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF_FEATURE",
+        "column": "GROUP_PF_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF_FEATURE",
+        "column": "SEMANTIC_REF",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF_FEATURE_P",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF_FEATURE_P",
+        "column": "FEATURE_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF_FEATURE_P",
+        "column": "SEMANTIC_REF",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PF_FEATURE_P",
+        "column": "VALUE_TYPE",
+        "reason": "evicted",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [],
+    "missing_uncertainty": [
+      {
+        "expected": "Jailer 9.3.3 predates the inspected 23.12 branch; relationships require revision",
+        "status": "not_checked"
+      },
+      {
+        "expected": "MAX(ID) as latest snapshot is application guidance, not a general database invar",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": true,
+    "column_pass": false,
+    "relationship_pass": true,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-002",
+    "story": "Validation rule REQ.TEST blocks session 12345. Check whether a matching rule exception definition already exists without",
+    "max_hops": 2,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 51,
+      "column": 9
+    },
+    "budget_remaining": 0,
+    "missing_objects": [],
+    "missing_columns": [
+      {
+        "parent": "TB_RT_RULE_EXCEPTION_DEF",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_RULE_EXCEPTION_DEF",
+        "column": "RULE_IDENTIFIER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_RULE_EXCEPTION_DEF",
+        "column": "EXERCISE_SCOPE_TYPE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_RULE_EXCEPTION_DEF",
+        "column": "EXERCISE_SCOPE_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_RULE_EXCEPTION_DEF",
+        "column": "EXERCISE_INSTANCES",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_RULE_EXCEPTION_DEF",
+        "column": "SESSION_INSTANCES",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_RULE_EXCEPTION_DEF",
+        "column": "STATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "TB_RT_RULE_EXCEPTION_DEF.SESSION_INSTANCES",
+        "to": "TB_RT_SESSION_INSTANCE.ID",
+        "kind": "logical_reference",
+        "reason": "edge_not_in_context"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "SESSION_INSTANCES is VARCHAR2(2000), not a declared numeric foreign key.",
+        "status": "not_checked"
+      },
+      {
+        "expected": "No current non-BACK_UP repository definition for SQ_RT_RULE_EXCEPTION_DEF was fo",
+        "status": "not_checked"
+      },
+      {
+        "expected": "The encoding semantics for wildcard or multiple session identifiers require appl",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": true,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-003",
+    "story": "A session is stuck. Retrieve its exercise model and internal states using the verified runtime relationship.",
+    "max_hops": 1,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 15,
+      "column": 45
+    },
+    "budget_remaining": 0,
+    "missing_objects": [],
+    "missing_columns": [
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "EXERCISE_MODEL_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "STATE_INTERNAL",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "SCOPE_ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "SCOPE_TYPE",
+        "reason": "not_scored",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [],
+    "missing_uncertainty": [
+      {
+        "expected": "Live session/exercise state and deployment drift are not known from repository e",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": true,
+    "column_pass": false,
+    "relationship_pass": true,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-004",
+    "story": "The ethics-issues flag is missing for an online batch project. Ground the diagnostic in the native query already used by",
+    "max_hops": 3,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "materialized_view": 2,
+      "table": 15,
+      "column": 34,
+      "view": 3,
+      "java_entity": 6
+    },
+    "budget_remaining": 0,
+    "missing_objects": [
+      {
+        "name": "TB_GRP_ONL_PROJECT_ITEM",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": true
+      },
+      {
+        "name": "TB_RT_EXERCISE_INSTANCE",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_RT_SESSION_INSTANCE",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_MDL_EX",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "eu.europa.ec.rdg.sygma.exercises.common.impl.dao.RulesDao#getAllEthicsIssuesFlags",
+        "kind": "java_entity",
+        "in_graph": false,
+        "evicted": false
+      }
+    ],
+    "missing_columns": [
+      {
+        "parent": "TB_APP_PROJECT_BASE",
+        "column": "PROJECT_NUMBER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_APP_PROJECT_BASE",
+        "column": "PROJECT_TYPE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_ONL_PROJECT_ITEM",
+        "column": "PROJECT_NUMBER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_ONL_PROJECT_ITEM",
+        "column": "GROUP_ONL_BATCH_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "SCOPE_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "SCOPE_TYPE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "EXERCISE_MODEL_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "EXERCISE_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "STATE_INTERNAL",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "MODIFIABLE_TREE_DTYPE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_ETH",
+        "column": "SESSION_ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_ETH",
+        "column": "PROJECT_NUMBER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_ETH",
+        "column": "ETHICS_ISSUES",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_MDL_EX",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_MDL_EX",
+        "column": "EXERCISE_MODEL_CATEGORY",
+        "reason": "parent_missing"
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "TB_RT_EXERCISE_INSTANCE.SCOPE_ID/SCOPE_TYPE",
+        "to": "TB_APP_PROJECT_BASE.PROJECT_NUMBER/PROJECT_TYPE",
+        "kind": "logical_reference",
+        "reason": "endpoint_missing:from"
+      },
+      {
+        "from": "TB_RT_SESSION_INSTANCE.EXERCISE_ID",
+        "to": "TB_RT_EXERCISE_INSTANCE.ID",
+        "kind": "foreign_key",
+        "reason": "endpoint_missing:from"
+      },
+      {
+        "from": "TB_GRP_ETH.SESSION_ID",
+        "to": "TB_RT_SESSION_INSTANCE.ID",
+        "kind": "logical_reference",
+        "reason": "endpoint_missing:to"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "MAX(session ID) is query-specific latest-session logic and must not become a uni",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [
+      {
+        "name": "TB_GRP_ONL_PROJECT_ITEM",
+        "kind": "table",
+        "in_graph": true,
+        "scored": true,
+        "tier": 3,
+        "sub_tier": 3,
+        "score": 74,
+        "reason": "alias1:project"
+      }
+    ],
+    "serialization_roundtrip": true,
+    "table_pass": false,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-005",
+    "story": "Support needs the failed document-generation records for one project. Use the repository view contract and do not turn t",
+    "max_hops": 2,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 13,
+      "column": 41,
+      "java_entity": 6
+    },
+    "budget_remaining": 0,
+    "missing_objects": [
+      {
+        "name": "VW_HD_FAILED_DOC_GEN",
+        "kind": "view",
+        "in_graph": true,
+        "evicted": true
+      },
+      {
+        "name": "TB_RT_SESSION_INSTANCE",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      }
+    ],
+    "missing_columns": [
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "PROJECT_NUMBER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "EXERCISE_MODEL_CATEGORY",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "CALL_CCM",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "SESSION_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "END_DATE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "SESSION_TYPE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "BATCH_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "BATCH_ITEM_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "DOCUMENT_MODEL_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "DOC_GEN_STAGE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "DOC_GEN_STATE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "TEMPLATE_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "EXERCISE_MODEL",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_HD_FAILED_DOC_GEN",
+        "column": "DOCUMENT_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "EXERCISE_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "END_DATE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "MODIFIABLE_TREE_DTYPE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "PAR_SESSION_TAG",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_APP_EXTERNAL_DOCUMENT",
+        "column": "ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_APP_EXTERNAL_DOCUMENT",
+        "column": "DOCUMENT_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "VW_HD_FAILED_DOC_GEN",
+        "to": "TB_APP_EXTERNAL_DOCUMENT/TB_RT_SESSION_INSTANCE",
+        "kind": "view_dependency",
+        "reason": "endpoint_missing:from"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "The view filters a specific set of generation states; it does not prove the busi",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [
+      {
+        "name": "VW_HD_FAILED_DOC_GEN",
+        "kind": "view",
+        "in_graph": true,
+        "scored": true,
+        "tier": 3,
+        "sub_tier": 3,
+        "score": 50,
+        "reason": "alias1:failed"
+      }
+    ],
+    "serialization_roundtrip": true,
+    "table_pass": false,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-006",
+    "story": "An impediment asks for the latest closed reporting session for a project. Prefer the repository view and preserve its ex",
+    "max_hops": 2,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 12,
+      "column": 43,
+      "view": 1,
+      "java_entity": 4
+    },
+    "budget_remaining": 0,
+    "missing_objects": [
+      {
+        "name": "TB_GRP_PR_P",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "VW_NON_FP7_PROJECTS",
+        "kind": "view",
+        "in_graph": true,
+        "evicted": true
+      }
+    ],
+    "missing_columns": [
+      {
+        "parent": "TB_GRP_PR_P",
+        "column": "PROJECT_NUMBER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_P",
+        "column": "SESSION_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_P",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_P",
+        "column": "PERIOD_IDENTIFIER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "VW_NON_FP7_PROJECTS",
+        "column": "PROJECT_NUMBER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "STATE_INTERNAL",
+        "reason": "not_scored",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "VW_LATEST_CLOSED_REP_SESSIONS",
+        "to": "TB_GRP_PR_P/VW_NON_FP7_PROJECTS/TB_RT_SESSION_INSTANCE",
+        "kind": "view_dependency",
+        "reason": "endpoint_missing:to"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "MAX(session ID) is the view's implementation of latest, not a general temporal o",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [
+      {
+        "name": "VW_NON_FP7_PROJECTS",
+        "kind": "view",
+        "in_graph": true,
+        "scored": true,
+        "tier": 3,
+        "sub_tier": 3,
+        "score": 50,
+        "reason": "alias1:projects"
+      }
+    ],
+    "serialization_roundtrip": true,
+    "table_pass": false,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-007",
+    "story": "The amendment dashboard needs the most recent amendment record per project. Use the existing BAM view rather than invent",
+    "max_hops": 4,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 6,
+      "column": 44,
+      "view": 8,
+      "java_entity": 2
+    },
+    "budget_remaining": 0,
+    "missing_objects": [
+      {
+        "name": "TB_GRP_PL",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_GRP_PL_AMD_DATA",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_RT_DATA_TREE",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_RT_DATA_FOREST",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_RT_EXERCISE_INSTANCE",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_MDL_EX",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_RT_EXERCISE_PARAM",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      }
+    ],
+    "missing_columns": [
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "PROJECT_NUMBER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_REF",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_NUMBER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_TYPE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_VERSION",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_START_DATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_END_DATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_EXERCISE_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_EXERCISE_STATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "VW_BAM_AMENDMENTS",
+        "column": "AMD_SESSION_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PL",
+        "column": "PROJECT_NUMBER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PL",
+        "column": "OTO_AMD_DATA_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PL",
+        "column": "VERSION",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PL_AMD_DATA",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PL_AMD_DATA",
+        "column": "AMD_TYPE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PL_AMD_DATA",
+        "column": "AMD_COMMISSION_REF",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_DATA_TREE",
+        "column": "TREE_ROOT_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_DATA_TREE",
+        "column": "FOREST_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_DATA_TREE",
+        "column": "TREE_DTYPE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_DATA_FOREST",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "SCOPE_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "SCOPE_TYPE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "EXERCISE_MODEL_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "START_DATE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "END_DATE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "STATE_CODE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_MDL_EX",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_MDL_EX",
+        "column": "EXERCISE_MODEL_CATEGORY",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_PARAM",
+        "column": "EXERCISE_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_PARAM",
+        "column": "KEY",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_PARAM",
+        "column": "VALUE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "FOREST_ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "EXERCISE_ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "MODIFIABLE_TREE_DTYPE",
+        "reason": "not_scored",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "VW_BAM_AMENDMENTS",
+        "to": "TB_GRP_PL/TB_GRP_PL_AMD_DATA/TB_RT_DATA_TREE/TB_RT_DATA_FOREST/TB_RT_EXERCISE_INSTANCE/TB_MDL_EX/TB_RT_EXERCISE_PARAM/TB_RT_SESSION_INSTANCE",
+        "kind": "view_dependency",
+        "reason": "endpoint_missing:to"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "ROW_NUMBER ordering and the UNION branch are part of this view's amendment seman",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": false,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-008",
+    "story": "Audit support needs the reporting periods and part-time extension days for a project. Query the AUDEX materialized view ",
+    "max_hops": 3,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "materialized_view": 4,
+      "table": 40,
+      "view": 2,
+      "java_entity": 14
+    },
+    "budget_remaining": 0,
+    "missing_objects": [
+      {
+        "name": "TB_GRP_PR_P",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": true
+      },
+      {
+        "name": "TB_RT_EXERCISE_INSTANCE",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "TB_RT_EXERCISE_PARAM",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": false
+      },
+      {
+        "name": "MV_A_PROJECT_DATA",
+        "kind": "materialized_view",
+        "in_graph": true,
+        "evicted": true
+      }
+    ],
+    "missing_columns": [
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "PART_TIME_EXT_DAYS",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "PROJECT_NUMBER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "VERSION",
+        "reason": "not_in_graph",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "PL_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "PERIOD",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "PERIOD_FROM",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "PERIOD_TO",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "START_DATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "END_DATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "PREVIOUS_END_DATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_REPORTING_PERIODS",
+        "column": "OPENED_PERIOD",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PR_P",
+        "column": "PROJECT_NUMBER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_P",
+        "column": "SESSION_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_P",
+        "column": "REPORT_TYPE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "EXERCISE_ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "MODIFIABLE_TREE_DTYPE",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_SESSION_INSTANCE",
+        "column": "STATE_INTERNAL",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_INSTANCE",
+        "column": "STATE_INTERNAL",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_PARAM",
+        "column": "EXERCISE_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_PARAM",
+        "column": "KEY",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_RT_EXERCISE_PARAM",
+        "column": "VALUE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_APP_PROJECT_BASE",
+        "column": "PROJECT_NUMBER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL",
+        "column": "PROJECT_NUMBER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL",
+        "column": "START_DATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "MV_A_PROJECT_DATA",
+        "column": "PL_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "MV_A_PROJECT_DATA",
+        "column": "VERSION",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PL_REPORTING_PERIOD",
+        "column": "PROJECT_LEGAL_GROUP_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL_REPORTING_PERIOD",
+        "column": "IDENTIFIER",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL_REPORTING_PERIOD",
+        "column": "FROM_MONTH",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL_REPORTING_PERIOD",
+        "column": "TO_MONTH",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL_REPORTING_PERIOD",
+        "column": "DTYPE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL_REPORTING_PERIOD",
+        "column": "SCRP_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PL_REPORTING_PERIOD",
+        "column": "PART_TIME_EXT_DAYS",
+        "reason": "evicted",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "MV_A_REPORTING_PERIODS",
+        "to": "TB_GRP_PR_P/TB_RT_SESSION_INSTANCE/TB_RT_EXERCISE_INSTANCE/TB_RT_EXERCISE_PARAM/TB_APP_PROJECT_BASE/TB_GRP_PL/MV_A_PROJECT_DATA/TB_GRP_PL_REPORTING_PERIOD",
+        "kind": "view_dependency",
+        "reason": "endpoint_missing:to"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "Materialized-view freshness and refresh status are runtime facts not available f",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [
+      {
+        "name": "TB_GRP_PR_P",
+        "kind": "table",
+        "in_graph": true,
+        "scored": true,
+        "tier": 0,
+        "sub_tier": 3,
+        "score": 70,
+        "reason": "fk_neighbor_of_pinned:5d260978ccb7397560ff88980774f3fbf7cd06"
+      },
+      {
+        "name": "MV_A_PROJECT_DATA",
+        "kind": "materialized_view",
+        "in_graph": true,
+        "scored": true,
+        "tier": 3,
+        "sub_tier": 3,
+        "score": 50,
+        "reason": "alias1:project"
+      }
+    ],
+    "serialization_roundtrip": true,
+    "table_pass": false,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-009",
+    "story": "Support has a report-item log ID and needs the associated external document identifier. Resolve the raw OTO column rathe",
+    "max_hops": 1,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 40,
+      "java_entity": 20
+    },
+    "budget_remaining": 0,
+    "missing_objects": [],
+    "missing_columns": [
+      {
+        "parent": "TB_GRP_PR_ITM_LOG",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PR_ITM_LOG",
+        "column": "OTO_EXTERNAL_DOCUMENT_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PR_ITM_LOG",
+        "column": "GRP_PERIODIC_REPORT_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PR_ITM_LOG",
+        "column": "STATE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PR_ITM_LOG",
+        "column": "REPORT_ITEM_TYPE",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_APP_EXTERNAL_DOCUMENT",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_APP_EXTERNAL_DOCUMENT",
+        "column": "DOCUMENT_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_APP_EXTERNAL_DOCUMENT",
+        "column": "REPOSITORY_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_APP_EXTERNAL_DOCUMENT",
+        "column": "VERSION",
+        "reason": "evicted",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [],
+    "missing_uncertainty": [
+      {
+        "expected": "Java exposes several raw IDs and custom LazySetProvider relations; their directi",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": true,
+    "column_pass": false,
+    "relationship_pass": true,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-010",
+    "story": "A mobility declaration shows the wrong duration. Retrieve its periods using the real declaration foreign key and preserv",
+    "max_hops": 1,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 6,
+      "column": 26,
+      "java_entity": 28
+    },
+    "budget_remaining": 0,
+    "missing_objects": [
+      {
+        "name": "TB_GRP_PR_MD_DEC_P_BASE",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": true
+      },
+      {
+        "name": "TB_GRP_PR_MD_PER_P_BASE",
+        "kind": "table",
+        "in_graph": true,
+        "evicted": true
+      },
+      {
+        "name": "eu.europa.ec.rdg.sygma.domain.business.groups.projectreport.mobility.PrimaryMobilityDeclarationBase",
+        "kind": "java_entity",
+        "in_graph": false,
+        "evicted": false
+      },
+      {
+        "name": "eu.europa.ec.rdg.sygma.domain.business.groups.projectreport.mobility.PrimaryMobilityPeriodBase",
+        "kind": "java_entity",
+        "in_graph": false,
+        "evicted": false
+      }
+    ],
+    "missing_columns": [
+      {
+        "parent": "TB_GRP_PR_MD_DEC_P_BASE",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_DEC_P_BASE",
+        "column": "DECLARATION_STATE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_DEC_P_BASE",
+        "column": "MOBILITY_NUMBER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_DEC_P_BASE",
+        "column": "PERSON_SEM_REF_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_DEC_P_BASE",
+        "column": "CONTINUOUS_REPORT_ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_PER_P_BASE",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_PER_P_BASE",
+        "column": "START_DATE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_PER_P_BASE",
+        "column": "END_DATE",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_PER_P_BASE",
+        "column": "DURATION",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "TB_GRP_PR_MD_PER_P_BASE",
+        "column": "MOBILITY_DECLARATION_ID",
+        "reason": "parent_missing"
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "TB_GRP_PR_MD_PER_P_BASE.MOBILITY_DECLARATION_ID",
+        "to": "TB_GRP_PR_MD_DEC_P_BASE.ID",
+        "kind": "foreign_key",
+        "reason": "endpoint_missing:from"
+      },
+      {
+        "from": "PrimaryMobilityDeclarationBase.mobilityPeriods",
+        "to": "PrimaryMobilityPeriodBase.MOBILITY_DECLARATION_ID",
+        "kind": "java_lazy_relation",
+        "reason": "endpoint_missing:from"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "The stored duration and the duration derivable from dates may follow business-sp",
+        "status": "not_checked"
+      },
+      {
+        "expected": "Current Java declares DURATION scale 7 while Jailer 9.3.3 reports NUMBER(23,6); ",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [
+      {
+        "name": "TB_GRP_PR_MD_DEC_P_BASE",
+        "kind": "table",
+        "in_graph": true,
+        "scored": true,
+        "tier": 0,
+        "sub_tier": 3,
+        "score": 55,
+        "reason": "alias_hub:base(fk=7)"
+      },
+      {
+        "name": "TB_GRP_PR_MD_PER_P_BASE",
+        "kind": "table",
+        "in_graph": true,
+        "scored": true,
+        "tier": 0,
+        "sub_tier": 3,
+        "score": 70,
+        "reason": "alias1:base"
+      }
+    ],
+    "serialization_roundtrip": true,
+    "table_pass": false,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-011",
+    "story": "A grant-reduction impediment proposes querying an override amount. Reconcile the current Java model with the ordered 23.",
+    "max_hops": 1,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "materialized_view": 2,
+      "column": 45,
+      "table": 11,
+      "java_entity": 2
+    },
+    "budget_remaining": 0,
+    "missing_objects": [],
+    "missing_columns": [
+      {
+        "parent": "TB_GRP_PR_AI",
+        "column": "ID",
+        "reason": "not_scored",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_GRP_PR_AI",
+        "column": "GRANT_REDUCTIONS_APPLIC",
+        "reason": "not_in_graph",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "TB_GRP_PR_AI_GR.AUDIT_ID",
+        "to": "TB_GRP_PR_AI.ID",
+        "kind": "migration_lineage",
+        "reason": "edge_not_in_context"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "The Jailer 9.3.3 snapshot predates the 23.12 table and must be reported as stale",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": true,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-012",
+    "story": "A document-item query needs the conditional template-info flag. Resolve the newer migration and Java entity against the ",
+    "max_hops": 1,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 44,
+      "java_entity": 16
+    },
+    "budget_remaining": 0,
+    "missing_objects": [],
+    "missing_columns": [
+      {
+        "parent": "TB_MDL_DOC_ITEM",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_MDL_DOC_ITEM",
+        "column": "TPL_INFO_ITEM_ID",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_MDL_DOC_ITEM",
+        "column": "TPL_INFO_CONDITIONAL",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_MDL_DOC_ITEM",
+        "column": "DISPLAY_NAME",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_MDL_DOC_ITEM",
+        "column": "HAS_DYNAMIC_TEMPLATES",
+        "reason": "evicted",
+        "parent_selected": true
+      },
+      {
+        "parent": "TB_MDL_TPL_INFO_ITEM",
+        "column": "ID",
+        "reason": "evicted",
+        "parent_selected": true
+      }
+    ],
+    "missing_relationships": [],
+    "missing_uncertainty": [
+      {
+        "expected": "Jailer 9.3.3 lacks TPL_INFO_CONDITIONAL and HAS_DYNAMIC_TEMPLATES while the newe",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": true,
+    "column_pass": false,
+    "relationship_pass": true,
+    "complete": false
+  },
+  {
+    "case_id": "SYGMA-DB-013",
+    "story": "An old impediment names a backup copy of the MGA project-template table. Select the current object and reject both backu",
+    "max_hops": 0,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "table": 13,
+      "column": 45,
+      "view": 1,
+      "java_entity": 1
+    },
+    "budget_remaining": 0,
+    "missing_objects": [],
+    "missing_columns": [],
+    "missing_relationships": [],
+    "missing_uncertainty": [
+      {
+        "expected": "Backup classification is based on explicit BCK naming plus the coexisting canoni",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": true,
+    "column_pass": true,
+    "relationship_pass": true,
+    "complete": true
+  },
+  {
+    "case_id": "SYGMA-DB-014",
+    "story": "An impediment assumes a consumer-schema synonym exists for a Sygma table. The repository only contains a dynamic synonym",
+    "max_hops": 1,
+    "selected_count": 60,
+    "budget_by_kind": {
+      "synonym": 1,
+      "materialized_view": 2,
+      "column": 44,
+      "table": 9,
+      "java_entity": 4
+    },
+    "budget_remaining": 0,
+    "missing_objects": [
+      {
+        "name": "SYGMA.TB_GRP_PF",
+        "kind": "table",
+        "in_graph": false,
+        "evicted": false
+      }
+    ],
+    "missing_columns": [
+      {
+        "parent": "SYGMA.TB_GRP_PF",
+        "column": "ID",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "SYGMA.TB_GRP_PF",
+        "column": "PROJECT_NUMBER",
+        "reason": "parent_missing"
+      },
+      {
+        "parent": "SYGMA.TB_GRP_PF",
+        "column": "SESSION_ID",
+        "reason": "parent_missing"
+      }
+    ],
+    "missing_relationships": [
+      {
+        "from": "consumer-schema synonym name",
+        "to": "SYGMA.<runtime all_objects name>",
+        "kind": "synonym_alias",
+        "reason": "endpoint_missing:from"
+      }
+    ],
+    "missing_uncertainty": [
+      {
+        "expected": "The generator queries live ALL_OBJECTS and executes dynamic DDL; checked-in sour",
+        "status": "not_checked"
+      }
+    ],
+    "evicted_objects": [],
+    "serialization_roundtrip": true,
+    "table_pass": false,
+    "column_pass": false,
+    "relationship_pass": false,
+    "complete": false
+  }
+]

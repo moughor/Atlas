@@ -2012,6 +2012,27 @@ def select_database_context(
     sorted_parents = sorted(col_by_parent.keys(),
                             key=lambda pid: parent_priority.get(pid, (99, 99, 99, 0, 0, "")))
 
+    # Within each parent, re-sort columns to prioritize structurally
+    # important ones: ID, PK, FK reference columns come first.
+    _PK_FK_PATTERNS = {"ID", "PK", "ROW_VERSION"}
+    for pid in col_by_parent:
+        cols = col_by_parent[pid]
+        def _col_priority(sn: _ScoredNode) -> tuple:
+            nd = idx.node_by_id.get(sn.node_id)
+            if nd:
+                short = nd.qualified_name.rsplit(".", 1)[-1].upper()
+                # ID column is always most important
+                if short == "ID":
+                    return (0, sn.sort_key())
+                # FK reference columns (ending in _ID) are important
+                if short.endswith("_ID"):
+                    return (1, sn.sort_key())
+                # Other PK/version columns
+                if short in _PK_FK_PATTERNS:
+                    return (2, sn.sort_key())
+            return (3, sn.sort_key())
+        col_by_parent[pid] = sorted(cols, key=_col_priority)
+
     # Count total columns needed to include ALL columns of all parents
     total_all_cols = sum(len(cols) for cols in col_by_parent.values())
 
@@ -2024,19 +2045,42 @@ def select_database_context(
         if remaining > 0:
             kept.extend(orphan_cols[:remaining])
     else:
-        # Not all columns fit — include all columns of highest-priority
-        # parents until budget runs out, then partial for the last.
-        for pid in sorted_parents:
+        # Not all columns fit — hybrid distribution:
+        # Only distribute to the top-8 parents (the most story-relevant).
+        # This gives each priority table ~5-7 columns instead of ~3.
+        _MAX_COL_PARENTS = 8
+        active_parents = sorted_parents[:_MAX_COL_PARENTS]
+        n_parents = max(len(active_parents), 1)
+        per_parent = min(7, max(1, remaining // n_parents))
+
+        allocated: dict[str, list[_ScoredNode]] = {pid: [] for pid in active_parents}
+        leftover = remaining
+
+        # Round 1: min(per_parent, available) per parent
+        for pid in active_parents:
             cols = col_by_parent[pid]
-            if len(cols) <= remaining:
-                kept.extend(cols)
-                remaining = max_objects - len(kept)
-            else:
-                kept.extend(cols[:remaining])
-                remaining = 0
-            if remaining <= 0:
+            take = min(per_parent, len(cols), leftover)
+            allocated[pid] = cols[:take]
+            leftover -= take
+            if leftover <= 0:
                 break
-        # Fill remaining with orphan columns
+
+        # Round 2: all remaining to the highest-priority parents
+        if leftover > 0:
+            for pid in active_parents:
+                cols = col_by_parent[pid]
+                already = len(allocated[pid])
+                extra = cols[already:]
+                take = min(len(extra), leftover)
+                allocated[pid].extend(extra[:take])
+                leftover -= take
+                if leftover <= 0:
+                    break
+
+        for pid in active_parents:
+            kept.extend(allocated[pid])
+
+        remaining = max_objects - len(kept)
         if remaining > 0:
             kept.extend(orphan_cols[:remaining])
 
